@@ -1,8 +1,14 @@
- // Hour × weekday order-count heat map. The 7-day data cells are shaded on a
-// smooth red→yellow→green gradient (Excel's default 3-colour scale) so busy and
-// quiet windows read at a glance. The Total column and Total row are left
-// uncoloured (neutral) — they sit on a larger scale and the heat shading is only
-// meaningful for the individual hour×day cells.
+ // Hour × weekday heat map, shared by the Orders / Net Sales / AOV grids. The
+// 7-day data cells are shaded on a smooth red→yellow→green gradient (Excel's
+// default 3-colour scale) so busy and quiet windows read at a glance. The Total
+// column and Total row are left uncoloured (neutral) — they sit on a larger
+// scale and the heat shading is only meaningful for the individual hour×day cells.
+//
+// `formatValue` and `legendLabel` let the same grid render counts or money.
+//
+// Only ever render totals and counts here, never ratios: an AOV grid at this
+// grain was tried and dropped (Update 34) because ~10 orders per cell left the
+// colours dominated by sampling noise.
 
 // Dark ink stays readable across every shade of the gradient.
 const CELL_TEXT = "#333";
@@ -47,7 +53,15 @@ const hhmm = (h: number) => `${String(h).padStart(2, "0")}:00`;
 
 const heatCell = "px-3 py-2 text-center tabular-nums font-medium";
 
-export function HourDayHeatmap({ data }: { data: HeatmapData }) {
+export function HourDayHeatmap({
+  data,
+  formatValue = (v: number) => String(v),
+  legendLabel = "orders / hour",
+}: {
+  data: HeatmapData;
+  formatValue?: (v: number) => string;
+  legendLabel?: string;
+}) {
   const { hours, days, cells, rowTotals, colTotals, grandTotal } = data;
 
   if (hours.length === 0) {
@@ -97,11 +111,11 @@ export function HourDayHeatmap({ data }: { data: HeatmapData }) {
                       className={`${heatCell} border-l border-line`}
                       style={{ backgroundColor: heatColor(v, cellMin, cellMax), color: CELL_TEXT }}
                     >
-                      {v}
+                      {formatValue(v)}
                     </td>
                   ))}
                   <td className={`${heatCell} font-bold text-primary border-l border-line`}>
-                    {rowTotals[ri]}
+                    {formatValue(rowTotals[ri])}
                   </td>
                 </tr>
               ))}
@@ -114,11 +128,11 @@ export function HourDayHeatmap({ data }: { data: HeatmapData }) {
                     key={ci}
                     className={`${heatCell} font-bold text-primary border-t border-l border-line`}
                   >
-                    {v}
+                    {formatValue(v)}
                   </td>
                 ))}
                 <td className={`${heatCell} font-bold text-primary border-t border-l border-line`}>
-                  {grandTotal}
+                  {formatValue(grandTotal)}
                 </td>
               </tr>
             </tbody>
@@ -127,13 +141,13 @@ export function HourDayHeatmap({ data }: { data: HeatmapData }) {
       </div>
 
       <div className="flex items-center gap-2 text-xs text-secondary">
-        <span className="tabular-nums">{cellMin}</span>
+        <span className="tabular-nums">{formatValue(cellMin)}</span>
         <span
           className="h-3 w-40 rounded-sm border border-line"
           style={{ background: GRADIENT_CSS }}
         />
-        <span className="tabular-nums">{cellMax}</span>
-        <span className="ml-1">orders / hour</span>
+        <span className="tabular-nums">{formatValue(cellMax)}</span>
+        <span className="ml-1">{legendLabel}</span>
       </div>
     </div>
   );

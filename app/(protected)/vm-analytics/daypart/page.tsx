@@ -182,32 +182,98 @@ function aggregateNetHours(rows: HourlyNetActivityRow[]): HourAgg[] {
     .sort((a, b) => a.hour - b.hour);
 }
 
-// Hour × weekday order-count matrix for the heat map, from the same hourly rows
-// that feed the table below. avg_daily_orders is summed per (hour, weekday)
-// across the scoped store(s) and rounded to whole orders.
 const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] as const;
 
-function buildHeatmap(rows: HourlyActivityRow[]): HeatmapData {
-  const dayIndex = (wd: string) => {
-    const p = wd.trim().slice(0, 3).toLowerCase();
-    return WEEKDAYS.findIndex((d) => d.toLowerCase().startsWith(p));
+const dayIndex = (wd: string) => {
+  const p = wd.trim().slice(0, 3).toLowerCase();
+  return WEEKDAYS.findIndex((d) => d.toLowerCase().startsWith(p));
+};
+
+const sum = (arr: number[]) => arr.reduce((s, v) => s + v, 0);
+
+// Totals derived by summing the grid. Valid for counts and money only — a ratio
+// like AOV cannot be totalled this way (see the note above buildNetHeatmap).
+function withTotals(hours: number[], cells: number[][]): HeatmapData {
+  const rowTotals = cells.map(sum);
+  const colTotals = WEEKDAYS.map((_, di) => cells.reduce((s, row) => s + row[di], 0));
+  return {
+    hours,
+    days: [...WEEKDAYS],
+    cells,
+    rowTotals,
+    colTotals,
+    grandTotal: sum(rowTotals),
   };
-  const byHour = new Map<number, number[]>();
+}
+
+// Both hour × weekday matrices in one pass over vm_hourly_order_activity.
+// `orders` (avg_daily_orders) is despite its name an ACTUAL order count — it
+// sums exactly to vm_v_daypart_weekday.orders per weekday, so it is safe as an
+// AOV denominator. `gross` (avg_daily_sales) is GROSS revenue and is used only
+// as the SHAPE for splitting net across weekdays, never displayed.
+interface HourGrids {
+  hours: number[];
+  orders: Map<number, number[]>;
+  gross: Map<number, number[]>;
+}
+
+function buildHourGrids(rows: HourlyActivityRow[]): HourGrids {
+  const orders = new Map<number, number[]>();
+  const gross = new Map<number, number[]>();
   for (const r of rows) {
     const di = dayIndex(String(r.weekday));
     if (di < 0) continue;
     const hour = Math.trunc(n(r.order_hour));
-    const arr = byHour.get(hour) ?? new Array(7).fill(0);
-    arr[di] += n(r.avg_daily_orders);
-    byHour.set(hour, arr);
+    const o = orders.get(hour) ?? new Array(7).fill(0);
+    o[di] += n(r.avg_daily_orders);
+    orders.set(hour, o);
+    const g = gross.get(hour) ?? new Array(7).fill(0);
+    g[di] += n(r.avg_daily_sales);
+    gross.set(hour, g);
   }
-  const hours = Array.from(byHour.keys()).sort((a, b) => a - b);
-  const cells = hours.map((h) => byHour.get(h)!.map((v) => Math.round(v)));
-  const rowTotals = cells.map((row) => row.reduce((s, v) => s + v, 0));
-  const colTotals = WEEKDAYS.map((_, di) => cells.reduce((s, row) => s + row[di], 0));
-  const grandTotal = rowTotals.reduce((s, v) => s + v, 0);
-  return { hours, days: [...WEEKDAYS], cells, rowTotals, colTotals, grandTotal };
+  return { hours: Array.from(orders.keys()).sort((a, b) => a - b), orders, gross };
 }
+
+function buildOrderHeatmap(grids: HourGrids): HeatmapData {
+  return withTotals(
+    grids.hours,
+    grids.hours.map((h) => grids.orders.get(h)!.map((v) => Math.round(v)))
+  );
+}
+
+// Net sales per hour is known exactly (vm_net_sales_by_hour) but carries no
+// weekday dimension, so each hour's net total is split across the week in
+// proportion to that hour's GROSS weekday shape. Row (hour) totals are therefore
+// exact; the weekday split — and so the column totals — are derived.
+// Falls back to the order shape when an hour has no gross figure.
+// See docs/DAYPART_HEATMAP_FEASIBILITY.md.
+function buildNetHeatmap(grids: HourGrids, netRows: HourlyNetActivityRow[]): HeatmapData {
+  const netByHour = new Map<number, number>();
+  for (const r of netRows) {
+    const hour = Math.trunc(n(r.hour));
+    netByHour.set(hour, (netByHour.get(hour) ?? 0) + n(r.net_sales));
+  }
+  const cells = grids.hours.map((h) => {
+    const netHour = netByHour.get(h) ?? 0;
+    if (netHour === 0) return new Array(7).fill(0);
+    let shape = grids.gross.get(h)!;
+    let total = sum(shape);
+    if (total <= 0) {
+      shape = grids.orders.get(h)!;
+      total = sum(shape);
+    }
+    if (total <= 0) return new Array(7).fill(0);
+    return shape.map((v) => (netHour * v) / total);
+  });
+  return withTotals(grids.hours, cells);
+}
+
+// NOTE: an AOV heat map at this grain was built and removed — see Update 34.
+// 804 orders across 84 cells averages ~10 per cell, and AOV is a ratio, so most
+// cells carried ±£3-4 of sampling noise: the colours read as trading pattern but
+// were largely random. Counts and sums (the two grids above) do not have this
+// problem. Reliable AOV by hour is in the Performance by Time Period table
+// below, which pools all seven days.
 
 // "17" -> "5pm", "12" -> "12pm", "0" -> "12am". Used to label an hour bucket as
 // the window it covers, e.g. hour 11 -> "11am-12pm".
@@ -256,7 +322,17 @@ export default async function DaypartPage({
   }
 
   const hours = aggregateNetHours(netRows);
-  const heatmap = buildHeatmap(hourlyRows);
+  const grids = buildHourGrids(hourlyRows);
+  const heatmap = buildOrderHeatmap(grids);
+  const netHeatmap = buildNetHeatmap(grids, netRows);
+
+  // vm_net_sales_by_hour is the row margin of both derived grids, and a gap in
+  // it renders as a silent £0 row rather than an error (the backfill shipped
+  // after Update 28). Compare what landed in the grid against the raw feed so a
+  // shortfall is surfaced instead of read as a genuinely quiet hour.
+  const netFeedTotal = netRows.reduce((s, r) => s + n(r.net_sales), 0);
+  const netUnallocated = netFeedTotal - netHeatmap.grandTotal;
+  const netDataMissing = netFeedTotal <= 0;
 
   const hasDetail = detailRows.length > 0;
   const periods = hasDetail ? fromDetail(detailRows) : fromBasic(basicRows);
@@ -328,6 +404,31 @@ export default async function DaypartPage({
         description="Orders per trading hour by weekday (average day's activity). Cells are shaded low→high; the Total column and Total row are shaded on their own scales."
       >
         <HourDayHeatmap data={heatmap} />
+      </Section>
+
+      <Section
+        title="Net Sales Heat Map — Hour × Day"
+        description="Net sales per trading hour by weekday. Each hour's total is exact (from the hourly net sales feed); the split across weekdays is derived from that hour's order distribution, so the Total column is exact and the Total row is indicative."
+      >
+        {netDataMissing ? (
+          <div className="vm-table-container px-4 py-8 text-center text-tertiary">
+            No hourly net sales data for this week.
+          </div>
+        ) : (
+          <>
+            <HourDayHeatmap
+              data={netHeatmap}
+              formatValue={gbp}
+              legendLabel="net sales / hour"
+            />
+            {netUnallocated > 0.01 && (
+              <p className="mt-2 text-xs text-warning">
+                ⚠ {gbp(netUnallocated)} of net sales could not be placed on the grid — those
+                hours have no matching order activity, so the figures above understate the week.
+              </p>
+            )}
+          </>
+        )}
       </Section>
 
       <Section
