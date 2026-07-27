@@ -8,7 +8,9 @@ export const dynamic = "force-dynamic";
 // Per-dashboard cache version. Present only for dashboards whose commentary
 // data definition has changed; absent dashboards keep the unversioned key.
 const CACHE_VERSIONS: Partial<Record<InsightInput["dashboard"], string>> = {
-  products: "v3",
+  // products=v4: top-category share switched from % of category revenue to
+  // % of total net sales (Update 29), so v3 rows quote the wrong percentage.
+  products: "v4",
   // daypart=v2: hourly Revenue/AOV moved from gross to net (Update 28). Rows
   // cached before the vm_net_sales_by_hour backfill completed hold "£0.00" and
   // were still being served long after the data landed.
@@ -33,7 +35,6 @@ export async function POST(req: Request): Promise<Response> {
   //
   // Bump the version when the commentary's underlying data changes so stale
   // pre-change rows stop matching and regenerate from the corrected input.
-  // products=v3: all fries variants (Cheesy Fries, Loaded Fries, …) now excluded.
   const version = CACHE_VERSIONS[input.dashboard];
   const base = input.store ? `${input.dashboard}@${input.store}` : input.dashboard;
   const cacheKey = version ? `${base}#${version}` : base;
