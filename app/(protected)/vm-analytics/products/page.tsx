@@ -374,6 +374,7 @@ export default async function ProductsPage({
       revWow: c.revWow!,
       prevRevenue: prevRevOf(c.revenue, c.revWow!),
     })),
+    totalNetSales,
   };
   const draft = buildInsights(insightInput);
 

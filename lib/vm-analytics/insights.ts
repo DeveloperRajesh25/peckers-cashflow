@@ -94,6 +94,8 @@ export interface ProductInput {
   categories: { category: string; units: number; revenue: number; revWow: number | null }[];
   risingCats: { category: string; revenue: number; prevRevenue?: number; revWow: number }[];
   fallingCats: { category: string; revenue: number; prevRevenue?: number; revWow: number }[];
+  // Total net sales for the scoped store(s) — used to calculate category % of total sales
+  totalNetSales: number;
 }
 
 export interface DaypartInput {
@@ -192,12 +194,11 @@ function productInsight(i: ProductInput): { summary: string; bullets: string[] }
     };
   }
 
-  const totalRev = cats.reduce((s, c) => s + c.revenue, 0);
-  const topShare = totalRev > 0 ? (topCat.revenue / totalRev) * 100 : 0;
+  const topShare = i.totalNetSales > 0 ? (topCat.revenue / i.totalNetSales) * 100 : 0;
 
   let summary = `The top category ${scope} this week was ${topCat.category}, bringing in ${gbp(
     topCat.revenue
-  )} — ${share(topShare)} of category revenue.`;
+  )} — ${share(topShare)} of total net sales.`;
   const best = i.top[0];
   if (best) {
     summary += ` The single best-selling item was the ${best.item}, at ${num(
