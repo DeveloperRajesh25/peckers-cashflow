@@ -379,9 +379,11 @@ update public.allowed_users set role = 'admin' where role = 'super_admin';
 
 alter table public.allowed_users
   drop constraint if exists allowed_users_role_check;
+-- 'cover_driver' is added by migration 014. Listed here too so re-running this
+-- file cannot silently narrow the constraint and lock every cover driver out.
 alter table public.allowed_users
   add constraint allowed_users_role_check
-  check (role in ('admin','manager','employee'));
+  check (role in ('admin','manager','employee','cover_driver'));
 
 -- (Role helper functions current_user_role / is_staff / current_employee_id
 --  are defined earlier, before the RLS section.)

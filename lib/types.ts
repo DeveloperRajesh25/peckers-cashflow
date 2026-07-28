@@ -28,7 +28,7 @@ export type Store = {
   created_at: string;
 };
 
-export type AllowedUserRole = "admin" | "manager" | "employee";
+export type AllowedUserRole = "admin" | "manager" | "employee" | "cover_driver";
 
 export type AllowedUser = {
   id: string;
@@ -52,6 +52,8 @@ export type AllowedUser = {
   temp_password: string | null;
   must_change_password: boolean;
   employee_id: string | null;
+  /** Links a 'cover_driver' login to its cover_drivers profile row. */
+  cover_driver_id: string | null;
   /** A manager's FIXED daily wage (£). Monitoring/display only — never
    *  drives any pay calculation. Null for admins/employees or if unset. */
   fixed_daily_wage: number | null;
@@ -72,13 +74,14 @@ export function resolveActiveStoreId(allowed: AllowedUser | null | undefined): s
 }
 
 /** Which portal a role lands in. */
-export type Portal = "admin" | "manager" | "employee";
+export type Portal = "admin" | "manager" | "employee" | "cover_driver";
 
 /** Home route for each role's portal. */
 export const PORTAL_HOME: Record<AllowedUserRole, string> = {
   admin: "/dashboard",
   manager: "/manager/live",
   employee: "/employee/attendance",
+  cover_driver: "/cover-driver/attendance",
 };
 
 /** The login page for each portal. */
@@ -86,6 +89,7 @@ export const PORTAL_LOGIN: Record<Portal, string> = {
   admin: "/login",
   manager: "/manager/login",
   employee: "/employee/login",
+  cover_driver: "/cover-driver/login",
 };
 
 export type CashEntry = {
@@ -208,17 +212,91 @@ export type EmployeeHoursComputed = {
 };
 
 // One ad-hoc payment to a part-time "cover driver" (not a permanent employee).
-export type CoverDriverRecord = {
+/**
+ * A part-time cover driver. Deliberately NOT an `employees` row — cover drivers
+ * must never appear in the rota, live board, payouts, NI or analytics, and
+ * keeping them in their own table is what guarantees that.
+ *
+ * Cash-only by design: there is no NI rate and no 20h bank/cash split.
+ */
+export type CoverDriver = {
   id: string;
   store_id: string;
-  driver_name: string;
-  work_date: string;
-  hours_worked: number;
-  hourly_rate: number;
-  total_pay: number;
+  name: string;
+  phone: string | null;
+  date_of_birth: string | null;
+  hourly_cash_rate: number;
+  short_delivery_rate: number | null;
+  long_delivery_rate: number | null;
+  email: string | null;
+  auth_user_id: string | null;
+  is_active: boolean;
+  notes: string | null;
   created_by: string | null;
-  created_by_name: string | null;
   created_at: string;
+};
+
+export type CoverDriverClockEvent = {
+  id: string;
+  cover_driver_id: string;
+  store_id: string;
+  event_date: string;
+  clock_in_at: string | null;
+  clock_out_at: string | null;
+  clock_in_lat: number | null;
+  clock_in_lng: number | null;
+  clock_out_lat: number | null;
+  clock_out_lng: number | null;
+  short_deliveries_count: number | null;
+  long_deliveries_count: number | null;
+  extra_short_deliveries: number;
+  extra_long_deliveries: number;
+  extra_short_reason: string | null;
+  extra_long_reason: string | null;
+  created_at: string;
+};
+
+/** Row of `cover_driver_hours_computed`. Approved pay for one driver-day. */
+export type CoverDriverHoursComputed = {
+  id: string;
+  cover_driver_id: string;
+  driver_name: string;
+  store_id: string;
+  work_date: string;
+  total_hours_worked: number;
+  hourly_rate_snapshot: number;
+  short_deliveries: number;
+  long_deliveries: number;
+  short_rate_snapshot: number | null;
+  long_rate_snapshot: number | null;
+  hours_pay: number;
+  short_delivery_pay: number;
+  long_delivery_pay: number;
+  total_pay: number;
+  notes: string | null;
+  approved: boolean;
+  approved_at: string | null;
+  source: "clocked" | "manual";
+  created_at: string;
+};
+
+/**
+ * One completed cover-driver clock day, summarised for the admin tables.
+ * Employees summarise per ISO week; cover drivers are per DAY.
+ */
+export type CoverDriverDaySummary = {
+  cover_driver_id: string;
+  driver_name: string;
+  store_id: string;
+  work_date: string;
+  total_hours: number;
+  short_deliveries: number;
+  long_deliveries: number;
+  hourly_cash_rate: number;
+  short_delivery_rate: number | null;
+  long_delivery_rate: number | null;
+  /** hours * rate + deliveries * per-type rate. */
+  total_pay: number;
 };
 
 /**

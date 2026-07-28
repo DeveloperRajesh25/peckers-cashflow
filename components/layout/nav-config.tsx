@@ -62,10 +62,19 @@ export const employeeNav: NavItem[] = [
   { href: "/employee/settings", label: "Settings", icon: SettingsIcon },
 ];
 
+// ---- Cover driver portal (/cover-driver/*) ----
+// Deliberately minimal: cover drivers are not on the rota, so there is no
+// "My Shifts", and they have no HR profile page.
+export const coverDriverNav: NavItem[] = [
+  { href: "/cover-driver/attendance", label: "Clock In/Out", icon: ClockIcon },
+  { href: "/cover-driver/settings", label: "Settings", icon: SettingsIcon },
+];
+
 export const NAV_FOR_PORTAL: Record<Portal, NavItem[]> = {
   admin: adminNav,
   manager: managerNav,
   employee: employeeNav,
+  cover_driver: coverDriverNav,
 };
 
 // Bottom-nav (mobile): the most-used pages get a dedicated tab. When a portal
@@ -85,5 +94,10 @@ export const BOTTOM_NAV_FOR_PORTAL: Record<Portal, NavItem[]> = {
     managerNav[2], // Employees
     managerNav[3], // Alerts
   ],
+<<<<<<< HEAD
   employee: employeeNav, // only 4 pages — all fit, no "More" needed
+=======
+  employee: employeeNav,
+  cover_driver: coverDriverNav,
+>>>>>>> 0e709a7 (added cover drivers module)
 };

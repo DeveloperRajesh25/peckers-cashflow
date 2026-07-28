@@ -11,13 +11,19 @@ import { EditEmployeeModal } from "./EditEmployeeModal";
 import { ScheduleEditModal } from "./ScheduleEditModal";
 import { LogHoursForm } from "./LogHoursForm";
 import { HoursTable } from "./HoursTable";
+<<<<<<< HEAD
 import { DailyHoursApproval } from "./DailyHoursApproval";
 import { CoverDriversCard } from "./CoverDriversCard";
+=======
+import { CoverDriversCard } from "@/components/cover-drivers/CoverDriversCard";
+import { CoverDriverHoursTable } from "@/components/cover-drivers/CoverDriverHoursTable";
+>>>>>>> 0e709a7 (added cover drivers module)
 import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { UsersIcon } from "@/components/ui/icons";
 import { Tabs, type TabItem } from "@/components/ui/Tabs";
 import { Select } from "@/components/ui/Input";
+<<<<<<< HEAD
 import {
   approveDailyHours,
   approveDailyHoursForDate,
@@ -27,6 +33,13 @@ import type {
   ClockDailySummary,
   ClockWeeklySummary,
   CoverDriverRecord,
+=======
+import type {
+  ClockWeeklySummary,
+  CoverDriver,
+  CoverDriverDaySummary,
+  CoverDriverHoursComputed,
+>>>>>>> 0e709a7 (added cover drivers module)
   Employee,
   EmployeeHoursComputed,
   Store,
@@ -36,7 +49,10 @@ import type { MinWageBands } from "@/lib/settings";
 type Props = {
   initialEmployees: Employee[];
   initialHours: EmployeeHoursComputed[];
-  initialCoverDrivers?: CoverDriverRecord[];
+  /** Cover drivers are a separate module — they share this page, nothing else. */
+  coverDrivers?: CoverDriver[];
+  coverDriverDays?: CoverDriverDaySummary[];
+  coverDriverHours?: CoverDriverHoursComputed[];
   clockSummaries?: ClockWeeklySummary[];
   clockDailySummaries?: ClockDailySummary[];
   /** Server's "today" as YYYY-MM-DD (avoids client/server timezone drift). */
@@ -66,7 +82,9 @@ type TabId = "daily" | "people" | "weekly";
 export function EmployeesView({
   initialEmployees,
   initialHours,
-  initialCoverDrivers = [],
+  coverDrivers = [],
+  coverDriverDays = [],
+  coverDriverHours = [],
   clockSummaries = [],
   clockDailySummaries = [],
   todayISO,
@@ -95,6 +113,7 @@ export function EmployeesView({
     setHours(initialHours);
   }, [initialHours]);
 
+<<<<<<< HEAD
   // Per-day clocked hours, kept in state so approve/undo updates instantly.
   const [daily, setDaily] =
     React.useState<ClockDailySummary[]>(clockDailySummaries);
@@ -105,9 +124,15 @@ export function EmployeesView({
   // Cover-driver records — kept in state so add/delete updates instantly.
   const [coverDrivers, setCoverDrivers] =
     React.useState<CoverDriverRecord[]>(initialCoverDrivers);
+=======
+  // Approved cover-driver days — kept in state so approve/delete updates
+  // instantly without waiting on the router cache, same as employee hours.
+  const [coverHours, setCoverHours] =
+    React.useState<CoverDriverHoursComputed[]>(coverDriverHours);
+>>>>>>> 0e709a7 (added cover drivers module)
   React.useEffect(() => {
-    setCoverDrivers(initialCoverDrivers);
-  }, [initialCoverDrivers]);
+    setCoverHours(coverDriverHours);
+  }, [coverDriverHours]);
 
   const employees = initialEmployees;
 
@@ -134,6 +159,7 @@ export function EmployeesView({
     router.refresh();
   }
 
+<<<<<<< HEAD
   // ---- Daily approval handlers (server action + optimistic local patch) ----
   const patchDaily = (
     match: (d: ClockDailySummary) => boolean,
@@ -189,17 +215,29 @@ export function EmployeesView({
 
   function handleCoverDriverCreated(record: CoverDriverRecord) {
     setCoverDrivers((prev) => [record, ...prev]);
+=======
+  function handleCoverHoursApproved(fresh: CoverDriverHoursComputed[]) {
+    setCoverHours(fresh);
+>>>>>>> 0e709a7 (added cover drivers module)
     router.refresh();
   }
 
-  function handleCoverDriverDeleted(deletedId: string) {
-    setCoverDrivers((prev) => prev.filter((r) => r.id !== deletedId));
+  function handleCoverHoursDeleted(deletedId: string) {
+    setCoverHours((prev) => prev.filter((r) => r.id !== deletedId));
     router.refresh();
   }
 
+<<<<<<< HEAD
   const visibleCoverDrivers = coverDrivers.filter(
     (r) => storeFilter === "all" || r.store_id === storeFilter,
   );
+=======
+  // Admin can view all stores; scope the cover-driver data to the active filter.
+  const inStore = (storeId: string) => storeFilter === "all" || storeId === storeFilter;
+  const visibleCoverDrivers = coverDrivers.filter((d) => inStore(d.store_id));
+  const visibleCoverDays = coverDriverDays.filter((d) => inStore(d.store_id));
+  const visibleCoverHours = coverHours.filter((h) => inStore(h.store_id));
+>>>>>>> 0e709a7 (added cover drivers module)
 
   const refresh = () => router.refresh();
 
@@ -370,7 +408,53 @@ export function EmployeesView({
         </div>
       )}
 
+<<<<<<< HEAD
       {/* ---------------- Modals (any tab) ---------------- */}
+=======
+      <Card>
+        <CardHeader>
+          <CardTitle>Hours &amp; Approvals</CardTitle>
+          <CardDescription>
+            Approve the hours each employee clocked. Approved hours feed payroll.
+          </CardDescription>
+        </CardHeader>
+        <HoursTable
+          employees={employees}
+          rows={hours}
+          clockSummaries={clockSummaries}
+          onDeleted={handleDeleted}
+          onApproved={handleLogged}
+        />
+      </Card>
+
+      <CoverDriversCard
+        drivers={visibleCoverDrivers}
+        days={visibleCoverDays}
+        stores={stores}
+        defaultStoreId={storeFilter !== "all" ? storeFilter : defaultStoreId}
+        lockToStore={lockToStore}
+        showStoreColumn={!lockToStore && storeFilter === "all"}
+        onChanged={refresh}
+      />
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Cover Drivers — Hours &amp; Approvals</CardTitle>
+          <CardDescription>
+            Approve each cover shift a driver clocked. Approved cash pay is hours × rate
+            plus delivery pay.
+          </CardDescription>
+        </CardHeader>
+        <CoverDriverHoursTable
+          drivers={visibleCoverDrivers}
+          days={visibleCoverDays}
+          approvedRows={visibleCoverHours}
+          onApproved={handleCoverHoursApproved}
+          onDeleted={handleCoverHoursDeleted}
+        />
+      </Card>
+
+>>>>>>> 0e709a7 (added cover drivers module)
       {viewing && (
         <EmployeeDetailModal
           employee={viewing}

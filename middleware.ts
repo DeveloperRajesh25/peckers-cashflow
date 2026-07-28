@@ -14,6 +14,7 @@ const PUBLIC_PATHS = [
   "/login",
   "/manager/login",
   "/employee/login",
+  "/cover-driver/login",
   "/access-denied",
   "/forgot-password",
   "/reset-password",
@@ -23,11 +24,13 @@ const PORTAL_HOME = {
   admin: "/dashboard",
   manager: "/manager/live",
   employee: "/employee/attendance",
+  cover_driver: "/cover-driver/attendance",
 } as const;
 
 function loginPathForArea(pathname: string): string {
   if (pathname.startsWith("/manager")) return "/manager/login";
   if (pathname.startsWith("/employee")) return "/employee/login";
+  if (pathname.startsWith("/cover-driver")) return "/cover-driver/login";
   return "/login";
 }
 
@@ -99,7 +102,7 @@ export async function middleware(req: NextRequest) {
     }
 
     // ---- signed in: resolve whitelist + role ----
-    let role: "admin" | "manager" | "employee" | null = null;
+    let role: "admin" | "manager" | "employee" | "cover_driver" | null = null;
     let allowed: Record<string, unknown> | null = null;
     if (user.email) {
       const { data, error } = await supabase
@@ -160,14 +163,19 @@ export async function middleware(req: NextRequest) {
     if (!onChangePw) {
       const inManager = pathname === "/manager" || pathname.startsWith("/manager/");
       const inEmployee = pathname === "/employee" || pathname.startsWith("/employee/");
+      const inCoverDriver =
+        pathname === "/cover-driver" || pathname.startsWith("/cover-driver/");
 
       if (role === "employee" && !inEmployee) {
         return redirectTo(PORTAL_HOME.employee);
       }
+      if (role === "cover_driver" && !inCoverDriver) {
+        return redirectTo(PORTAL_HOME.cover_driver);
+      }
       if (role === "manager" && !inManager) {
         return redirectTo(PORTAL_HOME.manager);
       }
-      if (role === "admin" && (inManager || inEmployee)) {
+      if (role === "admin" && (inManager || inEmployee || inCoverDriver)) {
         return redirectTo(PORTAL_HOME.admin);
       }
     }

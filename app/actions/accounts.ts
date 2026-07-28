@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
 import { createAdminClient, findAuthUserByEmail } from "@/lib/supabase-admin";
 import { writeAudit } from "./audit";
+<<<<<<< HEAD
 import {
   buildLoginEmail,
   normalizeContactEmail,
@@ -11,6 +12,11 @@ import {
   validateContactEmail,
 } from "@/lib/credentials";
 import { resolveActiveStoreId, type EmployeePosition } from "@/lib/types";
+=======
+import { buildLoginEmail } from "@/lib/credentials";
+import { generatePassword, uniqueUsername } from "@/lib/provisioning";
+import type { EmployeePosition } from "@/lib/types";
+>>>>>>> 0e709a7 (added cover drivers module)
 
 async function requireAdmin() {
   const user = await getSessionUser();
@@ -29,6 +35,7 @@ async function requireStaff() {
   return user;
 }
 
+<<<<<<< HEAD
 // ---- credential generation (server-only) ----
 const PASSWORD_ALPHABET = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -83,6 +90,8 @@ async function uniqueUsername(name: string): Promise<string> {
   return `${stem}${Date.now()}`;
 }
 
+=======
+>>>>>>> 0e709a7 (added cover drivers module)
 export type ProvisionResult = {
   ok: true;
   username: string;
