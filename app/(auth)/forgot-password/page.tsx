@@ -10,6 +10,7 @@ const PORTAL_BADGE: Record<Portal, string> = {
   admin: "Admin Portal",
   manager: "Manager Portal",
   employee: "Crew Portal",
+  cover_driver: "Cover Driver Portal",
 };
 
 /**

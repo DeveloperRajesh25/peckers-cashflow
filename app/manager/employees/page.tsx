@@ -4,14 +4,9 @@ import { resolveActiveStoreId } from "@/lib/types";
 import { EmployeesView } from "@/components/employees/EmployeesView";
 import { withContactEmails } from "@/lib/contact-email";
 import { getAppSettings } from "@/app/actions/settings";
-<<<<<<< HEAD
 import { addDays, groupClockEventsByWeek, mapClockEventsToDaily, startOfISOWeek, toISODate, todayISO } from "@/lib/utils";
-import type { Employee } from "@/lib/types";
-=======
-import { addDays, groupClockEventsByWeek, startOfISOWeek, toISODate } from "@/lib/utils";
 import { summariseCoverDriverDays } from "@/lib/cover-driver-hours";
 import type { CoverDriver, CoverDriverClockEvent, Employee } from "@/lib/types";
->>>>>>> 0e709a7 (added cover drivers module)
 
 export const dynamic = "force-dynamic";
 

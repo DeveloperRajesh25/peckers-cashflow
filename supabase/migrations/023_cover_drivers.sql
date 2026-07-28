@@ -1,5 +1,9 @@
 -- =============================================================
--- Migration 014 — Cover drivers (self-service, clock-based)
+-- Migration 023 — Cover drivers (self-service, clock-based)
+--
+-- Must run AFTER 020_manager_active_store: the RLS below calls
+-- can_access_store(), which 020 redefines to honour a manager's ACTIVE store.
+-- Running this first would scope a switched manager to the wrong store.
 --
 -- Cover drivers are part-time drivers hired ad-hoc. They are deliberately NOT
 -- rows in `employees`: ~20 files query that table (rota, live, payouts, NI,
@@ -243,7 +247,7 @@ begin
            btrim(r.driver_name),
            r.hourly_rate,
            false,
-           'Migrated from manual cover driver records (migration 014).'
+           'Migrated from manual cover driver records (migration 023).'
     from public.cover_driver_records r
     where btrim(coalesce(r.driver_name, '')) <> ''
       and not exists (
@@ -265,7 +269,7 @@ begin
            true,
            r.created_at,
            'manual',
-           'Migrated from manual cover driver records (migration 014).',
+           'Migrated from manual cover driver records (migration 023).',
            r.created_at
     from public.cover_driver_records r
     join public.cover_drivers d

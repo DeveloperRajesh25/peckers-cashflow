@@ -4,19 +4,13 @@ import { revalidatePath } from "next/cache";
 import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
 import { createAdminClient, findAuthUserByEmail } from "@/lib/supabase-admin";
 import { writeAudit } from "./audit";
-<<<<<<< HEAD
 import {
   buildLoginEmail,
   normalizeContactEmail,
-  usernameStemFromName,
   validateContactEmail,
 } from "@/lib/credentials";
-import { resolveActiveStoreId, type EmployeePosition } from "@/lib/types";
-=======
-import { buildLoginEmail } from "@/lib/credentials";
 import { generatePassword, uniqueUsername } from "@/lib/provisioning";
-import type { EmployeePosition } from "@/lib/types";
->>>>>>> 0e709a7 (added cover drivers module)
+import { resolveActiveStoreId, type EmployeePosition } from "@/lib/types";
 
 async function requireAdmin() {
   const user = await getSessionUser();
@@ -35,17 +29,9 @@ async function requireStaff() {
   return user;
 }
 
-<<<<<<< HEAD
-// ---- credential generation (server-only) ----
-const PASSWORD_ALPHABET = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-function generatePassword(len = 10): string {
-  let out = "";
-  for (let i = 0; i < len; i++) {
-    out += PASSWORD_ALPHABET[Math.floor(Math.random() * PASSWORD_ALPHABET.length)];
-  }
-  return out;
-}
+// Credential generation (generatePassword / uniqueUsername) lives in
+// lib/provisioning.ts so employee, manager and cover-driver provisioning share
+// one implementation and the username-uniqueness rules cannot drift apart.
 
 /**
  * Validate + normalise a contact email (the address password-reset links go to),
@@ -70,28 +56,6 @@ function describeAccountWriteError(err: { code?: string; message: string }): str
   return err.message;
 }
 
-/** Find a free username based on a name stem, checking existing accounts. */
-async function uniqueUsername(name: string): Promise<string> {
-  const supabase = createServerSupabase();
-  const stem = usernameStemFromName(name);
-  const { data } = await supabase
-    .from("allowed_users")
-    .select("username")
-    .ilike("username", `${stem}%`);
-  const taken = new Set(
-    (data ?? []).map((r: { username: string | null }) => (r.username ?? "").toLowerCase()),
-  );
-  if (!taken.has(stem)) return stem;
-  for (let i = 2; i < 1000; i++) {
-    const candidate = `${stem}${i}`;
-    if (!taken.has(candidate)) return candidate;
-  }
-  // Extremely unlikely fallback.
-  return `${stem}${Date.now()}`;
-}
-
-=======
->>>>>>> 0e709a7 (added cover drivers module)
 export type ProvisionResult = {
   ok: true;
   username: string;

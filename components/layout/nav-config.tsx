@@ -94,10 +94,6 @@ export const BOTTOM_NAV_FOR_PORTAL: Record<Portal, NavItem[]> = {
     managerNav[2], // Employees
     managerNav[3], // Alerts
   ],
-<<<<<<< HEAD
   employee: employeeNav, // only 4 pages — all fit, no "More" needed
-=======
-  employee: employeeNav,
-  cover_driver: coverDriverNav,
->>>>>>> 0e709a7 (added cover drivers module)
+  cover_driver: coverDriverNav, // only 2 pages — all fit
 };

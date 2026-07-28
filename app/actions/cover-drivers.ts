@@ -4,15 +4,15 @@ import { revalidatePath } from "next/cache";
 import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { writeAudit } from "./audit";
-<<<<<<< HEAD
-import { resolveActiveStoreId, type CoverDriverRecord } from "@/lib/types";
-=======
 import { buildLoginEmail } from "@/lib/credentials";
 import { generatePassword, uniqueUsername } from "@/lib/provisioning";
 import { clockedHours } from "@/lib/utils";
 import { totalDeliveries } from "@/lib/cover-driver-hours";
-import type { CoverDriver, CoverDriverHoursComputed } from "@/lib/types";
->>>>>>> 0e709a7 (added cover drivers module)
+import {
+  resolveActiveStoreId,
+  type CoverDriver,
+  type CoverDriverHoursComputed,
+} from "@/lib/types";
 
 type SessionUser = NonNullable<Awaited<ReturnType<typeof getSessionUser>>>;
 
@@ -27,16 +27,10 @@ async function requireStaff(): Promise<SessionUser> {
 
 function assertStoreAccess(user: SessionUser, storeId: string) {
   if (user.allowed!.role === "manager") {
-<<<<<<< HEAD
     const activeStore = resolveActiveStoreId(user.allowed);
     if (!activeStore) throw new Error("No store assigned to your account.");
     if (storeId !== activeStore) {
-      throw new Error("You can only manage cover driver records for the store you're managing.");
-=======
-    if (!user.allowed!.store_id) throw new Error("No store assigned to your account.");
-    if (storeId !== user.allowed!.store_id) {
-      throw new Error("You can only manage cover drivers for your own store.");
->>>>>>> 0e709a7 (added cover drivers module)
+      throw new Error("You can only manage cover drivers for the store you're managing.");
     }
   }
 }
@@ -100,9 +94,13 @@ export async function createCoverDriverWithAccount(input: CoverDriverInput): Pro
   const actor = await requireStaff();
   validate(input);
 
-  // Managers can only create drivers for their own store; admins choose freely.
+  // Managers can only create drivers for the store they're currently managing
+  // (resolveActiveStoreId, not store_id — a switched manager must not create
+  // the driver at their home store); admins choose freely.
   const store_id =
-    actor.allowed!.role === "manager" ? actor.allowed!.store_id ?? null : input.store_id;
+    actor.allowed!.role === "manager"
+      ? resolveActiveStoreId(actor.allowed)
+      : input.store_id;
   if (!store_id) throw new Error("Store is required");
 
   // Service-role client: writes to cover_drivers + allowed_users are privileged

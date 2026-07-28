@@ -47,6 +47,7 @@ const PORTAL_LABEL: Record<AllowedUserRole, string> = {
   admin: "Admin",
   manager: "Manager",
   employee: "Crew",
+  cover_driver: "Cover Driver",
 };
 
 /** Best-effort audit row via the service-role client (the caller has no session). */
