@@ -14,6 +14,7 @@ const PORTAL_TAG: Record<Portal, string> = {
   admin: "Admin",
   manager: "Manager",
   employee: "Crew",
+  cover_driver: "Cover Driver",
 };
 
 export function Sidebar({ portal, userName }: { portal: Portal; userName?: string | null }) {

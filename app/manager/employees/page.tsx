@@ -3,7 +3,8 @@ import { createServerSupabase, requireRole } from "@/lib/supabase-server";
 import { EmployeesView } from "@/components/employees/EmployeesView";
 import { getAppSettings } from "@/app/actions/settings";
 import { addDays, groupClockEventsByWeek, startOfISOWeek, toISODate } from "@/lib/utils";
-import type { Employee } from "@/lib/types";
+import { summariseCoverDriverDays } from "@/lib/cover-driver-hours";
+import type { CoverDriver, CoverDriverClockEvent, Employee } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +16,15 @@ export default async function ManagerEmployeesPage() {
 
   const eightWeeksBack = toISODate(addDays(startOfISOWeek(new Date()), -56));
 
-  const [empRes, hoursRes, storesRes, clocksRes, coverRes] = await Promise.all([
+  const [
+    empRes,
+    hoursRes,
+    storesRes,
+    clocksRes,
+    coverDriversRes,
+    coverClocksRes,
+    coverHoursRes,
+  ] = await Promise.all([
     supabase
       .from("employees")
       .select("*")
@@ -35,8 +44,16 @@ export default async function ManagerEmployeesPage() {
       .gte("event_date", eightWeeksBack)
       .not("clock_out_at", "is", null)
       .order("event_date", { ascending: false }),
+    supabase.from("cover_drivers").select("*").eq("store_id", storeId).order("name"),
     supabase
-      .from("cover_driver_records")
+      .from("cover_driver_clock_events")
+      .select("*")
+      .eq("store_id", storeId)
+      .gte("event_date", eightWeeksBack)
+      .not("clock_out_at", "is", null)
+      .order("event_date", { ascending: false }),
+    supabase
+      .from("cover_driver_hours_computed")
       .select("*")
       .eq("store_id", storeId)
       .order("work_date", { ascending: false })
@@ -54,6 +71,14 @@ export default async function ManagerEmployeesPage() {
   );
   const clockSummaries = groupClockEventsByWeek(clocksRes.data ?? [], empMap);
 
+  // Cover drivers are summarised per DAY, not per week — each cover shift is a
+  // discrete engagement that is approved and paid on its own.
+  const coverDrivers = (coverDriversRes.data ?? []) as CoverDriver[];
+  const coverDriverDays = summariseCoverDriverDays(
+    (coverClocksRes.data ?? []) as CoverDriverClockEvent[],
+    coverDrivers,
+  );
+
   return (
     <>
       <PageHeader
@@ -63,7 +88,9 @@ export default async function ManagerEmployeesPage() {
       <EmployeesView
         initialEmployees={employees}
         initialHours={(hoursRes.data ?? []) as any[]}
-        initialCoverDrivers={(coverRes.data ?? []) as any[]}
+        coverDrivers={coverDrivers}
+        coverDriverDays={coverDriverDays}
+        coverDriverHours={(coverHoursRes.data ?? []) as any[]}
         clockSummaries={clockSummaries}
         stores={storesRes.data ?? []}
         defaultStoreId={storeId || null}

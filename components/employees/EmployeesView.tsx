@@ -11,18 +11,30 @@ import { EditEmployeeModal } from "./EditEmployeeModal";
 import { ScheduleEditModal } from "./ScheduleEditModal";
 import { LogHoursForm } from "./LogHoursForm";
 import { HoursTable } from "./HoursTable";
-import { CoverDriversCard } from "./CoverDriversCard";
+import { CoverDriversCard } from "@/components/cover-drivers/CoverDriversCard";
+import { CoverDriverHoursTable } from "@/components/cover-drivers/CoverDriverHoursTable";
 import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { UsersIcon } from "@/components/ui/icons";
 import { Select } from "@/components/ui/Input";
-import type { ClockWeeklySummary, CoverDriverRecord, Employee, EmployeeHoursComputed, Store } from "@/lib/types";
+import type {
+  ClockWeeklySummary,
+  CoverDriver,
+  CoverDriverDaySummary,
+  CoverDriverHoursComputed,
+  Employee,
+  EmployeeHoursComputed,
+  Store,
+} from "@/lib/types";
 import type { MinWageBands } from "@/lib/settings";
 
 type Props = {
   initialEmployees: Employee[];
   initialHours: EmployeeHoursComputed[];
-  initialCoverDrivers?: CoverDriverRecord[];
+  /** Cover drivers are a separate module — they share this page, nothing else. */
+  coverDrivers?: CoverDriver[];
+  coverDriverDays?: CoverDriverDaySummary[];
+  coverDriverHours?: CoverDriverHoursComputed[];
   clockSummaries?: ClockWeeklySummary[];
   stores: Store[];
   defaultStoreId?: string | null;
@@ -39,7 +51,9 @@ type Props = {
 export function EmployeesView({
   initialEmployees,
   initialHours,
-  initialCoverDrivers = [],
+  coverDrivers = [],
+  coverDriverDays = [],
+  coverDriverHours = [],
   clockSummaries = [],
   stores,
   defaultStoreId,
@@ -67,12 +81,13 @@ export function EmployeesView({
     setHours(initialHours);
   }, [initialHours]);
 
-  // Cover-driver records — kept in state so add/delete updates instantly.
-  const [coverDrivers, setCoverDrivers] =
-    React.useState<CoverDriverRecord[]>(initialCoverDrivers);
+  // Approved cover-driver days — kept in state so approve/delete updates
+  // instantly without waiting on the router cache, same as employee hours.
+  const [coverHours, setCoverHours] =
+    React.useState<CoverDriverHoursComputed[]>(coverDriverHours);
   React.useEffect(() => {
-    setCoverDrivers(initialCoverDrivers);
-  }, [initialCoverDrivers]);
+    setCoverHours(coverDriverHours);
+  }, [coverDriverHours]);
 
   const employees = initialEmployees;
 
@@ -100,20 +115,21 @@ export function EmployeesView({
     router.refresh();
   }
 
-  function handleCoverDriverCreated(record: CoverDriverRecord) {
-    setCoverDrivers((prev) => [record, ...prev]);
+  function handleCoverHoursApproved(fresh: CoverDriverHoursComputed[]) {
+    setCoverHours(fresh);
     router.refresh();
   }
 
-  function handleCoverDriverDeleted(deletedId: string) {
-    setCoverDrivers((prev) => prev.filter((r) => r.id !== deletedId));
+  function handleCoverHoursDeleted(deletedId: string) {
+    setCoverHours((prev) => prev.filter((r) => r.id !== deletedId));
     router.refresh();
   }
 
-  // Admin can view all stores; scope the cover-driver list to the active filter.
-  const visibleCoverDrivers = coverDrivers.filter(
-    (r) => storeFilter === "all" || r.store_id === storeFilter,
-  );
+  // Admin can view all stores; scope the cover-driver data to the active filter.
+  const inStore = (storeId: string) => storeFilter === "all" || storeId === storeFilter;
+  const visibleCoverDrivers = coverDrivers.filter((d) => inStore(d.store_id));
+  const visibleCoverDays = coverDriverDays.filter((d) => inStore(d.store_id));
+  const visibleCoverHours = coverHours.filter((h) => inStore(h.store_id));
 
   const refresh = () => router.refresh();
 
@@ -214,16 +230,31 @@ export function EmployeesView({
       </Card>
 
       <CoverDriversCard
-        records={visibleCoverDrivers}
+        drivers={visibleCoverDrivers}
+        days={visibleCoverDays}
         stores={stores}
-        defaultStoreId={
-          storeFilter !== "all" ? storeFilter : defaultStoreId
-        }
+        defaultStoreId={storeFilter !== "all" ? storeFilter : defaultStoreId}
         lockToStore={lockToStore}
         showStoreColumn={!lockToStore && storeFilter === "all"}
-        onCreated={handleCoverDriverCreated}
-        onDeleted={handleCoverDriverDeleted}
+        onChanged={refresh}
       />
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Cover Drivers — Hours &amp; Approvals</CardTitle>
+          <CardDescription>
+            Approve each cover shift a driver clocked. Approved cash pay is hours × rate
+            plus delivery pay.
+          </CardDescription>
+        </CardHeader>
+        <CoverDriverHoursTable
+          drivers={visibleCoverDrivers}
+          days={visibleCoverDays}
+          approvedRows={visibleCoverHours}
+          onApproved={handleCoverHoursApproved}
+          onDeleted={handleCoverHoursDeleted}
+        />
+      </Card>
 
       {viewing && (
         <EmployeeDetailModal

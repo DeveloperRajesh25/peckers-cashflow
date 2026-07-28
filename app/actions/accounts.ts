@@ -4,10 +4,8 @@ import { revalidatePath } from "next/cache";
 import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
 import { createAdminClient } from "@/lib/supabase-admin";
 import { writeAudit } from "./audit";
-import {
-  buildLoginEmail,
-  usernameStemFromName,
-} from "@/lib/credentials";
+import { buildLoginEmail } from "@/lib/credentials";
+import { generatePassword, uniqueUsername } from "@/lib/provisioning";
 import type { EmployeePosition } from "@/lib/types";
 
 async function requireAdmin() {
@@ -25,37 +23,6 @@ async function requireStaff() {
     throw new Error("Not authorised");
   }
   return user;
-}
-
-// ---- credential generation (server-only) ----
-const PASSWORD_ALPHABET = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-function generatePassword(len = 10): string {
-  let out = "";
-  for (let i = 0; i < len; i++) {
-    out += PASSWORD_ALPHABET[Math.floor(Math.random() * PASSWORD_ALPHABET.length)];
-  }
-  return out;
-}
-
-/** Find a free username based on a name stem, checking existing accounts. */
-async function uniqueUsername(name: string): Promise<string> {
-  const supabase = createServerSupabase();
-  const stem = usernameStemFromName(name);
-  const { data } = await supabase
-    .from("allowed_users")
-    .select("username")
-    .ilike("username", `${stem}%`);
-  const taken = new Set(
-    (data ?? []).map((r: { username: string | null }) => (r.username ?? "").toLowerCase()),
-  );
-  if (!taken.has(stem)) return stem;
-  for (let i = 2; i < 1000; i++) {
-    const candidate = `${stem}${i}`;
-    if (!taken.has(candidate)) return candidate;
-  }
-  // Extremely unlikely fallback.
-  return `${stem}${Date.now()}`;
 }
 
 export type ProvisionResult = {

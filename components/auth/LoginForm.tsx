@@ -12,6 +12,7 @@ const PORTAL_LABEL: Record<Portal, string> = {
   admin: "Admin",
   manager: "Manager",
   employee: "Crew",
+  cover_driver: "Cover Driver",
 };
 
 export function LoginForm({ portal }: { portal: Portal }) {
