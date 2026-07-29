@@ -8,9 +8,10 @@ import { resolveActiveStoreId, type CoverDriverScheduleDay } from "@/lib/types";
 // =============================================================
 // A cover driver's recurring weekly AVAILABILITY.
 //
-// Mirrors app/actions/schedule.ts, minus applyScheduleToWeek: this never
-// generates rota_shifts. Cover drivers stay off the rota by design — the
-// pattern just tells a manager which days a driver can usually cover.
+// Mirrors app/actions/schedule.ts, minus applyScheduleToWeek: saving a pattern
+// here never creates bookings. It records which days a driver can usually
+// cover, which pre-fills their cells on the Rota; the actual booking is a
+// cover_driver_shifts row written by app/actions/cover-driver-rota.ts.
 // =============================================================
 
 async function requireStaff() {

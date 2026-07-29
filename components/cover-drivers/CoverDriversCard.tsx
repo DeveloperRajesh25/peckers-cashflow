@@ -57,7 +57,8 @@ export function CoverDriversCard({
         <CardTitle>Cover Drivers</CardTitle>
         <CardDescription>
           Part-time drivers with their own login. Paid cash only — hours × rate plus delivery
-          pay. They never appear on the rota, NI report or payout sheet.
+          pay. They have their own Rota section, and are excluded from the NI report and
+          payout sheet.
         </CardDescription>
       </CardHeader>
 

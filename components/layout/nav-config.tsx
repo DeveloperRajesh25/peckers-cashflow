@@ -63,8 +63,8 @@ export const employeeNav: NavItem[] = [
 ];
 
 // ---- Cover driver portal (/cover-driver/*) ----
-// Deliberately minimal: cover drivers are not on the rota, so there is no
-// "My Shifts", and they have no HR profile page.
+// Deliberately minimal: a cover driver's bookings live on the manager-facing
+// Rota, so there is no self-service "My Shifts", and they have no HR profile.
 export const coverDriverNav: NavItem[] = [
   { href: "/cover-driver/attendance", label: "Clock In/Out", icon: ClockIcon },
   { href: "/cover-driver/settings", label: "Settings", icon: SettingsIcon },

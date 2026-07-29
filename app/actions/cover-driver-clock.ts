@@ -12,7 +12,8 @@ import type { ActionResult } from "@/lib/types";
 // Cover driver clock in/out.
 //
 // Mirrors app/actions/clock.ts but deliberately does LESS:
-//   * no rota_shifts writes — cover drivers are not on the rota,
+//   * no rota_shifts writes — a cover driver's bookings live in
+//     cover_driver_shifts, never in the employee rota,
 //   * no alert scanning — the alerts module knows nothing about them.
 //
 // The geofence check is IMPORTED from lib/geofence-verify.ts rather than

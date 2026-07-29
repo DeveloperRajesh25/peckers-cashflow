@@ -11,8 +11,9 @@
 -- driver into the rota, payout sheet and NI report.
 --
 -- IMPORTANT: unlike employee_schedules this is availability ONLY. It is never
--- read by applyScheduleToWeek and never generates rota_shifts — cover drivers
--- stay off the rota. It tells a manager which days a driver can usually cover.
+-- read by applyScheduleToWeek and never generates shifts of any kind. It tells
+-- a manager which days a driver can usually cover, which pre-fills their cells
+-- on the Rota; the actual booking is a cover_driver_shifts row (migration 025).
 -- =============================================================
 
 create table if not exists public.cover_driver_schedules (

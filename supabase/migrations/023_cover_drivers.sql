@@ -12,7 +12,8 @@
 --
 -- Differences from employees, by design:
 --   * CASH ONLY — no NI rate, no 20h bank/cash split. Every hour is cash.
---   * No rota. Clock-in never writes rota_shifts.
+--   * Their own rota section (cover_driver_shifts, migration 025) — clock-in
+--     never writes rota_shifts.
 --   * Approvals are per DAY, not per ISO week.
 --   * Pay = hours * hourly_cash_rate + deliveries * their per-type rate.
 --
@@ -48,7 +49,8 @@ create index if not exists cover_drivers_store_idx on public.cover_drivers (stor
 create index if not exists cover_drivers_active_idx on public.cover_drivers (is_active);
 
 -- ---- 2. Clock events ----
--- Mirrors clock_events minus shift_id: cover drivers are not on the rota.
+-- Mirrors clock_events minus shift_id: a cover driver's bookings live in
+-- cover_driver_shifts (migration 025), never in rota_shifts.
 create table if not exists public.cover_driver_clock_events (
   id                     uuid primary key default gen_random_uuid(),
   cover_driver_id        uuid not null references public.cover_drivers(id) on delete cascade,

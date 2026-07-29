@@ -180,8 +180,8 @@ export function CoverDriverProfileForm({
 
       <p className="sm:col-span-2 text-xs text-text-muted rounded-xl border border-border bg-bg px-3 py-2.5">
         Cover drivers are paid <span className="text-text-primary">cash only</span> — total
-        pay is hours × rate, plus delivery pay if rates are set. They do not appear on the
-        rota, NI report or payout sheet.
+        pay is hours × rate, plus delivery pay if rates are set. They have their own section
+        on the Rota and Live board, and are excluded from the NI report and payout sheet.
       </p>
     </div>
   );

@@ -103,7 +103,7 @@ export function CoverDriverScheduleModal({
       open
       onClose={onClose}
       title={`Weekly schedule — ${driver.name}`}
-      description="The days this cover driver is usually available. Reference only — cover drivers are not on the rota, so this never creates shifts."
+      description="The days this cover driver is usually available. This is a guide, not a booking — it pre-fills their Rota cells, but you still book each date on the Rota."
       size="lg"
       footer={
         <>

@@ -258,9 +258,10 @@ export type CoverDriverShift = {
 };
 
 /**
- * One weekday of a cover driver's recurring availability — the fallback when no
- * CoverDriverShift exists for a date. Availability only: it never generates
- * rota_shifts, because cover drivers stay off the employee rota.
+ * One weekday of a cover driver's recurring availability — the fallback shown
+ * when no CoverDriverShift exists for a date. Availability, not a booking: it
+ * pre-fills a rota cell but never creates one on its own (there is no
+ * applyScheduleToWeek equivalent for cover drivers).
  */
 export type CoverDriverScheduleDay = {
   id: string;
