@@ -14,7 +14,12 @@ import {
   ClockIcon,
 } from "@/components/ui/icons";
 import { addDays, cn, parseISODate, toISODate } from "@/lib/utils";
-import type { ClockDailySummary, Store } from "@/lib/types";
+import { ManualClockEntryModal } from "@/components/clock/ManualClockEntryModal";
+import type {
+  ClockDailySummary,
+  CoverDailyApprovalRow,
+  Store,
+} from "@/lib/types";
 
 const WD = [
   "Sunday",
@@ -52,8 +57,62 @@ function relLabel(iso: string, todayISO: string): string | null {
   return null;
 }
 
-const rowKey = (s: { employee_id: string; event_date: string }) =>
-  `${s.employee_id}:${s.event_date}`;
+/**
+ * Employee and cover-driver days share this screen, so both are normalised to
+ * one row shape. `kind` is what routes an approval to the right server action —
+ * the two are different tables with different pay rules underneath.
+ */
+type ApprovalRow = {
+  kind: "employee" | "cover";
+  person_id: string;
+  name: string;
+  store_id: string | null;
+  event_date: string;
+  clocked_hours: number;
+  approved: boolean;
+  approved_hours: number | null;
+  /** cover_driver_hours row id — cover rows only, needed to undo. */
+  approved_row_id: string | null;
+  auto_clocked_out: boolean;
+  manual_entry: boolean;
+  manual_entry_reason: string | null;
+};
+
+const rowKey = (r: ApprovalRow) => `${r.kind}:${r.person_id}:${r.event_date}`;
+
+function fromEmployee(s: ClockDailySummary): ApprovalRow {
+  return {
+    kind: "employee",
+    person_id: s.employee_id,
+    name: s.employee_name,
+    store_id: s.store_id,
+    event_date: s.event_date,
+    clocked_hours: s.clocked_hours,
+    approved: s.hours_approved,
+    approved_hours: s.approved_hours,
+    approved_row_id: null,
+    auto_clocked_out: Boolean(s.auto_clocked_out),
+    manual_entry: Boolean(s.manual_entry),
+    manual_entry_reason: s.manual_entry_reason ?? null,
+  };
+}
+
+function fromCover(c: CoverDailyApprovalRow): ApprovalRow {
+  return {
+    kind: "cover",
+    person_id: c.cover_driver_id,
+    name: c.driver_name,
+    store_id: c.store_id,
+    event_date: c.work_date,
+    clocked_hours: c.clocked_hours,
+    approved: c.approved,
+    approved_hours: c.approved_hours,
+    approved_row_id: c.approved_row_id,
+    auto_clocked_out: c.auto_clocked_out,
+    manual_entry: c.manual_entry,
+    manual_entry_reason: c.manual_entry_reason,
+  };
+}
 
 type Handlers = {
   onApprove: (
@@ -63,28 +122,60 @@ type Handlers = {
   ) => Promise<void>;
   onApproveDate: (event_date: string, employee_ids: string[]) => Promise<void>;
   onUnapprove: (employee_id: string, event_date: string) => Promise<void>;
+  onCoverApprove?: (
+    cover_driver_id: string,
+    work_date: string,
+    override_hours?: number,
+  ) => Promise<void>;
+  onCoverApproveDate?: (
+    work_date: string,
+    cover_driver_ids: string[],
+  ) => Promise<void>;
+  onCoverUnapprove?: (approved_row_id: string) => Promise<void>;
 };
 
 export function DailyHoursApproval({
   summaries,
+  coverSummaries = [],
   stores,
   todayISO,
   showStore,
+  employees = [],
+  coverDrivers = [],
+  onManualSaved,
   onApprove,
   onApproveDate,
   onUnapprove,
+  onCoverApprove,
+  onCoverApproveDate,
+  onCoverUnapprove,
 }: {
   summaries: ClockDailySummary[];
+  /** Cover driver days, shown alongside employees on the same date. */
+  coverSummaries?: CoverDailyApprovalRow[];
   stores: Store[];
   todayISO: string;
   showStore: boolean;
+  /** Active roster, for the "someone forgot to clock in" picker. */
+  employees?: Array<{ id: string; name: string }>;
+  coverDrivers?: Array<{ id: string; name: string }>;
+  onManualSaved?: () => void;
 } & Handlers) {
   const toast = useToast();
   const [selectedDate, setSelectedDate] = React.useState(todayISO);
+  const [showAddMissed, setShowAddMissed] = React.useState<
+    "employee" | "cover_driver" | null
+  >(null);
   const [edited, setEdited] = React.useState<Record<string, string>>({});
   const [busyKey, setBusyKey] = React.useState<string | null>(null);
   const [busyDate, setBusyDate] = React.useState<string | null>(null);
   const [hideApproved, setHideApproved] = React.useState(false);
+
+  // Employees first, then cover drivers, matching the Live board's ordering.
+  const allRows = React.useMemo<ApprovalRow[]>(
+    () => [...summaries.map(fromEmployee), ...coverSummaries.map(fromCover)],
+    [summaries, coverSummaries],
+  );
 
   const storeName = React.useMemo(() => {
     const m = new Map(stores.map((s) => [s.id, s.name]));
@@ -93,7 +184,7 @@ export function DailyHoursApproval({
 
   // Manager-confirmed hours for a row: the edited value if valid, else the value
   // approved earlier, else the raw clocked total.
-  function effHours(s: ClockDailySummary): number {
+  function effHours(s: ApprovalRow): number {
     const raw = edited[rowKey(s)];
     const parsed = raw !== undefined ? parseFloat(raw) : NaN;
     if (raw !== undefined && !isNaN(parsed) && parsed > 0) return parsed;
@@ -101,32 +192,58 @@ export function DailyHoursApproval({
     return s.clocked_hours;
   }
 
-  const selectedRows = summaries.filter((s) => s.event_date === selectedDate);
-  const approvedCount = selectedRows.filter((s) => s.hours_approved).length;
+  const selectedRows = allRows.filter((s) => s.event_date === selectedDate);
+  const approvedCount = selectedRows.filter((s) => s.approved).length;
   const pendingCount = selectedRows.filter(
-    (s) => !s.hours_approved && s.clocked_hours > 0,
+    (s) => !s.approved && s.clocked_hours > 0,
   ).length;
   const visibleSelected = hideApproved
-    ? selectedRows.filter((s) => !s.hours_approved)
+    ? selectedRows.filter((s) => !s.approved)
     : selectedRows;
 
   // Every OTHER date that still has unapproved clocked days, newest first.
   const otherPendingByDate = React.useMemo(() => {
-    const map = new Map<string, ClockDailySummary[]>();
-    for (const s of summaries) {
+    const map = new Map<string, ApprovalRow[]>();
+    for (const s of allRows) {
       if (s.event_date === selectedDate) continue;
-      if (s.hours_approved || s.clocked_hours <= 0) continue;
+      if (s.approved || s.clocked_hours <= 0) continue;
       const arr = map.get(s.event_date) ?? [];
       arr.push(s);
       map.set(s.event_date, arr);
     }
     return Array.from(map.entries()).sort((a, b) => b[0].localeCompare(a[0]));
-  }, [summaries, selectedDate]);
+  }, [allRows, selectedDate]);
 
   const totalOtherPending = otherPendingByDate.reduce(
     (n, [, rows]) => n + rows.length,
     0,
   );
+
+  // Who can still be added for the selected day: anyone on the roster without a
+  // clock record. Deliberately the whole roster rather than "expected today" —
+  // the rota isn't loaded here, and someone who picked up an unscheduled shift
+  // is exactly the person most likely to have forgotten to clock in.
+  const manualCandidates = React.useMemo(() => {
+    const withRecord = new Set(
+      summaries.filter((s) => s.event_date === selectedDate).map((s) => s.employee_id),
+    );
+    return employees
+      .filter((e) => !withRecord.has(e.id))
+      .map((e) => ({ id: e.id, name: e.name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [employees, summaries, selectedDate]);
+
+  const coverManualCandidates = React.useMemo(() => {
+    const withRecord = new Set(
+      coverSummaries
+        .filter((s) => s.work_date === selectedDate)
+        .map((s) => s.cover_driver_id),
+    );
+    return coverDrivers
+      .filter((d) => !withRecord.has(d.id))
+      .map((d) => ({ id: d.id, name: d.name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [coverDrivers, coverSummaries, selectedDate]);
 
   function shiftDay(delta: number) {
     const next = toISODate(addDays(parseISODate(selectedDate), delta));
@@ -134,16 +251,20 @@ export function DailyHoursApproval({
     setSelectedDate(next);
   }
 
-  async function doApprove(s: ClockDailySummary) {
+  async function doApprove(s: ApprovalRow) {
     const key = rowKey(s);
     const eff = effHours(s);
     if (!(eff > 0)) return;
-    const override =
-      Math.abs(eff - s.clocked_hours) > 0.01 ? eff : undefined;
+    const override = Math.abs(eff - s.clocked_hours) > 0.01 ? eff : undefined;
     setBusyKey(key);
     try {
-      await onApprove(s.employee_id, s.event_date, override);
-      toast.success(`Approved ${s.employee_name} — ${eff.toFixed(2)}h`);
+      if (s.kind === "cover") {
+        if (!onCoverApprove) return;
+        await onCoverApprove(s.person_id, s.event_date, override);
+      } else {
+        await onApprove(s.person_id, s.event_date, override);
+      }
+      toast.success(`Approved ${s.name} — ${eff.toFixed(2)}h`);
       setEdited((p) => {
         const n = { ...p };
         delete n[key];
@@ -156,12 +277,17 @@ export function DailyHoursApproval({
     }
   }
 
-  async function doUnapprove(s: ClockDailySummary) {
+  async function doUnapprove(s: ApprovalRow) {
     const key = rowKey(s);
     setBusyKey(key);
     try {
-      await onUnapprove(s.employee_id, s.event_date);
-      toast.success(`Reverted ${s.employee_name}`);
+      if (s.kind === "cover") {
+        if (!onCoverUnapprove || !s.approved_row_id) return;
+        await onCoverUnapprove(s.approved_row_id);
+      } else {
+        await onUnapprove(s.person_id, s.event_date);
+      }
+      toast.success(`Reverted ${s.name}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
     } finally {
@@ -169,15 +295,20 @@ export function DailyHoursApproval({
     }
   }
 
-  async function doApproveDate(date: string, rows: ClockDailySummary[]) {
-    const ids = rows
-      .filter((r) => !r.hours_approved && r.clocked_hours > 0)
-      .map((r) => r.employee_id);
-    if (ids.length === 0) return;
+  async function doApproveDate(date: string, rows: ApprovalRow[]) {
+    const pending = rows.filter((r) => !r.approved && r.clocked_hours > 0);
+    const empIds = pending.filter((r) => r.kind === "employee").map((r) => r.person_id);
+    const covIds = pending.filter((r) => r.kind === "cover").map((r) => r.person_id);
+    if (empIds.length === 0 && covIds.length === 0) return;
     setBusyDate(date);
     try {
-      await onApproveDate(date, ids);
-      toast.success(`Approved ${ids.length} employee${ids.length === 1 ? "" : "s"}`);
+      // Sequential, not parallel: two writes to the same day's rollup.
+      if (empIds.length > 0) await onApproveDate(date, empIds);
+      if (covIds.length > 0 && onCoverApproveDate) {
+        await onCoverApproveDate(date, covIds);
+      }
+      const n = empIds.length + covIds.length;
+      toast.success(`Approved ${n} ${n === 1 ? "person" : "people"}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
     } finally {
@@ -185,12 +316,12 @@ export function DailyHoursApproval({
     }
   }
 
-  function Row({ s }: { s: ClockDailySummary }) {
+  function Row({ s }: { s: ApprovalRow }) {
     const key = rowKey(s);
     const busy = busyKey === key;
     const store = showStore ? storeName(s.store_id) : null;
     const adjusted =
-      s.hours_approved &&
+      s.approved &&
       s.approved_hours != null &&
       Math.abs(s.approved_hours - s.clocked_hours) > 0.01;
 
@@ -198,12 +329,20 @@ export function DailyHoursApproval({
       <div
         className={cn(
           "flex flex-wrap items-center gap-x-3 gap-y-2 py-3",
-          s.hours_approved && "opacity-75",
+          s.approved && "opacity-75",
         )}
       >
         <div className="flex-1 min-w-[8rem]">
           <p className="font-medium truncate">
-            {s.employee_name}
+            {s.name}
+            {s.kind === "cover" && (
+              <span
+                className="ml-2 align-middle text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-gold/40 bg-gold/10 text-gold font-medium"
+                title="Cover driver — paid cash only, with no NI or bank split."
+              >
+                Cover
+              </span>
+            )}
             {s.auto_clocked_out && (
               <span
                 className="ml-2 align-middle text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-warning/40 bg-warning/10 text-warning font-medium"
@@ -212,14 +351,27 @@ export function DailyHoursApproval({
                 Auto out
               </span>
             )}
+            {s.manual_entry && (
+              <span
+                className="ml-2 align-middle text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-warning/40 bg-warning/10 text-warning font-medium"
+                title={
+                  s.manual_entry_reason
+                    ? `Times entered by a manager (no location check) — ${s.manual_entry_reason}`
+                    : "Times entered by a manager — this day was not location-verified."
+                }
+              >
+                Manual
+              </span>
+            )}
           </p>
           <p className="text-xs text-text-muted">
             {s.auto_clocked_out ? "Assumed" : "Clocked"} {s.clocked_hours.toFixed(2)}h
             {store && <> · {store}</>}
+            {s.kind === "cover" && <> · cash</>}
           </p>
         </div>
 
-        {s.hours_approved ? (
+        {s.approved ? (
           <div className="flex items-center gap-2">
             <Badge variant="success">
               <CheckIcon size={12} />
@@ -254,7 +406,7 @@ export function DailyHoursApproval({
                 onChange={(e) =>
                   setEdited((p) => ({ ...p, [key]: e.target.value }))
                 }
-                aria-label={`Hours for ${s.employee_name} on ${longDate(s.event_date)}`}
+                aria-label={`Hours for ${s.name} on ${longDate(s.event_date)}`}
                 className="w-16 rounded-lg border border-border bg-surface px-2 py-1 text-right text-sm tabular-nums outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/30"
               />
               <span className="text-xs text-text-muted">h</span>
@@ -318,15 +470,37 @@ export function DailyHoursApproval({
           </div>
         </div>
 
-        <label className="flex items-center gap-2 text-sm text-text-subtle cursor-pointer select-none pb-2">
-          <input
-            type="checkbox"
-            checked={hideApproved}
-            onChange={(e) => setHideApproved(e.target.checked)}
-            className="h-4 w-4 rounded border-border accent-gold"
-          />
-          Hide approved
-        </label>
+        <div className="flex items-center gap-3 pb-2">
+          <label className="flex items-center gap-2 text-sm text-text-subtle cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={hideApproved}
+              onChange={(e) => setHideApproved(e.target.checked)}
+              className="h-4 w-4 rounded border-border accent-gold"
+            />
+            Hide approved
+          </label>
+          {manualCandidates.length > 0 && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setShowAddMissed("employee")}
+              title="Record a day for an employee who forgot to clock in"
+            >
+              Add missed entry
+            </Button>
+          )}
+          {coverManualCandidates.length > 0 && onCoverApprove && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setShowAddMissed("cover_driver")}
+              title="Record a day for a cover driver who forgot to clock in"
+            >
+              Add cover entry
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Selected day */}
@@ -437,12 +611,35 @@ export function DailyHoursApproval({
         </section>
       )}
 
+      {showAddMissed && (
+        <ManualClockEntryModal
+          mode={showAddMissed}
+          eventDate={selectedDate}
+          candidates={
+            showAddMissed === "cover_driver" ? coverManualCandidates : manualCandidates
+          }
+          requireClockOut
+          title={
+            showAddMissed === "cover_driver"
+              ? "Add missed cover driver entry"
+              : "Add missed entry"
+          }
+          onClose={() => setShowAddMissed(null)}
+          onSaved={() => {
+            setShowAddMissed(null);
+            onManualSaved?.();
+          }}
+        />
+      )}
+
       {/* How the daily total feeds payroll */}
       <p className="text-xs text-text-muted">
         Approving a day confirms its hours and rolls them into that employee’s
         weekly total. The <span className="font-medium text-text-primary">bank vs cash</span>{" "}
         split is worked out per week (first 20h = bank) — see the{" "}
-        <span className="font-medium text-text-primary">Weekly Log</span> tab.
+        <span className="font-medium text-text-primary">Weekly Log</span> tab.{" "}
+        <span className="font-medium text-text-primary">Cover</span> rows are cash
+        only and are paid per approved day, with no weekly split.
       </p>
     </div>
   );

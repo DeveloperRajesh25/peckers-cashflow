@@ -158,6 +158,8 @@ export default async function ManagerLivePage() {
         coverDriverClocks={(coverClocksRes.data ?? []) as CoverDriverClockEvent[]}
         coverDriverShifts={(coverShiftsRes.data ?? []) as CoverDriverShift[]}
         coverDriverSchedules={(coverSchedulesRes.data ?? []) as CoverDriverScheduleDay[]}
+        canAddClockIn
+        todayISO={today}
         userRole="manager"
         userStoreId={storeId}
       />

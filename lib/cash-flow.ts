@@ -577,3 +577,131 @@ export function buildWageLinesForStore(
   }
   return lines.sort((a, b) => b.total_payment - a.total_payment);
 }
+
+// ---------------- cover drivers ----------------
+
+/** One approved cover-driver day, as read from cover_driver_hours_computed. */
+export type CoverDriverPayRow = {
+  cover_driver_id: string;
+  driver_name: string;
+  store_id: string;
+  work_date: string;
+  total_hours_worked: number | string;
+  hourly_rate_snapshot: number | string;
+  short_deliveries: number | string;
+  long_deliveries: number | string;
+  short_rate_snapshot: number | string | null;
+  long_rate_snapshot: number | string | null;
+  approved: boolean;
+};
+
+/**
+ * Wage lines for cover drivers working at one store during the pay week.
+ *
+ * Differs from the employee builder in two ways that matter:
+ *   * ONLY APPROVED DAYS COUNT. An employee's cash is derived from clock rows,
+ *     but a cover driver's pay is settled at approval, where the rates were
+ *     snapshotted. Paying from unapproved days would hand over cash a manager
+ *     hasn't signed off.
+ *   * The rates come from the snapshot on the approved row, never from the
+ *     driver's current profile — so changing someone's rate can't silently
+ *     restate a week that's already been approved.
+ *
+ * Cash only: every hour is cash, so there is no NI/bank split to apply.
+ */
+export function buildCoverDriverWageLines(
+  storeId: string,
+  rows: CoverDriverPayRow[],
+): WageLine[] {
+  const byDriver = new Map<
+    string,
+    {
+      name: string;
+      hours: number;
+      rate: number;
+      short: number;
+      long: number;
+      shortRate: number;
+      longRate: number;
+    }
+  >();
+
+  for (const r of rows) {
+    if (!r.approved) continue;
+    if (r.store_id !== storeId) continue;
+
+    const hours = Number(r.total_hours_worked) || 0;
+    const rate = Number(r.hourly_rate_snapshot) || 0;
+    const short = Math.max(0, Math.round(Number(r.short_deliveries) || 0));
+    const long = Math.max(0, Math.round(Number(r.long_deliveries) || 0));
+    const shortRate = Number(r.short_rate_snapshot) || 0;
+    const longRate = Number(r.long_rate_snapshot) || 0;
+
+    const acc = byDriver.get(r.cover_driver_id) ?? {
+      name: r.driver_name,
+      hours: 0,
+      rate,
+      short: 0,
+      long: 0,
+      shortRate,
+      longRate,
+    };
+    acc.hours += hours;
+    acc.short += short;
+    acc.long += long;
+    // Rates are snapshot per day. If a rate changed mid-week the later day
+    // wins for display, but the money below is summed per day so the total
+    // stays correct either way.
+    acc.rate = rate || acc.rate;
+    acc.shortRate = shortRate || acc.shortRate;
+    acc.longRate = longRate || acc.longRate;
+    byDriver.set(r.cover_driver_id, acc);
+  }
+
+  // Sum the money per DAY, not from the aggregated hours × a single rate, so a
+  // mid-week rate change is paid exactly as approved.
+  const moneyByDriver = new Map<string, { cash: number; delivery: number }>();
+  for (const r of rows) {
+    if (!r.approved || r.store_id !== storeId) continue;
+    const cash =
+      (Number(r.total_hours_worked) || 0) * (Number(r.hourly_rate_snapshot) || 0);
+    const delivery =
+      (Number(r.short_deliveries) || 0) * (Number(r.short_rate_snapshot) || 0) +
+      (Number(r.long_deliveries) || 0) * (Number(r.long_rate_snapshot) || 0);
+    const acc = moneyByDriver.get(r.cover_driver_id) ?? { cash: 0, delivery: 0 };
+    acc.cash += cash;
+    acc.delivery += delivery;
+    moneyByDriver.set(r.cover_driver_id, acc);
+  }
+
+  const lines: WageLine[] = [];
+  for (const [driverId, acc] of byDriver) {
+    const money = moneyByDriver.get(driverId) ?? { cash: 0, delivery: 0 };
+    const cashWage = round2(money.cash);
+    const deliveryWages = round2(money.delivery);
+    const total = round2(cashWage + deliveryWages);
+    if (total <= 0) continue;
+
+    lines.push({
+      employee_id: "",
+      cover_driver_id: driverId,
+      is_cover_driver: true,
+      employee_name: acc.name,
+      role: "Cover Driver",
+      cash_hours: round2(acc.hours),
+      cash_rate: acc.rate,
+      cash_wage: cashWage,
+      short_deliveries_count: acc.short,
+      long_deliveries_count: acc.long,
+      // Cover drivers record deliveries as a single count per type; there is no
+      // separate "miscellaneous" round to split out.
+      short_misc_count: 0,
+      long_misc_count: 0,
+      short_delivery_rate: acc.shortRate,
+      long_delivery_rate: acc.longRate,
+      delivery_wages: deliveryWages,
+      total_payment: total,
+    });
+  }
+  return lines;
+}

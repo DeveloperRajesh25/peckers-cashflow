@@ -135,7 +135,14 @@ export function MonthlyView({
         const empFilter = employeeIds.length
           ? employeeIds
           : ["00000000-0000-0000-0000-000000000000"];
-        const [entriesRes, hoursRes, prevEntriesRes, prevHoursRes] = await Promise.all([
+        const [
+          entriesRes,
+          hoursRes,
+          prevEntriesRes,
+          prevHoursRes,
+          coverRes,
+          prevCoverRes,
+        ] = await Promise.all([
           supabase
             .from("daily_cash_entries")
             .select("entry_date, vita_mojo_sales, supermarket_expenses")
@@ -158,6 +165,23 @@ export function MonthlyView({
             .select("week_start_date, cash_amount_due, employee_id")
             .in("week_start_date", prevWeekStarts.length ? prevWeekStarts : ["1970-01-01"])
             .in("employee_id", empFilter),
+          // Cover drivers are cash-only and paid from the same till. Keyed per
+          // DAY, so they're bucketed into weeks below rather than joined on
+          // week_start_date. Approved days only — that's money actually owed.
+          supabase
+            .from("cover_driver_hours_computed")
+            .select("work_date, total_pay")
+            .eq("store_id", storeId)
+            .eq("approved", true)
+            .gte("work_date", toISODate(fetchStart))
+            .lte("work_date", toISODate(fetchEnd)),
+          supabase
+            .from("cover_driver_hours_computed")
+            .select("work_date, total_pay")
+            .eq("store_id", storeId)
+            .eq("approved", true)
+            .gte("work_date", toISODate(fetchPrevStart))
+            .lte("work_date", toISODate(fetchPrevEnd)),
         ]);
 
         if (!active) return;
@@ -166,6 +190,7 @@ export function MonthlyView({
           weekDefs: { start: Date; end: Date }[],
           entries: Array<{ entry_date: string; vita_mojo_sales: number; supermarket_expenses: number }>,
           hours: Array<{ week_start_date: string; cash_amount_due: number }>,
+          cover: Array<{ work_date: string; total_pay: number }>,
         ): WeeklyAgg[] => {
           return weekDefs.map((w, idx) => {
             const startISO = toISODate(w.start);
@@ -178,9 +203,13 @@ export function MonthlyView({
               (s, r) => s + Number(r.supermarket_expenses || 0),
               0,
             );
-            const empCash = hours
+            const staffCash = hours
               .filter((h) => h.week_start_date === startISO)
               .reduce((s, r) => s + Number(r.cash_amount_due || 0), 0);
+            const coverCash = cover
+              .filter((c) => c.work_date >= startISO && c.work_date <= endISO)
+              .reduce((s, r) => s + Number(r.total_pay || 0), 0);
+            const empCash = staffCash + coverCash;
             return {
               weekStart: startISO,
               weekLabel: `W${idx + 1}`,
@@ -196,12 +225,14 @@ export function MonthlyView({
           monthWeeks,
           (entriesRes.data ?? []) as any[],
           (hoursRes.data ?? []) as any[],
+          (coverRes.data ?? []) as any[],
         );
 
         const prevAgg = aggregateForWeeks(
           prevWeeks,
           (prevEntriesRes.data ?? []) as any[],
           (prevHoursRes.data ?? []) as any[],
+          (prevCoverRes.data ?? []) as any[],
         );
         const prev = prevAgg.reduce(
           (acc, w) => ({

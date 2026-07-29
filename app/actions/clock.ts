@@ -5,13 +5,14 @@ import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
 import { createAdminClient, isProvisioningConfigured } from "@/lib/supabase-admin";
 import { writeAudit } from "./audit";
 import { scanForAlertsBackground } from "./alerts";
-import { shiftHours, todayISO } from "@/lib/utils";
+import { londonHHMM, shiftHours, todayISO } from "@/lib/utils";
 import {
   detectStoreForLocation,
   verifyGeofenceAtStore,
   type GeofenceLogContext,
 } from "@/lib/geofence-verify";
 import { findEmployeeForUser } from "@/lib/employee-lookup";
+import { londonWallClockToUtc, MAX_AUTO_SHIFT_HOURS } from "@/lib/auto-clock-out";
 import { hasRole, resolveActiveStoreId, type ActionResult } from "@/lib/types";
 
 /** Marker note for shifts the system created from a clock-in (no rota entry). */
@@ -38,20 +39,6 @@ async function asResult(run: () => Promise<void>): Promise<ActionResult> {
   }
 }
 
-/**
- * HH:MM in UK wall-clock time. Shift times are stored as plain time-of-day, so
- * they must be derived in Europe/London — the server may run in UTC, which is
- * an hour behind UK time during BST.
- */
-function londonHHMM(d: Date): string {
-  return d.toLocaleTimeString("en-GB", {
-    timeZone: "Europe/London",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  });
-}
-
 async function requireAllowed() {
   const user = await getSessionUser();
   if (!user || !user.allowed) throw new Error("Not authorised");
@@ -70,6 +57,95 @@ async function verifyGeofence(
   logCtx?: GeofenceLogContext,
 ) {
   return verifyGeofenceAtStore(createServerSupabase(), storeId, lat, lng, accuracy, logCtx);
+}
+
+/**
+ * Reflect a clock-in on the rota so the employee shows as present that day.
+ * Two cases need a system-managed shift:
+ *   1. No shift row at all → create one (start = clock-in time).
+ *   2. A row exists but it's a Day Off or has no start time → convert it to a
+ *      working shift. (The "clocked in on a day off / covering" case.) A real
+ *      scheduled shift is left untouched.
+ *
+ * Shared by self clock-in and manager-entered clock-in so a manually recorded
+ * day appears on the Rota exactly like a real one — that parity is the whole
+ * point of the manual-entry feature.
+ *
+ * Best-effort: this is a convenience, not a requirement. It needs the
+ * service-role client (employees can't write rota_shifts under RLS), so if
+ * provisioning isn't configured — or anything else fails — swallow it. It must
+ * NEVER block the clock-in itself.
+ *
+ * Returns the shift id to attach to the clock row, if there is one.
+ */
+async function applyAutoShiftForClockIn(input: {
+  employeeId: string;
+  storeId: string;
+  eventDate: string;
+  /** HH:MM in UK wall-clock time. */
+  startTime: string;
+  shift: { id: string; is_day_off: boolean; start_time: string | null } | null;
+}): Promise<string | null> {
+  const { employeeId, storeId, eventDate, startTime, shift } = input;
+  let shiftId = shift?.id ?? null;
+
+  const needsAutoShift = !shift || shift.is_day_off || !shift.start_time;
+  if (!needsAutoShift) return shiftId;
+
+  try {
+    if (isProvisioningConfigured()) {
+      const admin = createAdminClient();
+      if (!shift) {
+        const { data: created } = await admin
+          .from("rota_shifts")
+          .insert({
+            employee_id: employeeId,
+            store_id: storeId,
+            shift_date: eventDate,
+            start_time: startTime,
+            end_time: null,
+            is_day_off: false,
+            scheduled_hours: 0,
+            manager_notes: AUTO_SHIFT_NOTE,
+          })
+          .select("id")
+          .maybeSingle();
+        if (created) shiftId = created.id;
+      } else {
+        // Convert the existing day-off / empty shift into a worked one at the
+        // store they actually turned up to (they may be covering elsewhere).
+        await admin
+          .from("rota_shifts")
+          .update({
+            store_id: storeId,
+            start_time: startTime,
+            end_time: null,
+            is_day_off: false,
+            scheduled_hours: 0,
+            manager_notes: AUTO_SHIFT_NOTE,
+          })
+          .eq("id", shift.id);
+        shiftId = shift.id;
+      }
+    }
+  } catch (err) {
+    console.error(
+      "[clock] auto-shift creation failed (clock-in continues):",
+      err instanceof Error ? err.message : err,
+    );
+  }
+  return shiftId;
+}
+
+/** Paths refreshed after any clock write, self-service or manager-entered. */
+function revalidateClockPaths() {
+  revalidatePath("/employee/attendance");
+  revalidatePath("/live");
+  revalidatePath("/manager/live");
+  revalidatePath("/rota");
+  revalidatePath("/manager/rota");
+  revalidatePath("/employees");
+  revalidatePath("/manager/employees");
 }
 
 export async function clockIn(input: {
@@ -132,65 +208,14 @@ async function performClockIn(input: {
 
   const nowDate = new Date();
   const now = nowDate.toISOString();
-  const startTime = londonHHMM(nowDate);
 
-  // Reflect the clock-in on the rota so the employee shows as present today.
-  // Two cases need a system-managed shift (service-role client — employees
-  // can't write rota_shifts under RLS):
-  //   1. No shift row at all → create one (start = clock-in time).
-  //   2. A row exists but it's a Day Off or has no start time → convert it to a
-  //      working shift starting now. (This is the "clocked in on a day off /
-  //      covering" case.) A real scheduled shift is left untouched.
-  let shiftId = shift?.id ?? null;
-  const needsAutoShift = !shift || shift.is_day_off || !shift.start_time;
-  if (needsAutoShift) {
-    // Best-effort: reflecting the clock-in on the rota is a convenience, not a
-    // requirement. It needs the service-role client (employees can't write
-    // rota_shifts under RLS), so if provisioning isn't configured — or anything
-    // else fails — swallow it. It must NEVER block the actual clock-in below.
-    try {
-      if (isProvisioningConfigured()) {
-        const admin = createAdminClient();
-        if (!shift) {
-          const { data: created } = await admin
-            .from("rota_shifts")
-            .insert({
-              employee_id: employee.id,
-              store_id: workedStoreId,
-              shift_date: today,
-              start_time: startTime,
-              end_time: null,
-              is_day_off: false,
-              scheduled_hours: 0,
-              manager_notes: AUTO_SHIFT_NOTE,
-            })
-            .select("id")
-            .maybeSingle();
-          if (created) shiftId = created.id;
-        } else {
-          // Convert the existing day-off / empty shift into a worked one at the
-          // store they actually turned up to (they may be covering elsewhere).
-          await admin
-            .from("rota_shifts")
-            .update({
-              store_id: workedStoreId,
-              start_time: startTime,
-              end_time: null,
-              is_day_off: false,
-              scheduled_hours: 0,
-              manager_notes: AUTO_SHIFT_NOTE,
-            })
-            .eq("id", shift.id);
-          shiftId = shift.id;
-        }
-      }
-    } catch (err) {
-      console.error(
-        "[clock] auto-shift creation failed (clock-in continues):",
-        err instanceof Error ? err.message : err,
-      );
-    }
-  }
+  const shiftId = await applyAutoShiftForClockIn({
+    employeeId: employee.id,
+    storeId: workedStoreId,
+    eventDate: today,
+    startTime: londonHHMM(nowDate),
+    shift,
+  });
 
   const payload = {
     employee_id: employee.id,
@@ -224,11 +249,7 @@ async function performClockIn(input: {
   // Best-effort: never let a scan failure block the clock-in.
   await scanForAlertsBackground();
 
-  revalidatePath("/employee/attendance");
-  revalidatePath("/live");
-  revalidatePath("/manager/live");
-  revalidatePath("/rota");
-  revalidatePath("/manager/rota");
+  revalidateClockPaths();
 }
 
 type ClockOutInput = {
@@ -372,11 +393,7 @@ async function performClockOut(input: ClockOutInput) {
   // Auto-scan so early-out / scheduled-vs-actual variance surfaces immediately.
   await scanForAlertsBackground();
 
-  revalidatePath("/employee/attendance");
-  revalidatePath("/live");
-  revalidatePath("/manager/live");
-  revalidatePath("/rota");
-  revalidatePath("/manager/rota");
+  revalidateClockPaths();
 }
 
 type DeliveryCountInput = {
@@ -547,4 +564,202 @@ async function performSetClockDeliveries(input: SetClockDeliveriesInput) {
   revalidatePath("/manager/rota");
   revalidatePath("/live");
   revalidatePath("/manager/live");
+}
+
+// =============================================================
+// Manager-entered clock times.
+//
+// A clock-in can be recorded two ways: the employee self-clocks inside the
+// geofence (above), or a manager records it for someone who forgot. This is the
+// second path.
+//
+// It BYPASSES THE GEOFENCE, which is the geofence's whole purpose — so every
+// row it writes is flagged `manual_entry`, carries a reason, leaves
+// clock_in_lat/lng null, and lands in the audit log. It reuses
+// applyAutoShiftForClockIn and revalidateClockPaths so a manually recorded day
+// appears on the Rota and Live board exactly like a real one, which is the
+// entire requirement.
+// =============================================================
+
+/** How much of the day the manager supplied. Stored on the row for the UI. */
+type ManualEntryFields = "in" | "out" | "both";
+
+/** Session + role gate. Called BEFORE any lookup so a non-staff caller reads nothing. */
+async function requireClockEntryStaff() {
+  const user = await requireAllowed();
+  const role = user.allowed!.role;
+  if (role !== "admin" && role !== "manager") {
+    throw new Error("Only managers and admins can record clock times.");
+  }
+  return user;
+}
+
+/** A manager may only write against the store they're currently running. */
+function assertClockEntryStore(
+  user: Awaited<ReturnType<typeof requireClockEntryStaff>>,
+  storeId: string,
+) {
+  if (user.allowed!.role !== "manager") return;
+  const activeStore = resolveActiveStoreId(user.allowed);
+  if (!activeStore) throw new Error("No store assigned to your account.");
+  if (storeId !== activeStore) {
+    throw new Error("You can only record clock times for the store you're managing.");
+  }
+}
+
+export type ManualClockEntryInput = {
+  employee_id: string;
+  /** YYYY-MM-DD. Defaults to today on the Live board. */
+  event_date: string;
+  /** "HH:MM", UK wall clock. */
+  clock_in_time: string;
+  /** "HH:MM". Omit while the employee is still on shift. */
+  clock_out_time?: string | null;
+  reason: string;
+};
+
+export async function upsertManualClockEntry(
+  input: ManualClockEntryInput,
+): Promise<ActionResult> {
+  return asResult(() => performManualClockEntry(input));
+}
+
+async function performManualClockEntry(input: ManualClockEntryInput) {
+  // Role gate first — a non-staff caller must not get as far as reading a row.
+  const user = await requireClockEntryStaff();
+  const supabase = createServerSupabase();
+
+  if (!input.employee_id) throw new Error("Select an employee");
+  if (!input.event_date) throw new Error("Date is required");
+  if (!input.clock_in_time) throw new Error("Clock-in time is required");
+  if (!input.reason?.trim()) {
+    throw new Error("Give a reason — this records hours without a location check.");
+  }
+
+  const { data: employee } = await supabase
+    .from("employees")
+    .select("id, name, store_id, employment_status")
+    .eq("id", input.employee_id)
+    .maybeSingle();
+  if (!employee) throw new Error("Employee not found.");
+  if (employee.employment_status === "left" || employee.employment_status === "inactive") {
+    throw new Error(`${employee.name} is not an active employee.`);
+  }
+
+  // The work is attributed to the store the manager is running — that's where
+  // they saw the person. Admins fall back to the employee's home store.
+  const storeId =
+    user.allowed!.role === "manager"
+      ? resolveActiveStoreId(user.allowed) ?? employee.store_id
+      : employee.store_id;
+  if (!storeId) throw new Error("That employee has no store assigned.");
+  assertClockEntryStore(user, storeId);
+
+  const clockInAt = londonWallClockToUtc(input.event_date, input.clock_in_time);
+  if (isNaN(clockInAt.getTime())) throw new Error("Clock-in time is not valid.");
+
+  const now = new Date();
+  if (clockInAt.getTime() > now.getTime()) {
+    throw new Error("Clock-in time can't be in the future.");
+  }
+
+  let clockOutAt: Date | null = null;
+  if (input.clock_out_time) {
+    clockOutAt = londonWallClockToUtc(input.event_date, input.clock_out_time);
+    if (isNaN(clockOutAt.getTime())) throw new Error("Clock-out time is not valid.");
+    if (clockOutAt.getTime() > now.getTime()) {
+      throw new Error("Clock-out time can't be in the future.");
+    }
+    if (clockOutAt.getTime() <= clockInAt.getTime()) {
+      throw new Error("Clock-out must be after clock-in.");
+    }
+    const hours = (clockOutAt.getTime() - clockInAt.getTime()) / 3_600_000;
+    if (hours > MAX_AUTO_SHIFT_HOURS) {
+      throw new Error(`That's over ${MAX_AUTO_SHIFT_HOURS} hours — check the times.`);
+    }
+  }
+
+  const { data: existing } = await supabase
+    .from("clock_events")
+    .select("*")
+    .eq("employee_id", employee.id)
+    .eq("event_date", input.event_date)
+    .maybeSingle();
+
+  // Changing the hours under an approval someone already signed off would move
+  // the weekly rollup silently. Make them unapprove first.
+  if (existing?.hours_approved) {
+    throw new Error(
+      "That day is already approved. Unapprove it first, then change the times.",
+    );
+  }
+
+  const { data: shift } = await supabase
+    .from("rota_shifts")
+    .select("id, is_day_off, start_time")
+    .eq("employee_id", employee.id)
+    .eq("shift_date", input.event_date)
+    .maybeSingle();
+
+  const shiftId = await applyAutoShiftForClockIn({
+    employeeId: employee.id,
+    storeId,
+    eventDate: input.event_date,
+    startTime: input.clock_in_time.slice(0, 5),
+    shift,
+  });
+
+  const fields: ManualEntryFields = clockOutAt ? "both" : "in";
+  const payload: Record<string, unknown> = {
+    employee_id: employee.id,
+    shift_id: shiftId,
+    store_id: storeId,
+    event_date: input.event_date,
+    clock_in_at: clockInAt.toISOString(),
+    // Deliberately null: a row with no coordinates was never location-verified.
+    clock_in_lat: null,
+    clock_in_lng: null,
+    manual_entry: true,
+    manual_entry_by: user.id,
+    manual_entry_at: now.toISOString(),
+    manual_entry_reason: input.reason.trim(),
+    manual_entry_fields: fields,
+  };
+  if (clockOutAt) {
+    payload.clock_out_at = clockOutAt.toISOString();
+    payload.clock_out_lat = null;
+    payload.clock_out_lng = null;
+  }
+
+  if (existing) {
+    const { error } = await supabase
+      .from("clock_events")
+      .update(payload)
+      .eq("id", existing.id);
+    if (error) throw new Error(error.message);
+  } else {
+    const { error } = await supabase.from("clock_events").insert(payload);
+    if (error) throw new Error(error.message);
+  }
+
+  await writeAudit({
+    action: existing ? "manual_clock_entry_update" : "manual_clock_entry",
+    entity: "clock_event",
+    entity_id: existing?.id ?? employee.id,
+    changes: {
+      employee_id: employee.id,
+      employee_name: employee.name,
+      event_date: input.event_date,
+      clock_in_at: payload.clock_in_at,
+      clock_out_at: payload.clock_out_at ?? null,
+      reason: input.reason.trim(),
+      by: user.email,
+    },
+  });
+
+  // Re-scan so the unexpected_absence / late_clock_in alerts raised while the
+  // clock-in was missing reflect the corrected start time.
+  await scanForAlertsBackground();
+
+  revalidateClockPaths();
 }

@@ -276,6 +276,8 @@ export async function archiveCoverDriver(
 export async function approveCoverDriverDay(input: {
   cover_driver_id: string;
   work_date: string;
+  /** Manager-corrected hours. Omit to sign off the clocked total unchanged. */
+  override_hours?: number;
 }): Promise<{ ok: true; hours: CoverDriverHoursComputed[] }> {
   const user = await requireStaff();
   const supabase = createServerSupabase();
@@ -302,8 +304,19 @@ export async function approveCoverDriverDay(input: {
     throw new Error("No completed clock-in/out for this driver on that date.");
   }
 
-  const hours = Math.round(clockedHours(event.clock_in_at, event.clock_out_at) * 100) / 100;
-  if (hours <= 0) throw new Error("That day has no worked hours to approve.");
+  const clocked = Math.round(clockedHours(event.clock_in_at, event.clock_out_at) * 100) / 100;
+  if (clocked <= 0) throw new Error("That day has no worked hours to approve.");
+
+  // A manager may correct the clocked total (bad clock-out, forgotten break).
+  // Bounded because this is cash pay: a typo here is money out the door.
+  const override = input.override_hours;
+  if (override !== undefined) {
+    if (!Number.isFinite(override) || override <= 0) {
+      throw new Error("Approved hours must be greater than zero.");
+    }
+    if (override > 24) throw new Error("Approved hours cannot exceed 24 in a day.");
+  }
+  const hours = override !== undefined ? Math.round(override * 100) / 100 : clocked;
 
   const payload = {
     cover_driver_id: input.cover_driver_id,
@@ -329,10 +342,19 @@ export async function approveCoverDriverDay(input: {
 
   const { data: existing } = await supabase
     .from("cover_driver_hours")
-    .select("id")
+    .select("id, approved")
     .eq("cover_driver_id", input.cover_driver_id)
     .eq("work_date", input.work_date)
     .maybeSingle();
+
+  // Re-approving an already-approved day would silently restate cash pay at the
+  // driver's CURRENT rate, losing the rate snapshotted when it was signed off.
+  // Mirrors the guard on manual clock entry.
+  if (existing?.approved) {
+    throw new Error(
+      "That day is already approved. Remove the approval first if the hours need changing.",
+    );
+  }
 
   if (existing) {
     const { error } = await supabase
@@ -354,6 +376,38 @@ export async function approveCoverDriverDay(input: {
 
   revalidateCoverDrivers();
   return { ok: true, hours: await freshHours() };
+}
+
+/**
+ * Approve every listed cover driver for one date ("Approve all" on the Daily
+ * Approval screen). Already-approved drivers are skipped rather than throwing,
+ * so one stale row can't block signing off the rest of the day.
+ */
+export async function approveCoverDriverDaysForDate(input: {
+  work_date: string;
+  cover_driver_ids: string[];
+}): Promise<{ ok: true; hours: CoverDriverHoursComputed[]; approved: number }> {
+  await requireStaff();
+  if (!input.work_date) throw new Error("Work date is required");
+
+  const ids = Array.from(new Set(input.cover_driver_ids.filter(Boolean)));
+  if (ids.length === 0) return { ok: true, hours: await freshHours(), approved: 0 };
+
+  let approved = 0;
+  const failures: string[] = [];
+  for (const id of ids) {
+    try {
+      await approveCoverDriverDay({ cover_driver_id: id, work_date: input.work_date });
+      approved += 1;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed";
+      if (!msg.includes("already approved")) failures.push(msg);
+    }
+  }
+
+  if (approved === 0 && failures.length > 0) throw new Error(failures[0]);
+
+  return { ok: true, hours: await freshHours(), approved };
 }
 
 /** Remove an approved day. The underlying clock event is kept. */

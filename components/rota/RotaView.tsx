@@ -1048,6 +1048,19 @@ export function RotaView({
                           {clk?.clock_in_at && (
                             <div className="text-[9px] text-text-muted mt-0.5">
                               in {new Date(clk.clock_in_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                              {clk.manual_entry && (
+                                <span
+                                  className="text-warning"
+                                  title={
+                                    clk.manual_entry_reason
+                                      ? `Entered by a manager — ${clk.manual_entry_reason}`
+                                      : "Entered by a manager (no location check)"
+                                  }
+                                >
+                                  {" "}
+                                  (manual)
+                                </span>
+                              )}
                             </div>
                           )}
                         </>
@@ -1304,6 +1317,19 @@ export function RotaView({
                                       minute: "2-digit",
                                     })}
                                   </>
+                                )}
+                                {clk.manual_entry && (
+                                  <span
+                                    className="text-warning"
+                                    title={
+                                      clk.manual_entry_reason
+                                        ? `Entered by a manager — ${clk.manual_entry_reason}`
+                                        : "Entered by a manager (no location check)"
+                                    }
+                                  >
+                                    {" "}
+                                    (manual)
+                                  </span>
                                 )}
                               </div>
                             )}

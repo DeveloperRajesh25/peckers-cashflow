@@ -3,10 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
 import { writeAudit } from "./audit";
-import { todayISO } from "@/lib/utils";
+import { createAdminClient, isProvisioningConfigured } from "@/lib/supabase-admin";
+import { londonHHMM, shiftHours, todayISO } from "@/lib/utils";
 import { detectStoreForLocation, verifyGeofenceAtStore } from "@/lib/geofence-verify";
 import { findCoverDriverForUser } from "@/lib/cover-driver-lookup";
-import type { ActionResult } from "@/lib/types";
+import { londonWallClockToUtc, MAX_AUTO_SHIFT_HOURS } from "@/lib/auto-clock-out";
+import { resolveActiveStoreId, type ActionResult } from "@/lib/types";
 
 // =============================================================
 // Cover driver clock in/out.
@@ -57,6 +59,115 @@ function revalidateClock() {
   revalidatePath("/cover-driver/attendance");
   revalidatePath("/employees");
   revalidatePath("/manager/employees");
+  revalidatePath("/rota");
+  revalidatePath("/manager/rota");
+  revalidatePath("/live");
+  revalidatePath("/manager/live");
+}
+
+/** Marker for shifts the system created from a clock-in, mirroring the employee rota. */
+const AUTO_SHIFT_NOTE = "Auto-created from clock-in";
+
+/**
+ * Reflect a cover driver's clock-in on the Rota, exactly as the employee flow
+ * does (see applyAutoShiftForClockIn in app/actions/clock.ts).
+ *
+ * This originally did nothing, on the reasoning that a booking is a manager's
+ * decision and a clock-in shouldn't invent one. That was wrong in practice: the
+ * Rota's Total hrs and Wages columns sum `scheduled_hours` from booked cells, so
+ * a driver who clocked a full day but was never booked showed the times in the
+ * cell and 0.0h / £0.00 on the row. Employees never hit that because their
+ * clock-in DOES create a shift. Parity is what the columns need.
+ *
+ * Best-effort and service-role: cover drivers can't write cover_driver_shifts
+ * under RLS (they aren't staff), so if provisioning isn't configured — or
+ * anything fails — swallow it. It must never block the clock-in itself.
+ */
+async function applyAutoShiftForCoverClockIn(input: {
+  supabase: ReturnType<typeof createServerSupabase>;
+  coverDriverId: string;
+  storeId: string;
+  eventDate: string;
+  /** HH:MM, UK wall clock. */
+  startTime: string;
+}) {
+  const { supabase, coverDriverId, storeId, eventDate, startTime } = input;
+  try {
+    if (!isProvisioningConfigured()) return;
+
+    const { data: existing } = await supabase
+      .from("cover_driver_shifts")
+      .select("id, is_day_off, start_time")
+      .eq("cover_driver_id", coverDriverId)
+      .eq("shift_date", eventDate)
+      .maybeSingle();
+
+    // A real booking a manager made is left alone — only an absent row or a
+    // Day Off / empty cell is converted.
+    if (existing && !existing.is_day_off && existing.start_time) return;
+
+    const admin = createAdminClient();
+    const payload = {
+      cover_driver_id: coverDriverId,
+      store_id: storeId,
+      shift_date: eventDate,
+      start_time: startTime,
+      end_time: null,
+      is_day_off: false,
+      scheduled_hours: 0,
+      notes: AUTO_SHIFT_NOTE,
+    };
+    if (existing) {
+      await admin.from("cover_driver_shifts").update(payload).eq("id", existing.id);
+    } else {
+      await admin.from("cover_driver_shifts").insert(payload);
+    }
+  } catch (err) {
+    console.error(
+      "[cover-driver-clock] auto-shift creation failed (clock-in continues):",
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+/**
+ * Stamp the end time + hours on a shift the system created, so the Rota row
+ * totals the real worked window. Only touches auto-created cells — a manager's
+ * own booking keeps the hours they planned.
+ */
+async function stampAutoCoverShiftEnd(input: {
+  supabase: ReturnType<typeof createServerSupabase>;
+  coverDriverId: string;
+  eventDate: string;
+  /** HH:MM, UK wall clock. */
+  endTime: string;
+}) {
+  const { supabase, coverDriverId, eventDate, endTime } = input;
+  try {
+    if (!isProvisioningConfigured()) return;
+
+    const { data: shift } = await supabase
+      .from("cover_driver_shifts")
+      .select("id, start_time, notes")
+      .eq("cover_driver_id", coverDriverId)
+      .eq("shift_date", eventDate)
+      .maybeSingle();
+    if (!shift || shift.notes !== AUTO_SHIFT_NOTE || !shift.start_time) return;
+
+    const admin = createAdminClient();
+    await admin
+      .from("cover_driver_shifts")
+      .update({
+        end_time: endTime,
+        scheduled_hours: shiftHours(shift.start_time.slice(0, 5), endTime),
+      })
+      .eq("id", shift.id);
+  } catch (err) {
+    console.error(
+      "[cover-driver-clock] auto-shift end-stamp failed (clock-out continues):",
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 type ClockInInput = {
@@ -92,11 +203,20 @@ async function performClockIn(input: ClockInInput) {
 
   if (existing?.clock_in_at) throw new Error("You've already clocked in today.");
 
+  const nowDate = new Date();
+  await applyAutoShiftForCoverClockIn({
+    supabase,
+    coverDriverId: driver.id,
+    storeId: detected.id,
+    eventDate: today,
+    startTime: londonHHMM(nowDate),
+  });
+
   const payload = {
     cover_driver_id: driver.id,
     store_id: detected.id,
     event_date: today,
-    clock_in_at: new Date().toISOString(),
+    clock_in_at: nowDate.toISOString(),
     clock_in_lat: input.latitude,
     clock_in_lng: input.longitude,
   };
@@ -178,8 +298,16 @@ async function performClockOut(input: ClockOutInput) {
     throw new Error("Please give a reason for the extra long deliveries.");
   }
 
+  const outDate = new Date();
+  await stampAutoCoverShiftEnd({
+    supabase,
+    coverDriverId: driver.id,
+    eventDate: today,
+    endTime: londonHHMM(outDate),
+  });
+
   const payload = {
-    clock_out_at: new Date().toISOString(),
+    clock_out_at: outDate.toISOString(),
     clock_out_lat: input.latitude,
     clock_out_lng: input.longitude,
     short_deliveries_count: Math.max(0, Number(input.short_deliveries_count) || 0),
@@ -262,4 +390,178 @@ export async function updateCoverDriverDeliveries(
 
     revalidateClock();
   });
+}
+
+// =============================================================
+// Manager-entered cover driver clock times.
+//
+// Mirrors upsertManualClockEntry in app/actions/clock.ts, with two deliberate
+// differences — both matching what cover-driver SELF clock-in already does:
+//   * no cover_driver_shifts write. A booking is something a manager makes on
+//     the Rota; a clock-in never creates one, so a manual clock-in mustn't
+//     either or it would do MORE than a real one.
+//   * no alert scan. The alerts module doesn't cover cover drivers.
+//
+// Like the employee version this bypasses the geofence, so every row is flagged
+// manual_entry, carries a reason, and leaves the coordinates null.
+// =============================================================
+
+export type ManualCoverDriverClockEntryInput = {
+  cover_driver_id: string;
+  /** YYYY-MM-DD. */
+  event_date: string;
+  /** "HH:MM", UK wall clock. */
+  clock_in_time: string;
+  /** "HH:MM". Omit while the driver is still on shift. */
+  clock_out_time?: string | null;
+  reason: string;
+};
+
+export async function upsertManualCoverDriverClockEntry(
+  input: ManualCoverDriverClockEntryInput,
+): Promise<ActionResult> {
+  return asResult(() => performManualCoverEntry(input));
+}
+
+async function performManualCoverEntry(input: ManualCoverDriverClockEntryInput) {
+  const user = await getSessionUser();
+  if (!user || !user.allowed) throw new Error("Not authorised");
+  const role = user.allowed.role;
+  if (role !== "admin" && role !== "manager") {
+    throw new Error("Only managers and admins can record clock times.");
+  }
+
+  if (!input.cover_driver_id) throw new Error("Select a cover driver");
+  if (!input.event_date) throw new Error("Date is required");
+  if (!input.clock_in_time) throw new Error("Clock-in time is required");
+  if (!input.reason?.trim()) {
+    throw new Error("Give a reason — this records hours without a location check.");
+  }
+
+  const supabase = createServerSupabase();
+  const { data: driver } = await supabase
+    .from("cover_drivers")
+    .select("id, name, store_id, is_active")
+    .eq("id", input.cover_driver_id)
+    .maybeSingle();
+  if (!driver) throw new Error("Cover driver not found.");
+  if (!driver.is_active) throw new Error(`${driver.name} is not active.`);
+
+  if (role === "manager") {
+    const activeStore = resolveActiveStoreId(user.allowed);
+    if (!activeStore) throw new Error("No store assigned to your account.");
+    if (driver.store_id !== activeStore) {
+      throw new Error("You can only record clock times for the store you're managing.");
+    }
+  }
+
+  const clockInAt = londonWallClockToUtc(input.event_date, input.clock_in_time);
+  if (isNaN(clockInAt.getTime())) throw new Error("Clock-in time is not valid.");
+
+  const now = new Date();
+  if (clockInAt.getTime() > now.getTime()) {
+    throw new Error("Clock-in time can't be in the future.");
+  }
+
+  let clockOutAt: Date | null = null;
+  if (input.clock_out_time) {
+    clockOutAt = londonWallClockToUtc(input.event_date, input.clock_out_time);
+    if (isNaN(clockOutAt.getTime())) throw new Error("Clock-out time is not valid.");
+    if (clockOutAt.getTime() > now.getTime()) {
+      throw new Error("Clock-out time can't be in the future.");
+    }
+    if (clockOutAt.getTime() <= clockInAt.getTime()) {
+      throw new Error("Clock-out must be after clock-in.");
+    }
+    const hours = (clockOutAt.getTime() - clockInAt.getTime()) / 3_600_000;
+    if (hours > MAX_AUTO_SHIFT_HOURS) {
+      throw new Error(`That's over ${MAX_AUTO_SHIFT_HOURS} hours — check the times.`);
+    }
+  }
+
+  const { data: existing } = await supabase
+    .from("cover_driver_clock_events")
+    .select("*")
+    .eq("cover_driver_id", driver.id)
+    .eq("event_date", input.event_date)
+    .maybeSingle();
+
+  // Approved cash pay must not move under an approval already signed off.
+  const { data: approved } = await supabase
+    .from("cover_driver_hours")
+    .select("id, approved")
+    .eq("cover_driver_id", driver.id)
+    .eq("work_date", input.event_date)
+    .maybeSingle();
+  if (approved?.approved) {
+    throw new Error(
+      "That day is already approved. Remove the approval first, then change the times.",
+    );
+  }
+
+  // Same Rota reflection as a real clock-in, so a manually recorded day totals
+  // its hours on the Rota row like any other.
+  await applyAutoShiftForCoverClockIn({
+    supabase,
+    coverDriverId: driver.id,
+    storeId: driver.store_id,
+    eventDate: input.event_date,
+    startTime: input.clock_in_time.slice(0, 5),
+  });
+  if (input.clock_out_time) {
+    await stampAutoCoverShiftEnd({
+      supabase,
+      coverDriverId: driver.id,
+      eventDate: input.event_date,
+      endTime: input.clock_out_time.slice(0, 5),
+    });
+  }
+
+  const payload: Record<string, unknown> = {
+    cover_driver_id: driver.id,
+    store_id: driver.store_id,
+    event_date: input.event_date,
+    clock_in_at: clockInAt.toISOString(),
+    // Deliberately null: a row with no coordinates was never location-verified.
+    clock_in_lat: null,
+    clock_in_lng: null,
+    manual_entry: true,
+    manual_entry_by: user.id,
+    manual_entry_at: now.toISOString(),
+    manual_entry_reason: input.reason.trim(),
+    manual_entry_fields: clockOutAt ? "both" : "in",
+  };
+  if (clockOutAt) {
+    payload.clock_out_at = clockOutAt.toISOString();
+    payload.clock_out_lat = null;
+    payload.clock_out_lng = null;
+  }
+
+  if (existing) {
+    const { error } = await supabase
+      .from("cover_driver_clock_events")
+      .update(payload)
+      .eq("id", existing.id);
+    if (error) throw new Error(error.message);
+  } else {
+    const { error } = await supabase.from("cover_driver_clock_events").insert(payload);
+    if (error) throw new Error(error.message);
+  }
+
+  await writeAudit({
+    action: existing ? "manual_cover_driver_clock_update" : "manual_cover_driver_clock_entry",
+    entity: "cover_driver_clock_event",
+    entity_id: existing?.id ?? driver.id,
+    changes: {
+      cover_driver_id: driver.id,
+      driver_name: driver.name,
+      event_date: input.event_date,
+      clock_in_at: payload.clock_in_at,
+      clock_out_at: payload.clock_out_at ?? null,
+      reason: input.reason.trim(),
+      by: user.email,
+    },
+  });
+
+  revalidateClock();
 }

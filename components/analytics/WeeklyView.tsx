@@ -60,6 +60,7 @@ export function WeeklyView({
   const [loading, setLoading] = React.useState(true);
   const [daily, setDaily] = React.useState<DailyRow[]>([]);
   const [empPay, setEmpPay] = React.useState<EmpPay[]>([]);
+  const [coverPay, setCoverPay] = React.useState<Array<{ total_pay: number }>>([]);
 
   const weekEnd = React.useMemo(() => endOfISOWeek(weekStart), [weekStart]);
   // Stable key so the effect re-runs when the store's employee set changes.
@@ -69,8 +70,18 @@ export function WeeklyView({
     const sales = daily.reduce((s, r) => s + r.sales, 0);
     const exp = daily.reduce((s, r) => s + r.expenses, 0);
     const empCash = empPay.reduce((s, r) => s + Number(r.cash_amount_due || 0), 0);
-    return { sales, exp, empCash, net: sales - exp - empCash };
-  }, [daily, empPay]);
+    // Cover drivers are cash-only and paid from the same till, so leaving them
+    // out made a weekend look cheaper than it was.
+    const coverCash = coverPay.reduce((s, r) => s + Number(r.total_pay || 0), 0);
+    return {
+      sales,
+      exp,
+      empCash,
+      coverCash,
+      cashPay: empCash + coverCash,
+      net: sales - exp - empCash - coverCash,
+    };
+  }, [daily, empPay, coverPay]);
 
   React.useEffect(() => {
     let active = true;
@@ -80,7 +91,7 @@ export function WeeklyView({
         const startISO = toISODate(weekStart);
         const endISO = toISODate(weekEnd);
 
-        const [entries, hours] = await Promise.all([
+        const [entries, hours, coverHours] = await Promise.all([
           supabase
             .from("daily_cash_entries")
             .select("entry_date, vita_mojo_sales, supermarket_expenses")
@@ -94,6 +105,15 @@ export function WeeklyView({
             )
             .eq("week_start_date", startISO)
             .in("employee_id", employeeIds.length ? employeeIds : ["00000000-0000-0000-0000-000000000000"]),
+          // Cover drivers are keyed per DAY, not per week, and only approved
+          // days represent money actually owed.
+          supabase
+            .from("cover_driver_hours_computed")
+            .select("total_pay")
+            .eq("store_id", storeId)
+            .eq("approved", true)
+            .gte("work_date", startISO)
+            .lte("work_date", endISO),
         ]);
 
         if (!active) return;
@@ -114,6 +134,7 @@ export function WeeklyView({
         }
         setDaily(days);
         setEmpPay((hours.data ?? []) as unknown as EmpPay[]);
+        setCoverPay((coverHours.data ?? []) as unknown as Array<{ total_pay: number }>);
       } finally {
         if (active) setLoading(false);
       }
@@ -177,7 +198,11 @@ export function WeeklyView({
           <>
             <StatTile label="Total Sales" value={totals.sales} tone="gold" />
             <StatTile label="Total Expenses" value={totals.exp} />
-            <StatTile label="Employee Cash Pay" value={totals.empCash} tone="danger" />
+            <StatTile
+              label={totals.coverCash > 0 ? "Cash Pay (incl. cover)" : "Employee Cash Pay"}
+              value={totals.cashPay}
+              tone="danger"
+            />
             <StatTile
               label="Net Cash Flow"
               value={totals.net}

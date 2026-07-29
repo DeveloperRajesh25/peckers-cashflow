@@ -295,6 +295,13 @@ export type CoverDriverClockEvent = {
   auto_clocked_out?: boolean;
   auto_clock_out_source?: string | null;
   auto_clock_out_at?: string | null;
+  /** Set when a manager recorded these times by hand — NOT geofence-verified. */
+  manual_entry?: boolean;
+  manual_entry_by?: string | null;
+  manual_entry_at?: string | null;
+  manual_entry_reason?: string | null;
+  /** 'in' | 'out' | 'both' — which timestamps the manager supplied. */
+  manual_entry_fields?: string | null;
   created_at: string;
 };
 
@@ -339,6 +346,29 @@ export type CoverDriverDaySummary = {
   long_delivery_rate: number | null;
   /** hours * rate + deliveries * per-type rate. */
   total_pay: number;
+  auto_clocked_out: boolean;
+  manual_entry: boolean;
+  manual_entry_reason: string | null;
+};
+
+/**
+ * A cover driver's day as the Daily Approval screen sees it: the clocked day
+ * merged with its approval, so cover rows sit alongside employee rows there.
+ */
+export type CoverDailyApprovalRow = {
+  cover_driver_id: string;
+  driver_name: string;
+  store_id: string;
+  work_date: string;
+  clocked_hours: number;
+  approved: boolean;
+  /** Hours as signed off, which may differ from clocked if a manager adjusted. */
+  approved_hours: number | null;
+  /** cover_driver_hours row id — needed to undo an approval. */
+  approved_row_id: string | null;
+  auto_clocked_out: boolean;
+  manual_entry: boolean;
+  manual_entry_reason: string | null;
 };
 
 /**
@@ -412,6 +442,16 @@ export type ClockEvent = {
   auto_clocked_out?: boolean | null;
   /** Where the assumed clock-out time came from: 'rota' | 'schedule' | 'store_close' | 'fallback'. */
   auto_clock_out_source?: string | null;
+  /**
+   * True when a manager recorded these times by hand for someone who forgot to
+   * clock in. Such a row was NOT geofence-verified — clock_in_lat/lng are null.
+   */
+  manual_entry?: boolean | null;
+  manual_entry_by?: string | null;
+  manual_entry_at?: string | null;
+  manual_entry_reason?: string | null;
+  /** 'in' | 'out' | 'both' — which timestamps the manager supplied. */
+  manual_entry_fields?: string | null;
 };
 
 /**
@@ -611,6 +651,13 @@ export type ClockDailySummary = {
    * the approval row flags them for the manager to check.
    */
   auto_clocked_out: boolean;
+  /**
+   * True when a manager recorded these times by hand (the employee forgot to
+   * clock in). The day was not geofence-verified, so it's badged in the
+   * approval list rather than blending in with real clock records.
+   */
+  manual_entry: boolean;
+  manual_entry_reason: string | null;
 };
 
 export type LiveDashboardStatus =
@@ -682,7 +729,10 @@ export type CashPayout = {
 export type CashPayoutLine = {
   id: string;
   payout_id: string;
+  /** Null on a cover driver line — see cover_driver_id. */
   employee_id: string | null;
+  /** Set instead of employee_id when this line pays a cover driver (migration 027). */
+  cover_driver_id?: string | null;
   employee_name: string;
   role: string | null;
   cash_hours: number;
@@ -716,7 +766,17 @@ export type CashPayoutWithLines = CashPayout & {
  * render identically.
  */
 export type WageLine = {
+  /**
+   * The employees.id being paid, or "" for a cover driver line — cover drivers
+   * are not employees rows, so they carry cover_driver_id instead. Exactly one
+   * of the two identifies the payee (enforced by a check constraint on
+   * cash_payout_lines, migration 027).
+   */
   employee_id: string;
+  /** Set instead of employee_id when this line pays a cover driver. */
+  cover_driver_id?: string | null;
+  /** True for a cover driver line — drives the "Cover" badge on the sheet. */
+  is_cover_driver?: boolean;
   employee_name: string;
   role: string | null;
   cash_hours: number;

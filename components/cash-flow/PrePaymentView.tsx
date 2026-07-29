@@ -29,6 +29,8 @@ import type { CashPayoutWithLines, PrePaymentSummary } from "@/lib/types";
 type StoreOpt = { id: string; name: string };
 type DisplayLine = {
   employee_name: string;
+  /** Set on a cover driver line — they're paid from the same sheet, badged. */
+  cover_driver_id?: string | null;
   role: string | null;
   cash_hours: number;
   cash_rate: number;
@@ -362,7 +364,17 @@ export function PrePaymentView({
                   const saving = !!lineId && savingLines.includes(lineId);
                   return (
                     <tr key={lineId ?? l.employee_name + i} className={`${i % 2 === 0 ? "" : "bg-bg/40"} border-t border-border/60`}>
-                      <td className="px-4 py-3 font-medium text-text-primary">{l.employee_name}</td>
+                      <td className="px-4 py-3 font-medium text-text-primary">
+                        {l.employee_name}
+                        {l.cover_driver_id && (
+                          <span
+                            className="ml-2 align-middle text-[9px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-gold/40 bg-gold/10 text-gold font-medium"
+                            title="Cover driver — paid cash from this sheet, no NI"
+                          >
+                            Cover
+                          </span>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-text-muted">{l.role ?? "—"}</td>
                       <td className="px-4 py-3 text-right tabular-nums">{l.cash_hours.toFixed(2)}h</td>
                       <td className="px-4 py-3 text-right tabular-nums">{formatGBP(l.cash_rate)}</td>

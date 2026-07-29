@@ -24,6 +24,12 @@ import {
   approveDailyHoursForDate,
   unapproveDailyHours,
 } from "@/app/actions/employees";
+import {
+  approveCoverDriverDay,
+  approveCoverDriverDaysForDate,
+  deleteCoverDriverHours,
+} from "@/app/actions/cover-drivers";
+import { mergeCoverDailyApproval } from "@/lib/cover-driver-hours";
 import type {
   ClockDailySummary,
   ClockWeeklySummary,
@@ -50,6 +56,12 @@ type Props = {
   stores: Store[];
   defaultStoreId?: string | null;
   minWageBands?: MinWageBands;
+  /**
+   * A failed data query, surfaced instead of swallowed. An empty approval list
+   * is indistinguishable from "nobody worked" — on a payroll screen that has to
+   * read as broken, not as zero.
+   */
+  loadError?: string | null;
   /** Manager portal: lock everything to a single store, hide cross-store UI. */
   lockToStore?: boolean;
   /**
@@ -77,6 +89,7 @@ export function EmployeesView({
   coverDriverHours = [],
   clockSummaries = [],
   clockDailySummaries = [],
+  loadError = null,
   todayISO,
   stores,
   defaultStoreId,
@@ -206,6 +219,35 @@ export function EmployeesView({
     router.refresh();
   }
 
+  async function handleCoverApproveDay(
+    cover_driver_id: string,
+    work_date: string,
+    override_hours?: number,
+  ) {
+    const res = await approveCoverDriverDay({
+      cover_driver_id,
+      work_date,
+      override_hours,
+    });
+    setCoverHours(res.hours);
+    router.refresh();
+  }
+
+  async function handleCoverApproveDate(
+    work_date: string,
+    cover_driver_ids: string[],
+  ) {
+    const res = await approveCoverDriverDaysForDate({ work_date, cover_driver_ids });
+    setCoverHours(res.hours);
+    router.refresh();
+  }
+
+  async function handleCoverUnapprove(approved_row_id: string) {
+    await deleteCoverDriverHours(approved_row_id);
+    setCoverHours((prev) => prev.filter((r) => r.id !== approved_row_id));
+    router.refresh();
+  }
+
   // Admin can view all stores; scope the cover-driver data to the active filter.
   const inStore = (storeId: string) => storeFilter === "all" || storeId === storeFilter;
   const visibleCoverDrivers = coverDrivers.filter((d) => inStore(d.store_id));
@@ -218,9 +260,13 @@ export function EmployeesView({
   const visibleDaily = daily.filter(
     (d) => storeFilter === "all" || d.store_id === storeFilter,
   );
-  const dailyPending = visibleDaily.filter(
-    (d) => !d.hours_approved && d.clocked_hours > 0,
-  ).length;
+  const coverDaily = React.useMemo(
+    () => mergeCoverDailyApproval(visibleCoverDays, visibleCoverHours),
+    [visibleCoverDays, visibleCoverHours],
+  );
+  const dailyPending =
+    visibleDaily.filter((d) => !d.hours_approved && d.clocked_hours > 0).length +
+    coverDaily.filter((d) => !d.approved && d.clocked_hours > 0).length;
   const showStore =
     !lockToStore && storeFilter === "all" && stores.length > 1;
 
@@ -233,6 +279,16 @@ export function EmployeesView({
   return (
     <div className="flex flex-col gap-6">
       {/* Top bar: tabs + (admin) store scope */}
+      {loadError && (
+        <div className="rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
+          <p className="font-medium">Couldn&apos;t load clock records</p>
+          <p className="text-xs mt-1 text-danger/90">
+            Hours below may be incomplete — don&apos;t approve from this screen until it&apos;s
+            fixed. If a database migration is pending, run it and reload. ({loadError})
+          </p>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Tabs
           tabs={tabs}
@@ -261,12 +317,27 @@ export function EmployeesView({
       {tab === "daily" && (
         <DailyHoursApproval
           summaries={visibleDaily}
+          coverSummaries={coverDaily}
           stores={stores}
           todayISO={todayISO}
           showStore={showStore}
+          employees={employees
+            .filter(
+              (e) =>
+                e.employment_status === "active" &&
+                (storeFilter === "all" || e.store_id === storeFilter),
+            )
+            .map((e) => ({ id: e.id, name: e.name }))}
+          coverDrivers={visibleCoverDrivers
+            .filter((d) => d.is_active)
+            .map((d) => ({ id: d.id, name: d.name }))}
+          onManualSaved={refresh}
           onApprove={handleApproveDay}
           onApproveDate={handleApproveDate}
           onUnapprove={handleUnapproveDay}
+          onCoverApprove={handleCoverApproveDay}
+          onCoverApproveDate={handleCoverApproveDate}
+          onCoverUnapprove={handleCoverUnapprove}
         />
       )}
 
@@ -350,8 +421,10 @@ export function EmployeesView({
               drivers={visibleCoverDrivers}
               days={visibleCoverDays}
               approvedRows={visibleCoverHours}
+              todayISO={todayISO}
               onApproved={handleCoverHoursApproved}
               onDeleted={handleCoverHoursDeleted}
+              onManualSaved={refresh}
             />
           </Card>
         </div>

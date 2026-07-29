@@ -244,6 +244,20 @@ export function formatDateTimeShort(iso: string | null | undefined): string {
  * An open shift (no clock-out yet) counts up to `now`. Returns 0 if not clocked
  * in or on bad input. Shared by the crew screen and the live dashboard.
  */
+/**
+ * HH:MM in UK wall-clock time. Shift times are stored as plain time-of-day, so
+ * they must be derived in Europe/London — the server may run in UTC, which is
+ * an hour behind UK time during BST.
+ */
+export function londonHHMM(d: Date): string {
+  return d.toLocaleTimeString("en-GB", {
+    timeZone: "Europe/London",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+}
+
 export function clockedHours(
   clockInAt: string | null | undefined,
   clockOutAt: string | null | undefined,
@@ -377,6 +391,8 @@ export function mapClockEventsToDaily(
     hours_approved?: boolean | null;
     approved_hours?: number | string | null;
     auto_clocked_out?: boolean | null;
+    manual_entry?: boolean | null;
+    manual_entry_reason?: string | null;
   }>,
   employeeMap: Map<string, { name: string }>,
 ): Array<{
@@ -388,6 +404,8 @@ export function mapClockEventsToDaily(
   hours_approved: boolean;
   approved_hours: number | null;
   auto_clocked_out: boolean;
+  manual_entry: boolean;
+  manual_entry_reason: string | null;
 }> {
   const out = [];
   for (const ce of clockEvents) {
@@ -404,6 +422,8 @@ export function mapClockEventsToDaily(
       approved_hours:
         ce.approved_hours != null ? Number(ce.approved_hours) : null,
       auto_clocked_out: !!ce.auto_clocked_out,
+      manual_entry: !!ce.manual_entry,
+      manual_entry_reason: ce.manual_entry_reason ?? null,
     });
   }
   return out.sort(

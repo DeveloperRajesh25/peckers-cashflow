@@ -189,7 +189,17 @@ export function PayoutHistoryView({
                         <tbody>
                           {p.lines.map((l, i) => (
                             <tr key={l.id} className={`${i % 2 === 0 ? "" : "bg-bg/40"} border-t border-border/60`}>
-                              <td className="px-4 py-2.5 font-medium">{l.employee_name}</td>
+                              <td className="px-4 py-2.5 font-medium">
+                                {l.employee_name}
+                                {l.cover_driver_id && (
+                                  <span
+                                    className="ml-2 align-middle text-[9px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-gold/40 bg-gold/10 text-gold font-medium"
+                                    title="Cover driver — paid cash, no NI"
+                                  >
+                                    Cover
+                                  </span>
+                                )}
+                              </td>
                               <td className="px-4 py-2.5 text-text-muted">{l.role ?? "—"}</td>
                               <td className="px-4 py-2.5 text-right tabular-nums">{l.cash_hours.toFixed(2)}h</td>
                               <td className="px-4 py-2.5 text-right tabular-nums">{formatGBP(l.cash_rate)}</td>

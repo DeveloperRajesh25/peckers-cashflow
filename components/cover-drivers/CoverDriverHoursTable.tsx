@@ -13,6 +13,7 @@ import {
   deleteCoverDriverHours,
 } from "@/app/actions/cover-drivers";
 import { formatDDMMYYYY, formatGBP } from "@/lib/utils";
+import { ManualClockEntryModal } from "@/components/clock/ManualClockEntryModal";
 import type {
   CoverDriver,
   CoverDriverDaySummary,
@@ -95,14 +96,19 @@ export function CoverDriverHoursTable({
   drivers,
   days,
   approvedRows,
+  todayISO,
   onApproved,
   onDeleted,
+  onManualSaved,
 }: {
   drivers: CoverDriver[];
   days: CoverDriverDaySummary[];
   approvedRows: CoverDriverHoursComputed[];
+  /** Server's "today", used as the default date for a missed entry. */
+  todayISO?: string;
   onApproved: (fresh: CoverDriverHoursComputed[]) => void;
   onDeleted: (deletedId: string) => void;
+  onManualSaved?: () => void;
 }) {
   const toast = useToast();
   const [filterDriver, setFilterDriver] = React.useState("");
@@ -110,6 +116,7 @@ export function CoverDriverHoursTable({
   const [to, setTo] = React.useState("");
   const [approvingKey, setApprovingKey] = React.useState<string | null>(null);
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
+  const [showAddMissed, setShowAddMissed] = React.useState(false);
 
   const allRows = React.useMemo(() => buildRows(days, approvedRows), [days, approvedRows]);
 
@@ -178,6 +185,19 @@ export function CoverDriverHoursTable({
         <DatePicker label="From" value={from} onChange={setFrom} />
         <DatePicker label="To" value={to} onChange={setTo} />
       </div>
+
+      {drivers.filter((d) => d.is_active).length > 0 && (
+        <div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setShowAddMissed(true)}
+            title="Record a day for a cover driver who forgot to clock in"
+          >
+            Add missed entry
+          </Button>
+        </div>
+      )}
 
       {filtered.length === 0 ? (
         <EmptyState
@@ -275,6 +295,23 @@ export function CoverDriverHoursTable({
             </tbody>
           </table>
         </div>
+      )}
+
+      {showAddMissed && (
+        <ManualClockEntryModal
+          mode="cover_driver"
+          eventDate={todayISO ?? new Date().toISOString().slice(0, 10)}
+          candidates={drivers
+            .filter((d) => d.is_active)
+            .map((d) => ({ id: d.id, name: d.name }))}
+          requireClockOut
+          title="Add missed cover driver entry"
+          onClose={() => setShowAddMissed(false)}
+          onSaved={() => {
+            setShowAddMissed(false);
+            onManualSaved?.();
+          }}
+        />
       )}
     </div>
   );

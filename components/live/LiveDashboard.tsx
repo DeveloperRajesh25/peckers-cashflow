@@ -12,6 +12,7 @@ import {
   formatShiftRange,
   formatTimeOnly,
   shiftHours,
+  toISODate,
 } from "@/lib/utils";
 import type {
   AllowedUser,
@@ -34,6 +35,12 @@ import {
   resolveCoverDriverShift,
   totalDeliveries,
 } from "@/lib/cover-driver-hours";
+import { Button } from "@/components/ui/Button";
+import { PlusIcon } from "@/components/ui/icons";
+import {
+  ManualClockEntryModal,
+  type ManualEntryCandidate,
+} from "@/components/clock/ManualClockEntryModal";
 
 type Props = {
   stores: Store[];
@@ -56,6 +63,14 @@ type Props = {
   coverDriverClocks?: CoverDriverClockEvent[];
   coverDriverShifts?: CoverDriverShift[];
   coverDriverSchedules?: CoverDriverScheduleDay[];
+  /**
+   * Show the "Add clock-in" buttons. Passed true only from /manager/live —
+   * gated on an explicit prop rather than `userRole`, so reusing this component
+   * elsewhere can't silently switch a pay-affecting write back on.
+   */
+  canAddClockIn?: boolean;
+  /** Server's "today" as YYYY-MM-DD, for the manual-entry date. */
+  todayISO?: string;
   userRole: string;
   userStoreId: string | null;
 };
@@ -147,10 +162,16 @@ export function LiveDashboard({
   coverDriverClocks = [],
   coverDriverShifts = [],
   coverDriverSchedules = [],
+  canAddClockIn = false,
+  todayISO: todayIsoProp,
   userRole,
   userStoreId,
 }: Props) {
   const router = useRouter();
+  const [adding, setAdding] = React.useState<{
+    mode: "employee" | "cover_driver";
+    storeId: string;
+  } | null>(null);
   const [now, setNow] = React.useState<Date>(() => new Date());
 
   // Local clock ticks every 30s so the "updated HH:MM" label and time-based
@@ -230,6 +251,9 @@ export function LiveDashboard({
     schedules.map((s) => [`${s.employee_id}:${s.weekday}`, s]),
   );
   const todayWeekday = (now.getDay() + 6) % 7;
+  // Prefer the server's date so a client in another timezone can't file a
+  // manual entry against the wrong day.
+  const todayIso = todayIsoProp ?? toISODate(now);
 
   const coverClockByDriver = new Map(
     coverDriverClocks.map((c) => [c.cover_driver_id, c]),
@@ -445,6 +469,17 @@ export function LiveDashboard({
                       {sorted.length} scheduled · {onShiftCount} on shift now
                     </p>
                   </div>
+                  {canAddClockIn && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      iconLeft={<PlusIcon size={14} />}
+                      onClick={() => setAdding({ mode: "employee", storeId: store.id })}
+                      title="Record a clock-in for someone who forgot"
+                    >
+                      Add employee clock-in
+                    </Button>
+                  )}
                 </div>
 
                 {/* Manager attendance — clock in/out for monitoring (fixed salary) */}
@@ -639,6 +674,18 @@ export function LiveDashboard({
                           </td>
                           <td className="px-2 py-2 text-center text-xs">
                             {formatTimeOnly(clock?.clock_in_at)}
+                            {clock?.manual_entry && (
+                              <span
+                                className="block text-[9px] uppercase tracking-wide text-warning"
+                                title={
+                                  clock.manual_entry_reason
+                                    ? `Entered by a manager — ${clock.manual_entry_reason}`
+                                    : "Entered by a manager (no location check)"
+                                }
+                              >
+                                manual
+                              </span>
+                            )}
                           </td>
                           <td className="px-2 py-2 text-center text-xs">
                             {formatTimeOnly(clock?.clock_out_at)}
@@ -680,8 +727,17 @@ export function LiveDashboard({
                   weekday would be noise. */}
               {hasCover && (
                 <div className="border-t-2 border-gold/30">
-                  <div className="px-3 py-2 bg-gold/5 text-[10px] uppercase tracking-wider text-gold/90">
-                    Cover drivers · {storeCoverRows.length}
+                  <div className="px-3 py-2 bg-gold/5 text-[10px] uppercase tracking-wider text-gold/90 flex items-center justify-between gap-2">
+                    <span>Cover drivers · {storeCoverRows.length}</span>
+                    {canAddClockIn && (
+                      <button
+                        onClick={() => setAdding({ mode: "cover_driver", storeId: store.id })}
+                        className="normal-case tracking-normal text-[11px] text-gold hover:underline"
+                        title="Record a clock-in for a cover driver who forgot"
+                      >
+                        + Add clock-in
+                      </button>
+                    )}
                   </div>
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm min-w-[720px]">
@@ -730,6 +786,18 @@ export function LiveDashboard({
                                 </td>
                                 <td className="px-2 py-2 text-center text-xs">
                                   {formatTimeOnly(clock?.clock_in_at)}
+                                  {clock?.manual_entry && (
+                                    <span
+                                      className="block text-[9px] uppercase tracking-wide text-warning"
+                                      title={
+                                        clock.manual_entry_reason
+                                          ? `Entered by a manager — ${clock.manual_entry_reason}`
+                                          : "Entered by a manager (no location check)"
+                                      }
+                                    >
+                                      manual
+                                    </span>
+                                  )}
                                 </td>
                                 <td className="px-2 py-2 text-center text-xs">
                                   {formatTimeOnly(clock?.clock_out_at)}
@@ -769,6 +837,56 @@ export function LiveDashboard({
           );
         })}
       </div>
+
+      {adding && (
+        <ManualClockEntryModal
+          mode={adding.mode}
+          eventDate={todayIso}
+          candidates={
+            adding.mode === "employee"
+              ? employees
+                  .filter(
+                    (e) =>
+                      e.employment_status === "active" &&
+                      todayStoreOf(e) === adding.storeId &&
+                      !clockByEmp.get(e.id)?.clock_in_at,
+                  )
+                  .map<ManualEntryCandidate>((e) => {
+                    const { shift } = effectiveShiftFor(e.id);
+                    return {
+                      id: e.id,
+                      name: e.name,
+                      scheduled_start: shift?.is_day_off ? null : shift?.start_time ?? null,
+                      scheduled_end: shift?.is_day_off ? null : shift?.end_time ?? null,
+                    };
+                  })
+              : coverDrivers
+                  .filter(
+                    (d) =>
+                      d.is_active &&
+                      d.store_id === adding.storeId &&
+                      !coverClockByDriver.get(d.id)?.clock_in_at,
+                  )
+                  .map<ManualEntryCandidate>((d) => {
+                    const eff = resolveCoverDriverShift(
+                      coverShiftByDriver.get(d.id),
+                      coverScheduleByDriverDay.get(`${d.id}:${todayWeekday}`),
+                    );
+                    return {
+                      id: d.id,
+                      name: d.name,
+                      scheduled_start: eff?.is_day_off ? null : eff?.start_time ?? null,
+                      scheduled_end: eff?.is_day_off ? null : eff?.end_time ?? null,
+                    };
+                  })
+          }
+          onClose={() => setAdding(null)}
+          onSaved={() => {
+            setAdding(null);
+            router.refresh();
+          }}
+        />
+      )}
 
       <Card className="text-xs text-text-muted">
         <div className="flex items-center gap-4 flex-wrap">

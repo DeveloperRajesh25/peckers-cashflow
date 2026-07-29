@@ -9,9 +9,11 @@
 
 import { clockedHours, weekdayIndex } from "./utils";
 import type {
+  CoverDailyApprovalRow,
   CoverDriver,
   CoverDriverClockEvent,
   CoverDriverDaySummary,
+  CoverDriverHoursComputed,
   CoverDriverScheduleDay,
   CoverDriverShift,
 } from "./types";
@@ -135,10 +137,74 @@ export function summariseCoverDriverDays(
           shortRate,
           longRate,
         }),
+        auto_clocked_out: Boolean(e.auto_clocked_out),
+        manual_entry: Boolean(e.manual_entry),
+        manual_entry_reason: e.manual_entry_reason ?? null,
       };
     })
     .sort((a, b) => {
       const d = b.work_date.localeCompare(a.work_date);
       return d !== 0 ? d : a.driver_name.localeCompare(b.driver_name);
     });
+}
+
+/**
+ * Clocked cover days merged with their approvals, for the Daily Approval screen.
+ *
+ * An approved day with no clock event in range still yields a row (a migrated
+ * legacy record, or one clocked outside the loaded window) so approved pay is
+ * never invisible on the screen that governs it.
+ */
+export function mergeCoverDailyApproval(
+  days: CoverDriverDaySummary[],
+  approved: CoverDriverHoursComputed[],
+): CoverDailyApprovalRow[] {
+  const map = new Map<string, CoverDailyApprovalRow>();
+
+  for (const d of days) {
+    map.set(`${d.cover_driver_id}:${d.work_date}`, {
+      cover_driver_id: d.cover_driver_id,
+      driver_name: d.driver_name,
+      store_id: d.store_id,
+      work_date: d.work_date,
+      clocked_hours: d.total_hours,
+      approved: false,
+      approved_hours: null,
+      approved_row_id: null,
+      auto_clocked_out: d.auto_clocked_out,
+      manual_entry: d.manual_entry,
+      manual_entry_reason: d.manual_entry_reason,
+    });
+  }
+
+  for (const a of approved) {
+    if (!a.approved) continue;
+    const key = `${a.cover_driver_id}:${a.work_date}`;
+    const hours = Number(a.total_hours_worked) || 0;
+    const row = map.get(key);
+    if (row) {
+      row.approved = true;
+      row.approved_hours = hours;
+      row.approved_row_id = a.id;
+    } else {
+      map.set(key, {
+        cover_driver_id: a.cover_driver_id,
+        driver_name: a.driver_name,
+        store_id: a.store_id,
+        work_date: a.work_date,
+        clocked_hours: hours,
+        approved: true,
+        approved_hours: hours,
+        approved_row_id: a.id,
+        auto_clocked_out: false,
+        manual_entry: false,
+        manual_entry_reason: null,
+      });
+    }
+  }
+
+  return Array.from(map.values()).sort((a, b) => {
+    const d = b.work_date.localeCompare(a.work_date);
+    return d !== 0 ? d : a.driver_name.localeCompare(b.driver_name);
+  });
 }

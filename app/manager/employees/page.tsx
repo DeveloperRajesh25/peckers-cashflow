@@ -41,7 +41,7 @@ export default async function ManagerEmployeesPage() {
     supabase.from("stores").select("*").eq("id", storeId),
     supabase
       .from("clock_events")
-      .select("id, employee_id, store_id, event_date, clock_in_at, clock_out_at, hours_approved, approved_hours, auto_clocked_out")
+      .select("id, employee_id, store_id, event_date, clock_in_at, clock_out_at, hours_approved, approved_hours, auto_clocked_out, manual_entry, manual_entry_reason")
       .eq("store_id", storeId)
       .gte("event_date", eightWeeksBack)
       .not("clock_out_at", "is", null)
@@ -71,6 +71,10 @@ export default async function ManagerEmployeesPage() {
       hourly_rate: e.hourly_rate,
     })).map((e) => [e.id, e]),
   );
+  // A failed clock query must not read as "nobody worked" on a payroll screen.
+  if (clocksRes.error) {
+    console.error("[manager/employees] clock_events query failed:", clocksRes.error.message);
+  }
   const clockSummaries = groupClockEventsByWeek(clocksRes.data ?? [], empMap);
   const clockDailySummaries = mapClockEventsToDaily(clocksRes.data ?? [], empMap);
 
@@ -96,6 +100,7 @@ export default async function ManagerEmployeesPage() {
         coverDriverHours={(coverHoursRes.data ?? []) as any[]}
         clockSummaries={clockSummaries}
         clockDailySummaries={clockDailySummaries}
+        loadError={clocksRes.error?.message ?? null}
         todayISO={todayISO()}
         stores={storesRes.data ?? []}
         defaultStoreId={storeId || null}
