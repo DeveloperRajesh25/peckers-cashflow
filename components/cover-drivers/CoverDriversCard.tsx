@@ -5,10 +5,11 @@ import { Button } from "@/components/ui/Button";
 import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { useToast } from "@/components/ui/Toast";
 import { PlusIcon, ClockIcon } from "@/components/ui/icons";
 import { AddCoverDriverModal } from "./AddCoverDriverModal";
-import { archiveCoverDriver } from "@/app/actions/cover-drivers";
+import { EditCoverDriverModal } from "./EditCoverDriverModal";
+import { CoverDriverScheduleModal } from "./CoverDriverScheduleModal";
+import { CoverDriverCard } from "./CoverDriverCard";
 import { formatDDMMYYYY, formatGBP } from "@/lib/utils";
 import type { CoverDriver, CoverDriverDaySummary, Store } from "@/lib/types";
 
@@ -31,10 +32,10 @@ export function CoverDriversCard({
   showStoreColumn?: boolean;
   onChanged: () => void;
 }) {
-  const toast = useToast();
   const [showAdd, setShowAdd] = React.useState(false);
+  const [editing, setEditing] = React.useState<CoverDriver | null>(null);
+  const [scheduling, setScheduling] = React.useState<CoverDriver | null>(null);
   const [showInactive, setShowInactive] = React.useState(false);
-  const [archivingId, setArchivingId] = React.useState<string | null>(null);
 
   const storeName = React.useMemo(() => {
     const map = new Map(stores.map((s) => [s.id, s.name]));
@@ -42,28 +43,6 @@ export function CoverDriversCard({
   }, [stores]);
 
   const visibleDrivers = drivers.filter((d) => showInactive || d.is_active);
-
-  async function handleArchive(driver: CoverDriver) {
-    const archive = driver.is_active;
-    if (
-      archive &&
-      !confirm(
-        `Deactivate ${driver.name}? They keep their history but can no longer clock in.`,
-      )
-    )
-      return;
-    setArchivingId(driver.id);
-    try {
-      await archiveCoverDriver(driver.id, archive);
-      toast.success(archive ? "Cover driver deactivated" : "Cover driver reactivated");
-      onChanged();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed");
-    } finally {
-      setArchivingId(null);
-    }
-  }
-
   const inactiveCount = drivers.length - drivers.filter((d) => d.is_active).length;
 
   return (
@@ -110,40 +89,16 @@ export function CoverDriversCard({
           }
         />
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
           {visibleDrivers.map((d) => (
-            <div
+            <CoverDriverCard
               key={d.id}
-              className="rounded-xl border border-border p-4 flex flex-col gap-2 bg-surface"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="font-medium truncate">{d.name}</div>
-                  <div className="text-xs text-text-muted">{storeName(d.store_id)}</div>
-                </div>
-                {d.is_active ? (
-                  <Badge variant="success">Active</Badge>
-                ) : (
-                  <Badge variant="neutral">Inactive</Badge>
-                )}
-              </div>
-              <div className="text-xs text-text-muted">
-                {formatGBP(d.hourly_cash_rate)}/hr cash
-                {d.short_delivery_rate != null && (
-                  <> · short {formatGBP(d.short_delivery_rate)}</>
-                )}
-                {d.long_delivery_rate != null && <> · long {formatGBP(d.long_delivery_rate)}</>}
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="self-start text-text-muted hover:text-danger"
-                loading={archivingId === d.id}
-                onClick={() => handleArchive(d)}
-              >
-                {d.is_active ? "Deactivate" : "Reactivate"}
-              </Button>
-            </div>
+              driver={d}
+              stores={stores}
+              onEdit={() => setEditing(d)}
+              onSchedule={() => setScheduling(d)}
+              onChanged={onChanged}
+            />
           ))}
         </div>
       )}
@@ -218,6 +173,25 @@ export function CoverDriversCard({
             setShowAdd(false);
             onChanged();
           }}
+        />
+      )}
+      {editing && (
+        <EditCoverDriverModal
+          driver={editing}
+          stores={stores}
+          lockStore={lockToStore}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            onChanged();
+          }}
+        />
+      )}
+      {scheduling && (
+        <CoverDriverScheduleModal
+          driver={scheduling}
+          onClose={() => setScheduling(null)}
+          onSaved={onChanged}
         />
       )}
     </Card>

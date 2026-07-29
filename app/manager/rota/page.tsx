@@ -12,6 +12,10 @@ import {
   todayISO,
 } from "@/lib/utils";
 import type {
+  CoverDriver,
+  CoverDriverClockEvent,
+  CoverDriverScheduleDay,
+  CoverDriverShift,
   Employee,
   EmployeeScheduleDay,
   RotaShift,
@@ -50,8 +54,18 @@ export default async function ManagerRotaPage({
   // display to the active store). Only the non-sensitive employee columns are
   // fetched — the rota never needs bank details, so other stores' payment info
   // is not pulled into the page.
-  const [storesRes, employeesRes, shiftsRes, clocksRes, deliveriesRes, schedulesRes] =
-    await Promise.all([
+  const [
+    storesRes,
+    employeesRes,
+    shiftsRes,
+    clocksRes,
+    deliveriesRes,
+    schedulesRes,
+    coverDriversRes,
+    coverShiftsRes,
+    coverSchedulesRes,
+    coverClocksRes,
+  ] = await Promise.all([
       supabase.from("stores").select("*").order("name"),
       supabase
         .from("employees")
@@ -74,6 +88,26 @@ export default async function ManagerRotaPage({
         .eq("store_id", storeId)
         .eq("week_start_date", weekStartIso),
       supabase.from("employee_schedules").select("*"),
+      // Cover drivers belong to one store and aren't loaned out, so unlike
+      // staff these are scoped to this store rather than loaded estate-wide.
+      supabase
+        .from("cover_drivers")
+        .select("*")
+        .eq("store_id", storeId)
+        .eq("is_active", true),
+      supabase
+        .from("cover_driver_shifts")
+        .select("*")
+        .eq("store_id", storeId)
+        .gte("shift_date", startIso)
+        .lte("shift_date", endIso),
+      supabase.from("cover_driver_schedules").select("*"),
+      supabase
+        .from("cover_driver_clock_events")
+        .select("*")
+        .eq("store_id", storeId)
+        .gte("event_date", startIso)
+        .lte("event_date", todayISO()),
     ]);
 
   return (
@@ -89,6 +123,10 @@ export default async function ManagerRotaPage({
         clocks={(clocksRes.data ?? []) as ClockEvent[]}
         weeklyDeliveries={(deliveriesRes.data ?? []) as WeeklyDelivery[]}
         schedules={(schedulesRes.data ?? []) as EmployeeScheduleDay[]}
+        coverDrivers={(coverDriversRes.data ?? []) as CoverDriver[]}
+        coverDriverShifts={(coverShiftsRes.data ?? []) as CoverDriverShift[]}
+        coverDriverSchedules={(coverSchedulesRes.data ?? []) as CoverDriverScheduleDay[]}
+        coverDriverClocks={(coverClocksRes.data ?? []) as CoverDriverClockEvent[]}
         minWageBands={settings.min_wage_bands}
         shiftTimes={settings.shift_times}
         rangeStartIso={startIso}

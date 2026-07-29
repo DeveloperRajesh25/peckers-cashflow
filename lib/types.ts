@@ -236,6 +236,43 @@ export type CoverDriver = {
   created_at: string;
 };
 
+/**
+ * A cover driver's shift on a SPECIFIC date — the per-date override of their
+ * weekly availability. Mirrors ManagerShift: like a manager, a cover driver is
+ * not an `employees` row, so this keys on its own parent table.
+ */
+export type CoverDriverShift = {
+  id: string;
+  cover_driver_id: string;
+  store_id: string;
+  shift_date: string;
+  start_time: string | null;
+  end_time: string | null;
+  is_day_off: boolean;
+  scheduled_hours: number;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  created_by: string | null;
+  updated_by: string | null;
+};
+
+/**
+ * One weekday of a cover driver's recurring availability — the fallback when no
+ * CoverDriverShift exists for a date. Availability only: it never generates
+ * rota_shifts, because cover drivers stay off the employee rota.
+ */
+export type CoverDriverScheduleDay = {
+  id: string;
+  cover_driver_id: string;
+  weekday: number;
+  is_working: boolean;
+  start_time: string | null;
+  end_time: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type CoverDriverClockEvent = {
   id: string;
   cover_driver_id: string;
@@ -253,6 +290,10 @@ export type CoverDriverClockEvent = {
   extra_long_deliveries: number;
   extra_short_reason: string | null;
   extra_long_reason: string | null;
+  /** Set when the nightly sweep closed a forgotten clock-out (see lib/auto-clock-out). */
+  auto_clocked_out?: boolean;
+  auto_clock_out_source?: string | null;
+  auto_clock_out_at?: string | null;
   created_at: string;
 };
 

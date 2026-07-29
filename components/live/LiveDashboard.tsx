@@ -16,6 +16,10 @@ import {
 import type {
   AllowedUser,
   ClockEvent,
+  CoverDriver,
+  CoverDriverClockEvent,
+  CoverDriverScheduleDay,
+  CoverDriverShift,
   Employee,
   EmployeeScheduleDay,
   LiveDashboardStatus,
@@ -25,6 +29,11 @@ import type {
   Store,
 } from "@/lib/types";
 import { hasRole } from "@/lib/types";
+import {
+  coverDriverPay,
+  resolveCoverDriverShift,
+  totalDeliveries,
+} from "@/lib/cover-driver-hours";
 
 type Props = {
   stores: Store[];
@@ -41,6 +50,12 @@ type Props = {
   /** Today's manager rota shifts — used to place a manager scheduled to cover
    *  another store under that store before they've clocked in. */
   managerShifts?: ManagerShift[];
+  /** Cover drivers. The board's cover section is hidden entirely when a store
+   *  has none — most stores only use them at weekends. */
+  coverDrivers?: CoverDriver[];
+  coverDriverClocks?: CoverDriverClockEvent[];
+  coverDriverShifts?: CoverDriverShift[];
+  coverDriverSchedules?: CoverDriverScheduleDay[];
   userRole: string;
   userStoreId: string | null;
 };
@@ -75,9 +90,16 @@ const ROW_BG: Record<LiveDashboardStatus, string> = {
   absent: "bg-danger/10",
 };
 
+/**
+ * Only the two timestamps are read, so this is typed structurally rather than
+ * as ClockEvent — that lets cover_driver_clock_events reuse the exact same
+ * late/absent thresholds instead of a second copy that could drift.
+ */
+type ClockLike = { clock_in_at: string | null; clock_out_at: string | null };
+
 function computeStatus(
   shift: EffShift | null | undefined,
-  clock: ClockEvent | null | undefined,
+  clock: ClockLike | null | undefined,
   now: Date,
 ): LiveDashboardStatus {
   if (!shift) return "tbc";
@@ -121,6 +143,10 @@ export function LiveDashboard({
   managers = [],
   managerClocks = [],
   managerShifts = [],
+  coverDrivers = [],
+  coverDriverClocks = [],
+  coverDriverShifts = [],
+  coverDriverSchedules = [],
   userRole,
   userStoreId,
 }: Props) {
@@ -204,6 +230,26 @@ export function LiveDashboard({
     schedules.map((s) => [`${s.employee_id}:${s.weekday}`, s]),
   );
   const todayWeekday = (now.getDay() + 6) % 7;
+
+  const coverClockByDriver = new Map(
+    coverDriverClocks.map((c) => [c.cover_driver_id, c]),
+  );
+  const coverShiftByDriver = new Map(
+    coverDriverShifts.map((s) => [s.cover_driver_id, s]),
+  );
+  const coverScheduleByDriverDay = new Map(
+    coverDriverSchedules.map((s) => [`${s.cover_driver_id}:${s.weekday}`, s]),
+  );
+
+  // Same "where are they actually today" rule as staff: the store they clocked
+  // in at wins, then the rota cell, then their home store.
+  const coverTodayStoreOf = (d: CoverDriver): string | null => {
+    const c = coverClockByDriver.get(d.id);
+    if (c?.store_id) return c.store_id;
+    const s = coverShiftByDriver.get(d.id);
+    if (s?.store_id && !s.is_day_off) return s.store_id;
+    return d.store_id ?? null;
+  };
 
   // Real published rota row for today, else the recurring template for today's
   // weekday — so an expected shift (and late/absent status) still shows even
@@ -325,8 +371,67 @@ export function LiveDashboard({
             return s + (mc?.clock_in_at ? Number(m.fixed_daily_wage) || 0 : 0);
           }, 0);
           const managerActualTotal = managerExpectedTotal;
-          const expectedGrandTotal = expectedTotal + managerExpectedTotal;
-          const actualGrandTotal = actualTotal + managerActualTotal;
+
+          // Cover drivers: only those actually attached to this store today.
+          // A store with none renders no cover section at all — most stores
+          // only use cover drivers at weekends, so an empty block every weekday
+          // would be noise.
+          const storeCoverRows = coverDrivers
+            .filter((d) => d.is_active && coverTodayStoreOf(d) === store.id)
+            .map((driver) => {
+              const clock = coverClockByDriver.get(driver.id) ?? null;
+              const shift = resolveCoverDriverShift(
+                coverShiftByDriver.get(driver.id),
+                coverScheduleByDriverDay.get(`${driver.id}:${todayWeekday}`),
+              );
+              const status = computeStatus(shift, clock, now);
+              const rate = Number(driver.hourly_cash_rate) || 0;
+              const expHours =
+                shift && !shift.is_day_off
+                  ? shift.scheduled_hours && shift.scheduled_hours > 0
+                    ? shift.scheduled_hours
+                    : shiftHours(shift.start_time, shift.end_time)
+                  : 0;
+              const actHours = clockedHours(clock?.clock_in_at, clock?.clock_out_at, now);
+              const shortD = totalDeliveries(
+                clock?.short_deliveries_count,
+                clock?.extra_short_deliveries,
+              );
+              const longD = totalDeliveries(
+                clock?.long_deliveries_count,
+                clock?.extra_long_deliveries,
+              );
+              return {
+                driver,
+                shift,
+                clock,
+                status,
+                deliveries: shortD + longD,
+                // Expected pay values hours only — deliveries aren't known until
+                // they're done, so counting them here would inflate the forecast.
+                expectedWage: expHours * rate,
+                actualWage: coverDriverPay({
+                  hours: actHours,
+                  hourlyRate: rate,
+                  shortDeliveries: shortD,
+                  longDeliveries: longD,
+                  shortRate: driver.short_delivery_rate,
+                  longRate: driver.long_delivery_rate,
+                }),
+              };
+            })
+            .sort((a, b) => a.driver.name.localeCompare(b.driver.name));
+
+          const coverExpectedTotal = storeCoverRows.reduce(
+            (s, r) => s + r.expectedWage,
+            0,
+          );
+          const coverActualTotal = storeCoverRows.reduce((s, r) => s + r.actualWage, 0);
+          const hasCover = storeCoverRows.length > 0;
+
+          const expectedGrandTotal =
+            expectedTotal + managerExpectedTotal + coverExpectedTotal;
+          const actualGrandTotal = actualTotal + managerActualTotal + coverActualTotal;
 
           return (
             <Card key={store.id} className="p-0 overflow-hidden">
@@ -414,9 +519,10 @@ export function LiveDashboard({
                     <div className="text-base font-semibold tabular-nums text-text-primary">
                       {formatGBP(expectedGrandTotal)}
                     </div>
-                    {isSuperAdmin && storeManagers.length > 0 && (
+                    {isSuperAdmin && (storeManagers.length > 0 || hasCover) && (
                       <div className="text-[10px] text-text-muted mt-0.5">
                         {formatGBP(expectedTotal)} staff + {formatGBP(managerExpectedTotal)} mgrs
+                        {hasCover && <> + {formatGBP(coverExpectedTotal)} cover</>}
                       </div>
                     )}
                   </div>
@@ -427,9 +533,10 @@ export function LiveDashboard({
                     <div className="text-base font-semibold tabular-nums text-gold">
                       {formatGBP(actualGrandTotal)}
                     </div>
-                    {isSuperAdmin && storeManagers.length > 0 && (
+                    {isSuperAdmin && (storeManagers.length > 0 || hasCover) && (
                       <div className="text-[10px] text-text-muted mt-0.5">
                         {formatGBP(actualTotal)} staff + {formatGBP(managerActualTotal)} mgrs
+                        {hasCover && <> + {formatGBP(coverActualTotal)} cover</>}
                       </div>
                     )}
                   </div>
@@ -567,6 +674,97 @@ export function LiveDashboard({
                   </tbody>
                 </table>
               </div>
+
+              {/* Cover drivers — rendered only when this store has any today.
+                  Most stores use them at weekends only, so an empty block every
+                  weekday would be noise. */}
+              {hasCover && (
+                <div className="border-t-2 border-gold/30">
+                  <div className="px-3 py-2 bg-gold/5 text-[10px] uppercase tracking-wider text-gold/90">
+                    Cover drivers · {storeCoverRows.length}
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm min-w-[720px]">
+                      <thead className="bg-surface-hover text-xs uppercase tracking-wider text-text-muted">
+                        <tr>
+                          <th className="text-left px-3 py-2">Employee</th>
+                          <th className="text-left px-2 py-2">Role</th>
+                          <th className="text-left px-2 py-2">Shift</th>
+                          <th className="text-center px-2 py-2">In</th>
+                          <th className="text-center px-2 py-2">Out</th>
+                          <th className="text-center px-2 py-2">Status</th>
+                          <th className="text-right px-2 py-2">Exp. £</th>
+                          <th className="text-right px-2 py-2">Act. £</th>
+                          <th className="text-center px-2 py-2">Deliv.</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {storeCoverRows.map(
+                          ({ driver, shift, clock, status, deliveries, expectedWage, actualWage }) => {
+                            const style = STATUS_STYLES[status];
+                            return (
+                              <tr
+                                key={driver.id}
+                                className={
+                                  "border-t border-border " + (ROW_BG[status] ?? "")
+                                }
+                              >
+                                <td className="px-3 py-2 font-medium text-text-primary">
+                                  {driver.name}
+                                </td>
+                                <td className="px-2 py-2 text-text-subtle">Cover Driver</td>
+                                <td className="px-2 py-2 text-text-subtle">
+                                  {formatShiftRange(
+                                    shift?.is_day_off ?? false,
+                                    shift?.start_time ?? null,
+                                    shift?.end_time ?? null,
+                                  )}
+                                  {shift?.fromTemplate && (
+                                    <span
+                                      className="ml-1 text-[9px] uppercase tracking-wide text-text-muted"
+                                      title="From the driver's usual weekly availability (no shift set for today)"
+                                    >
+                                      usual
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="px-2 py-2 text-center text-xs">
+                                  {formatTimeOnly(clock?.clock_in_at)}
+                                </td>
+                                <td className="px-2 py-2 text-center text-xs">
+                                  {formatTimeOnly(clock?.clock_out_at)}
+                                </td>
+                                <td className="px-2 py-2 text-center">
+                                  <span
+                                    className={
+                                      "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border " +
+                                      style.cls
+                                    }
+                                  >
+                                    {style.label}
+                                  </span>
+                                </td>
+                                <td className="px-2 py-2 text-right text-xs tabular-nums text-text-subtle">
+                                  {expectedWage > 0 ? formatGBP(expectedWage) : "—"}
+                                </td>
+                                <td className="px-2 py-2 text-right text-xs tabular-nums text-text-primary">
+                                  {actualWage > 0 ? formatGBP(actualWage) : "—"}
+                                </td>
+                                <td className="px-2 py-2 text-center text-xs text-text-subtle">
+                                  {clock?.short_deliveries_count == null &&
+                                  clock?.long_deliveries_count == null
+                                    ? "—"
+                                    : deliveries}
+                                </td>
+                              </tr>
+                            );
+                          },
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </Card>
           );
         })}

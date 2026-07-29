@@ -13,6 +13,10 @@ import {
 import { todayISO } from "@/lib/utils";
 import type {
   ClockEvent,
+  CoverDriver,
+  CoverDriverClockEvent,
+  CoverDriverScheduleDay,
+  CoverDriverShift,
   DailyCashEntry,
   Employee,
   EmployeeScheduleDay,
@@ -41,6 +45,10 @@ export default async function ManagerLivePage() {
     schedulesRes,
     cashRes,
     managerClockRes,
+    coverDriversRes,
+    coverClocksRes,
+    coverShiftsRes,
+    coverSchedulesRes,
   ] = await Promise.all([
     // All stores — the clock card needs every store's geofence to detect which
     // one the manager is physically at (and nudge them to switch if needed).
@@ -67,6 +75,25 @@ export default async function ManagerLivePage() {
       .select("*")
       .eq("event_date", today)
       .maybeSingle(),
+    // Cover drivers are scoped to this store — unlike employees they aren't
+    // shared between stores, so there's no "visiting cover driver" case to
+    // resolve across the estate.
+    supabase
+      .from("cover_drivers")
+      .select("*")
+      .eq("store_id", storeId ?? "")
+      .eq("is_active", true),
+    supabase
+      .from("cover_driver_clock_events")
+      .select("*")
+      .eq("event_date", today)
+      .eq("store_id", storeId ?? ""),
+    supabase
+      .from("cover_driver_shifts")
+      .select("*")
+      .eq("shift_date", today)
+      .eq("store_id", storeId ?? ""),
+    supabase.from("cover_driver_schedules").select("*"),
   ]);
 
   const relevantIds = Array.from(
@@ -127,6 +154,10 @@ export default async function ManagerLivePage() {
         shifts={(shiftsRes.data ?? []) as RotaShift[]}
         clocks={(clocksRes.data ?? []) as ClockEvent[]}
         schedules={(schedulesRes.data ?? []) as EmployeeScheduleDay[]}
+        coverDrivers={(coverDriversRes.data ?? []) as CoverDriver[]}
+        coverDriverClocks={(coverClocksRes.data ?? []) as CoverDriverClockEvent[]}
+        coverDriverShifts={(coverShiftsRes.data ?? []) as CoverDriverShift[]}
+        coverDriverSchedules={(coverSchedulesRes.data ?? []) as CoverDriverScheduleDay[]}
         userRole="manager"
         userStoreId={storeId}
       />

@@ -12,6 +12,10 @@ import {
 } from "@/lib/utils";
 import type {
   AllowedUser,
+  CoverDriver,
+  CoverDriverClockEvent,
+  CoverDriverScheduleDay,
+  CoverDriverShift,
   Employee,
   EmployeeScheduleDay,
   ManagerClockEvent,
@@ -52,6 +56,10 @@ export default async function RotaPage({
     managersRes,
     managerShiftsRes,
     managerClocksRes,
+    coverDriversRes,
+    coverShiftsRes,
+    coverSchedulesRes,
+    coverClocksRes,
   ] = await Promise.all([
     supabase.from("stores").select("*").order("name"),
     supabase
@@ -85,6 +93,18 @@ export default async function RotaPage({
       .select("*")
       .gte("event_date", startIso)
       .lte("event_date", todayISO()),
+    supabase.from("cover_drivers").select("*").eq("is_active", true),
+    supabase
+      .from("cover_driver_shifts")
+      .select("*")
+      .gte("shift_date", startIso)
+      .lte("shift_date", endIso),
+    supabase.from("cover_driver_schedules").select("*"),
+    supabase
+      .from("cover_driver_clock_events")
+      .select("*")
+      .gte("event_date", startIso)
+      .lte("event_date", todayISO()),
   ]);
 
   return (
@@ -103,6 +123,10 @@ export default async function RotaPage({
         managers={(managersRes.data ?? []) as AllowedUser[]}
         managerShifts={(managerShiftsRes.data ?? []) as ManagerShift[]}
         managerClocks={(managerClocksRes.data ?? []) as ManagerClockEvent[]}
+        coverDrivers={(coverDriversRes.data ?? []) as CoverDriver[]}
+        coverDriverShifts={(coverShiftsRes.data ?? []) as CoverDriverShift[]}
+        coverDriverSchedules={(coverSchedulesRes.data ?? []) as CoverDriverScheduleDay[]}
+        coverDriverClocks={(coverClocksRes.data ?? []) as CoverDriverClockEvent[]}
         minWageBands={settings.min_wage_bands}
         shiftTimes={settings.shift_times}
         rangeStartIso={startIso}

@@ -4,38 +4,36 @@ import * as React from "react";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
-import { createCoverDriverWithAccount } from "@/app/actions/cover-drivers";
-import { CredentialsModal, type Credentials } from "@/components/accounts/CredentialsModal";
+import { updateCoverDriver } from "@/app/actions/cover-drivers";
 import {
   CoverDriverProfileForm,
-  emptyCoverDriverForm,
+  coverDriverFormFrom,
   validateCoverDriverForm,
   type CoverDriverFormErrors,
   type CoverDriverFormState,
 } from "./CoverDriverProfileForm";
-import type { Store } from "@/lib/types";
+import type { CoverDriver, Store } from "@/lib/types";
 
-export function AddCoverDriverModal({
+export function EditCoverDriverModal({
+  driver,
   stores,
-  defaultStoreId,
   lockStore,
   onClose,
-  onCreated,
+  onSaved,
 }: {
+  driver: CoverDriver;
   stores: Store[];
-  defaultStoreId?: string | null;
   /** Manager portal: store is fixed to the manager's store. */
   lockStore?: boolean;
   onClose: () => void;
-  onCreated: () => void;
+  onSaved: () => void;
 }) {
   const toast = useToast();
   const [form, setForm] = React.useState<CoverDriverFormState>(() =>
-    emptyCoverDriverForm(defaultStoreId ?? stores[0]?.id ?? ""),
+    coverDriverFormFrom(driver),
   );
   const [errors, setErrors] = React.useState<CoverDriverFormErrors>({});
   const [busy, setBusy] = React.useState(false);
-  const [creds, setCreds] = React.useState<Credentials | null>(null);
 
   async function submit() {
     const errs = validateCoverDriverForm(form);
@@ -47,7 +45,8 @@ export function AddCoverDriverModal({
 
     setBusy(true);
     try {
-      const res = await createCoverDriverWithAccount({
+      await updateCoverDriver({
+        id: driver.id,
         name: form.name,
         store_id: form.store_id,
         phone: form.phone || null,
@@ -59,11 +58,8 @@ export function AddCoverDriverModal({
         long_delivery_rate: form.long_delivery_rate ? Number(form.long_delivery_rate) : null,
         notes: form.notes || null,
       });
-      setCreds({
-        username: res.username,
-        password: res.password,
-        loginUrl: res.loginUrl,
-      });
+      toast.success("Cover driver updated");
+      onSaved();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
     } finally {
@@ -71,27 +67,12 @@ export function AddCoverDriverModal({
     }
   }
 
-  if (creds) {
-    return (
-      <CredentialsModal
-        open
-        onClose={() => {
-          setCreds(null);
-          onCreated();
-        }}
-        title={`${form.name.trim()} added`}
-        subtitle="Cover driver login created. Share these with them — the password is shown once."
-        credentials={creds}
-      />
-    );
-  }
-
   return (
     <Modal
       open
       onClose={onClose}
-      title="Add Cover Driver"
-      description="Part-time cover driver + auto-generated login. Paid in cash only — no NI and no bank details."
+      title={`Edit ${driver.name}`}
+      description="Rates apply to future shifts only — already-approved days keep the rate they were approved at."
       size="lg"
       footer={
         <>
@@ -99,7 +80,7 @@ export function AddCoverDriverModal({
             Cancel
           </Button>
           <Button onClick={submit} loading={busy}>
-            Create cover driver &amp; login
+            Save changes
           </Button>
         </>
       }

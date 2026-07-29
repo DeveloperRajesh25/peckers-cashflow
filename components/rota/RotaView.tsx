@@ -10,6 +10,8 @@ import { DateRangePicker } from "@/components/ui/DateRangePicker";
 import { ShiftEditModal } from "./ShiftEditModal";
 import { DeliveryEditModal } from "./DeliveryEditModal";
 import { ManagerShiftEditModal } from "./ManagerShiftEditModal";
+import { CoverDriverShiftEditModal } from "./CoverDriverShiftEditModal";
+import { resolveCoverDriverShift, weekdayOf } from "@/lib/cover-driver-hours";
 import {
   WEEKDAY_SHORT,
   addDays,
@@ -32,6 +34,10 @@ import type {
   ClockEvent,
   Employee,
   EmployeeScheduleDay,
+  CoverDriver,
+  CoverDriverClockEvent,
+  CoverDriverScheduleDay,
+  CoverDriverShift,
   ManagerClockEvent,
   ManagerShift,
   RotaShift,
@@ -59,6 +65,13 @@ type Props = {
   managers?: AllowedUser[];
   managerShifts?: ManagerShift[];
   managerClocks?: ManagerClockEvent[];
+  /** Cover driver rota, shown below the employee rota. Hidden entirely when the
+   *  store has no cover drivers; cells stay blank on days they aren't booked,
+   *  which is most weekdays. */
+  coverDrivers?: CoverDriver[];
+  coverDriverShifts?: CoverDriverShift[];
+  coverDriverSchedules?: CoverDriverScheduleDay[];
+  coverDriverClocks?: CoverDriverClockEvent[];
   minWageBands?: MinWageBands;
   shiftTimes?: ShiftTimeSettings;
   rangeStartIso: string;
@@ -77,6 +90,10 @@ export function RotaView({
   managers = [],
   managerShifts = [],
   managerClocks = [],
+  coverDrivers = [],
+  coverDriverShifts = [],
+  coverDriverSchedules = [],
+  coverDriverClocks = [],
   minWageBands = DEFAULT_SETTINGS.min_wage_bands,
   shiftTimes = DEFAULT_SETTINGS.shift_times,
   rangeStartIso,
@@ -117,6 +134,12 @@ export function RotaView({
     existing: WeeklyDelivery | null;
     weekDays: string[];
     events: ClockEvent[];
+  } | null>(null);
+  const [editingCoverShift, setEditingCoverShift] = React.useState<{
+    driver: CoverDriver;
+    date: string;
+    existing: CoverDriverShift | null;
+    prefill: { start: string; end: string } | null;
   } | null>(null);
   const [editingManagerShift, setEditingManagerShift] = React.useState<{
     manager: AllowedUser;
@@ -271,6 +294,68 @@ export function RotaView({
     for (const c of managerClocks) m.set(`${c.manager_id}:${c.event_date}`, c);
     return m;
   }, [managerClocks]);
+
+  // ---- Cover drivers ----
+  // Unlike staff and managers, cover drivers belong to one store and aren't
+  // loaned out, so there's no "visiting" case to resolve here.
+  const activeCoverDrivers = React.useMemo(
+    () =>
+      coverDrivers
+        .filter((d) => d.is_active && d.store_id === activeStoreId)
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [coverDrivers, activeStoreId],
+  );
+
+  const coverShiftByKey = React.useMemo(() => {
+    const m = new Map<string, CoverDriverShift>();
+    for (const s of coverDriverShifts) m.set(`${s.cover_driver_id}:${s.shift_date}`, s);
+    return m;
+  }, [coverDriverShifts]);
+
+  const coverScheduleByKey = React.useMemo(() => {
+    const m = new Map<string, CoverDriverScheduleDay>();
+    for (const s of coverDriverSchedules) m.set(`${s.cover_driver_id}:${s.weekday}`, s);
+    return m;
+  }, [coverDriverSchedules]);
+
+  const coverClockByKey = React.useMemo(() => {
+    const m = new Map<string, CoverDriverClockEvent>();
+    for (const c of coverDriverClocks) m.set(`${c.cover_driver_id}:${c.event_date}`, c);
+    return m;
+  }, [coverDriverClocks]);
+
+  // Booked hours across the visible range. Counts only saved rota cells — the
+  // weekly availability pattern is a hint, not a booking, so it must not inflate
+  // the total or the expected wage.
+  function rangeCoverTotalHours(driverId: string): number {
+    return weekDays.reduce((sum, d) => {
+      const cell = coverShiftByKey.get(`${driverId}:${toISODate(d)}`);
+      if (!cell || cell.is_day_off) return sum;
+      return sum + (Number(cell.scheduled_hours) || 0);
+    }, 0);
+  }
+
+  // Deliveries logged at clock-out, summed per cover driver for the shown range.
+  // Read-only: cover drivers have no 4-week average or Vita Mojo cross-check —
+  // weekly_deliveries is keyed to `employees`, and they are ad-hoc anyway, so
+  // there is no baseline to average against.
+  const coverDeliveriesByDriver = React.useMemo(() => {
+    const weekSet = new Set(weekDays.map((d) => toISODate(d)));
+    const live = new Map<string, number>();
+    const extra = new Map<string, number>();
+    for (const c of coverDriverClocks) {
+      if (!weekSet.has(c.event_date)) continue;
+      if (c.short_deliveries_count != null || c.long_deliveries_count != null) {
+        const total =
+          (Number(c.short_deliveries_count) || 0) + (Number(c.long_deliveries_count) || 0);
+        live.set(c.cover_driver_id, (live.get(c.cover_driver_id) ?? 0) + total);
+      }
+      const ex =
+        (Number(c.extra_short_deliveries) || 0) + (Number(c.extra_long_deliveries) || 0);
+      if (ex) extra.set(c.cover_driver_id, (extra.get(c.cover_driver_id) ?? 0) + ex);
+    }
+    return { live, extra };
+  }, [coverDriverClocks, weekDays]);
 
   // Hours scheduled AT THE ACTIVE STORE only — a manager can be covering another
   // store on a given day, and those hours belong to that store's rota.
@@ -1108,6 +1193,211 @@ export function RotaView({
         </div>
       </Card>
 
+      {/* Cover driver rota — hidden entirely when this store has no cover
+          drivers. Cells stay blank on days they aren't booked, which is most
+          weekdays: cover drivers are mainly a weekend resource. */}
+      {activeCoverDrivers.length > 0 && (
+        <Card className="overflow-hidden p-0">
+          <CardHeader className="px-5 pt-5">
+            <div>
+              <CardTitle>{activeStore?.name ?? "—"} Cover Driver Rota</CardTitle>
+              <CardDescription>
+                {activeCoverDrivers.length} cover driver
+                {activeCoverDrivers.length === 1 ? "" : "s"} · paid cash per hour worked —
+                booking a day sets the expected shift, pay still comes from what they clock
+              </CardDescription>
+            </div>
+          </CardHeader>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[900px]">
+              <thead className="bg-surface-hover text-xs uppercase tracking-wider text-text-muted">
+                <tr>
+                  <th className="text-left px-3 py-2 sticky left-0 bg-surface-hover z-10">
+                    Cover Driver
+                  </th>
+                  {weekDays.map((d) => (
+                    <th key={d.toISOString()} className="text-center px-2 py-2 min-w-[110px]">
+                      <div>{WEEKDAY_SHORT[(d.getDay() + 6) % 7]}</div>
+                      <div className="text-[10px] font-normal text-text-muted normal-case">
+                        {String(d.getDate()).padStart(2, "0")}/
+                        {String(d.getMonth() + 1).padStart(2, "0")}
+                      </div>
+                    </th>
+                  ))}
+                  <th className="text-right px-2 py-2">Total hrs</th>
+                  <th
+                    className="text-right px-3 py-2"
+                    title="Booked hours × cash rate. Cover drivers are paid cash only — no NI split."
+                  >
+                    Wages
+                  </th>
+                  <th className="text-center px-2 py-2">Deliveries</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeCoverDrivers.map((driver) => {
+                  const total = rangeCoverTotalHours(driver.id);
+                  const rate = Number(driver.hourly_cash_rate) || 0;
+                  const liveDeliv = coverDeliveriesByDriver.live.get(driver.id) ?? 0;
+                  const liveExtra = coverDeliveriesByDriver.extra.get(driver.id) ?? 0;
+                  return (
+                    <tr
+                      key={driver.id}
+                      className="border-t border-border hover:bg-surface-hover/60 transition-colors"
+                    >
+                      <td className="px-3 py-2 sticky left-0 bg-surface z-10 font-medium text-text-primary">
+                        {driver.name}
+                        <span className="block text-[10px] text-text-muted font-normal">
+                          {formatGBP(driver.hourly_cash_rate)}/h cash
+                        </span>
+                      </td>
+                      {weekDays.map((d) => {
+                        const dateIso = toISODate(d);
+                        const cell = coverShiftByKey.get(`${driver.id}:${dateIso}`) ?? null;
+                        const tmpl = coverScheduleByKey.get(
+                          `${driver.id}:${weekdayOf(dateIso)}`,
+                        );
+                        const eff = resolveCoverDriverShift(cell, tmpl);
+                        const clk = coverClockByKey.get(`${driver.id}:${dateIso}`);
+                        const isToday = dateIso === todayISO();
+                        const isPast = dateIso < todayISO();
+                        // Their usual availability pre-fills a new booking, so
+                        // the common case is two clicks: open, save.
+                        const prefill =
+                          !cell && tmpl?.is_working && tmpl.start_time
+                            ? {
+                                start: tmpl.start_time.slice(0, 5),
+                                end: (tmpl.end_time ?? "").slice(0, 5),
+                              }
+                            : null;
+                        const missed =
+                          isPast && !!cell && !cell.is_day_off && !clk?.clock_in_at;
+
+                        const cellInner = (
+                          <>
+                            {cell ? (
+                              formatShiftRange(cell.is_day_off, cell.start_time, cell.end_time)
+                            ) : eff && !eff.is_day_off ? (
+                              <span className="opacity-70">
+                                {formatShiftRange(false, eff.start_time, eff.end_time)}
+                                <span className="block text-[9px] uppercase tracking-wide">
+                                  usual
+                                </span>
+                              </span>
+                            ) : (
+                              "—"
+                            )}
+                            {clk?.clock_in_at && (
+                              <div className="text-[9px] text-success mt-0.5">
+                                ✓ in{" "}
+                                {new Date(clk.clock_in_at).toLocaleTimeString("en-GB", {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                                {clk.clock_out_at && (
+                                  <>
+                                    {" "}
+                                    · out{" "}
+                                    {new Date(clk.clock_out_at).toLocaleTimeString("en-GB", {
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                    })}
+                                  </>
+                                )}
+                              </div>
+                            )}
+                            {missed && (
+                              <div className="text-[9px] text-danger mt-0.5">
+                                ✗ not clocked in
+                              </div>
+                            )}
+                          </>
+                        );
+
+                        return (
+                          <td
+                            key={dateIso}
+                            className={
+                              "px-1 py-1 text-center align-middle " +
+                              (isToday ? "bg-gold/5" : "")
+                            }
+                          >
+                            {isPast ? (
+                              <div
+                                className={
+                                  "w-full h-12 rounded-lg text-xs border flex flex-col items-center justify-center cursor-default opacity-70 " +
+                                  (cell?.is_day_off
+                                    ? "bg-danger/5 border-danger/20 text-danger"
+                                    : cell?.start_time
+                                      ? "bg-success/5 border-success/20 text-success"
+                                      : "border-dashed border-border text-text-muted")
+                                }
+                                title="Past day — view only (locked for editing)"
+                              >
+                                {cellInner}
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() =>
+                                  setEditingCoverShift({
+                                    driver,
+                                    date: dateIso,
+                                    existing: cell,
+                                    prefill,
+                                  })
+                                }
+                                className={
+                                  "w-full h-12 rounded-lg text-xs border transition-colors " +
+                                  (cell?.is_day_off
+                                    ? "bg-danger/10 border-danger/30 text-danger"
+                                    : cell?.start_time
+                                      ? "bg-success/10 border-success/30 text-success hover:bg-success/15"
+                                      : "border-dashed border-border text-text-muted hover:bg-surface-hover")
+                                }
+                              >
+                                {cellInner}
+                              </button>
+                            )}
+                          </td>
+                        );
+                      })}
+                      <td className="px-2 py-2 text-right font-medium">
+                        {total.toFixed(1)}h
+                      </td>
+                      {/* Cash only — no NI/cash split, unlike the employee rota. */}
+                      <td className="px-3 py-2 text-right">
+                        <div className="font-medium text-success">
+                          {formatGBP(total * rate)}
+                        </div>
+                        <div className="text-[10px] text-text-muted leading-tight mt-0.5">
+                          Cash · {formatGBP(rate)}/h
+                        </div>
+                      </td>
+                      <td className="px-2 py-2 text-center text-xs">
+                        {liveDeliv > 0 || liveExtra > 0 ? (
+                          <span
+                            className="text-success"
+                            title="Deliveries logged via clock-out in this range"
+                          >
+                            {liveDeliv}
+                            {liveExtra > 0 && (
+                              <span className="text-gold"> (+{liveExtra} extra)</span>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="text-text-muted">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
       {/* Modals */}
       {editingShift && (
         <ShiftEditModal
@@ -1137,6 +1427,21 @@ export function RotaView({
           onSaved={() => {
             setEditingDelivery(null);
             toast.success("Deliveries saved");
+            router.refresh();
+          }}
+        />
+      )}
+      {editingCoverShift && (
+        <CoverDriverShiftEditModal
+          driver={editingCoverShift.driver}
+          storeId={activeStoreId}
+          shiftDate={editingCoverShift.date}
+          existing={editingCoverShift.existing}
+          prefill={editingCoverShift.prefill}
+          onClose={() => setEditingCoverShift(null)}
+          onSaved={() => {
+            setEditingCoverShift(null);
+            toast.success("Cover shift updated");
             router.refresh();
           }}
         />

@@ -5,6 +5,10 @@ import { todayISO } from "@/lib/utils";
 import type {
   AllowedUser,
   ClockEvent,
+  CoverDriver,
+  CoverDriverClockEvent,
+  CoverDriverScheduleDay,
+  CoverDriverShift,
   Employee,
   EmployeeScheduleDay,
   ManagerClockEvent,
@@ -29,6 +33,10 @@ export default async function LivePage() {
     managersRes,
     managerClocksRes,
     managerShiftsRes,
+    coverDriversRes,
+    coverClocksRes,
+    coverShiftsRes,
+    coverSchedulesRes,
   ] = await Promise.all([
     supabase.from("stores").select("*").order("name"),
     supabase.from("employees").select("*").neq("employment_status", "left"),
@@ -38,6 +46,10 @@ export default async function LivePage() {
     supabase.from("allowed_users").select("*").eq("role", "manager"),
     supabase.from("manager_clock_events").select("*").eq("event_date", today),
     supabase.from("manager_shifts").select("*").eq("shift_date", today),
+    supabase.from("cover_drivers").select("*").eq("is_active", true),
+    supabase.from("cover_driver_clock_events").select("*").eq("event_date", today),
+    supabase.from("cover_driver_shifts").select("*").eq("shift_date", today),
+    supabase.from("cover_driver_schedules").select("*"),
   ]);
 
   return (
@@ -55,6 +67,10 @@ export default async function LivePage() {
         managers={(managersRes.data ?? []) as AllowedUser[]}
         managerClocks={(managerClocksRes.data ?? []) as ManagerClockEvent[]}
         managerShifts={(managerShiftsRes.data ?? []) as ManagerShift[]}
+        coverDrivers={(coverDriversRes.data ?? []) as CoverDriver[]}
+        coverDriverClocks={(coverClocksRes.data ?? []) as CoverDriverClockEvent[]}
+        coverDriverShifts={(coverShiftsRes.data ?? []) as CoverDriverShift[]}
+        coverDriverSchedules={(coverSchedulesRes.data ?? []) as CoverDriverScheduleDay[]}
         userRole={user.allowed?.role ?? "manager"}
         userStoreId={user.allowed?.store_id ?? null}
       />

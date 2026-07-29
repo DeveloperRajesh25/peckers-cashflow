@@ -7,8 +7,62 @@
 // lives here instead of being bolted onto the weekly helper.
 // =============================================================
 
-import { clockedHours } from "./utils";
-import type { CoverDriver, CoverDriverClockEvent, CoverDriverDaySummary } from "./types";
+import { clockedHours, weekdayIndex } from "./utils";
+import type {
+  CoverDriver,
+  CoverDriverClockEvent,
+  CoverDriverDaySummary,
+  CoverDriverScheduleDay,
+  CoverDriverShift,
+} from "./types";
+
+/** The expected shift for a cover driver on one date, whatever its source. */
+export type CoverDriverEffShift = {
+  is_day_off: boolean;
+  start_time: string | null;
+  end_time: string | null;
+  scheduled_hours: number | null;
+  /** True when this came from the weekly pattern, not a per-date rota cell. */
+  fromTemplate: boolean;
+};
+
+/**
+ * What a cover driver is expected to work on a given date.
+ *
+ * Precedence mirrors the employee board: a per-date `cover_driver_shifts` row
+ * wins, else their recurring weekly availability, else nothing (TBC). Shared by
+ * the Live dashboard and the Rota grid so the two can never disagree about
+ * whether someone is expected in.
+ */
+export function resolveCoverDriverShift(
+  shift: CoverDriverShift | null | undefined,
+  schedule: CoverDriverScheduleDay | null | undefined,
+): CoverDriverEffShift | null {
+  if (shift) {
+    return {
+      is_day_off: shift.is_day_off,
+      start_time: shift.start_time,
+      end_time: shift.end_time,
+      scheduled_hours: Number(shift.scheduled_hours) || null,
+      fromTemplate: false,
+    };
+  }
+  if (schedule?.is_working && schedule.start_time) {
+    return {
+      is_day_off: false,
+      start_time: schedule.start_time,
+      end_time: schedule.end_time,
+      scheduled_hours: null,
+      fromTemplate: true,
+    };
+  }
+  return null;
+}
+
+/** Mon=0..Sun=6 index for a date string, matching the schedule tables. */
+export function weekdayOf(dateIso: string): number {
+  return weekdayIndex(new Date(`${dateIso}T00:00:00`));
+}
 
 /**
  * Cash due for one cover-driver day. Deliveries are paid on top of hours:

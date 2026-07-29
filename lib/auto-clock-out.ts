@@ -154,7 +154,7 @@ export function resolveAutoClockOut(input: {
 // ---------------- the sweep ----------------
 
 export type AutoClosedRow = {
-  kind: "employee" | "manager";
+  kind: "employee" | "manager" | "cover_driver";
   id: string;
   personId: string;
   eventDate: string;
@@ -189,8 +189,16 @@ type OpenManagerClock = {
   clock_in_at: string;
 };
 
+type OpenCoverClock = {
+  id: string;
+  cover_driver_id: string;
+  store_id: string | null;
+  event_date: string;
+  clock_in_at: string;
+};
+
 /**
- * Close every open clock row (employees + managers) whose day is over.
+ * Close every open clock row (employees + managers + cover drivers) whose day is over.
  * Needs the service-role client: it writes rows belonging to other people.
  * Best-effort by design — callers treat a failure as a no-op.
  */
@@ -207,7 +215,7 @@ export async function autoCloseOpenClocks(
   let waiting = 0;
 
   try {
-    const [empOpenRes, mgrOpenRes, storesRes] = await Promise.all([
+    const [empOpenRes, mgrOpenRes, coverOpenRes, storesRes] = await Promise.all([
       admin
         .from("clock_events")
         .select("id, employee_id, store_id, event_date, clock_in_at, shift_id")
@@ -226,12 +234,22 @@ export async function autoCloseOpenClocks(
         .lt("event_date", today)
         .order("event_date", { ascending: true })
         .limit(MAX_ROWS_PER_SWEEP),
+      admin
+        .from("cover_driver_clock_events")
+        .select("id, cover_driver_id, store_id, event_date, clock_in_at")
+        .not("clock_in_at", "is", null)
+        .is("clock_out_at", null)
+        .gte("event_date", from)
+        .lt("event_date", today)
+        .order("event_date", { ascending: true })
+        .limit(MAX_ROWS_PER_SWEEP),
       admin.from("stores").select("id, shift_times"),
     ]);
 
     const openEmp = (empOpenRes.data ?? []) as OpenClock[];
     const openMgr = (mgrOpenRes.data ?? []) as OpenManagerClock[];
-    scanned = openEmp.length + openMgr.length;
+    const openCover = (coverOpenRes.data ?? []) as OpenCoverClock[];
+    scanned = openEmp.length + openMgr.length + openCover.length;
     if (scanned === 0) return { ok: true, scanned: 0, closed, waiting: 0 };
 
     // Each store closes at its own time — the last-resort end time before the
@@ -408,6 +426,109 @@ export async function autoCloseOpenClocks(
       }
     }
 
+    // ---------------- cover drivers ----------------
+    // Same shape as managers, but the expected end falls back through the
+    // per-date rota cell, then their recurring weekly availability, then the
+    // store's closing time.
+    if (openCover.length > 0) {
+      const driverIds = Array.from(new Set(openCover.map((r) => r.cover_driver_id)));
+      const dates = openCover.map((r) => r.event_date).sort();
+      const [coverShiftRes, coverSchedRes] = await Promise.all([
+        admin
+          .from("cover_driver_shifts")
+          .select("cover_driver_id, shift_date, start_time, end_time, is_day_off")
+          .in("cover_driver_id", driverIds)
+          .gte("shift_date", dates[0])
+          .lte("shift_date", dates[dates.length - 1]),
+        admin
+          .from("cover_driver_schedules")
+          .select("cover_driver_id, weekday, is_working, start_time, end_time")
+          .in("cover_driver_id", driverIds),
+      ]);
+
+      const coverShiftByKey = new Map<
+        string,
+        { start_time: string | null; end_time: string | null; is_day_off: boolean }
+      >();
+      for (const s of (coverShiftRes.data ?? []) as Array<{
+        cover_driver_id: string;
+        shift_date: string;
+        start_time: string | null;
+        end_time: string | null;
+        is_day_off: boolean;
+      }>) {
+        coverShiftByKey.set(`${s.cover_driver_id}:${s.shift_date}`, s);
+      }
+
+      const coverTmplByKey = new Map<
+        string,
+        { start_time: string | null; end_time: string | null }
+      >();
+      for (const s of (coverSchedRes.data ?? []) as Array<{
+        cover_driver_id: string;
+        weekday: number;
+        is_working: boolean;
+        start_time: string | null;
+        end_time: string | null;
+      }>) {
+        if (!s.is_working) continue;
+        coverTmplByKey.set(`${s.cover_driver_id}:${s.weekday}`, s);
+      }
+
+      for (const row of openCover) {
+        const shift = coverShiftByKey.get(`${row.cover_driver_id}:${row.event_date}`);
+        const tmpl = coverTmplByKey.get(
+          `${row.cover_driver_id}:${weekdayIndex(parseISODate(row.event_date))}`,
+        );
+        const resolved = resolveAutoClockOut({
+          eventDate: row.event_date,
+          clockInAt: row.clock_in_at,
+          rota:
+            shift && !shift.is_day_off
+              ? { start: shift.start_time, end: shift.end_time }
+              : null,
+          template: tmpl ? { start: tmpl.start_time, end: tmpl.end_time } : null,
+          storeClose: row.store_id ? storeClose.get(row.store_id) ?? null : null,
+        });
+        if (now.getTime() < resolved.at.getTime() + graceMs) {
+          waiting += 1;
+          continue;
+        }
+
+        const clockOutAt = resolved.at.toISOString();
+        const { data: updated, error } = await admin
+          .from("cover_driver_clock_events")
+          .update({
+            clock_out_at: clockOutAt,
+            auto_clocked_out: true,
+            auto_clock_out_source: resolved.source,
+            auto_clock_out_at: now.toISOString(),
+          })
+          .eq("id", row.id)
+          .is("clock_out_at", null)
+          .select("id");
+        if (error) {
+          console.error("[auto-clock-out] cover driver update failed:", error.message);
+          continue;
+        }
+        if (!updated || updated.length === 0) continue;
+
+        closed.push({
+          kind: "cover_driver",
+          id: row.id,
+          personId: row.cover_driver_id,
+          eventDate: row.event_date,
+          clockOutAt,
+          source: resolved.source,
+          hours:
+            Math.round(
+              ((resolved.at.getTime() - new Date(row.clock_in_at).getTime()) / 3_600_000) *
+                100,
+            ) / 100,
+        });
+      }
+    }
+
     // One audit row per closed day — these are pay-affecting writes with no
     // human actor, so they need to be traceable.
     if (closed.length > 0) {
@@ -415,8 +536,18 @@ export async function autoCloseOpenClocks(
         closed.map((c) => ({
           actor_id: null,
           actor_email: "system@auto-clock-out",
-          action: c.kind === "manager" ? "auto_manager_clock_out" : "auto_clock_out",
-          entity: c.kind === "manager" ? "manager_clock_event" : "clock_event",
+          action:
+            c.kind === "manager"
+              ? "auto_manager_clock_out"
+              : c.kind === "cover_driver"
+                ? "auto_cover_driver_clock_out"
+                : "auto_clock_out",
+          entity:
+            c.kind === "manager"
+              ? "manager_clock_event"
+              : c.kind === "cover_driver"
+                ? "cover_driver_clock_event"
+                : "clock_event",
           entity_id: c.id,
           changes: {
             person_id: c.personId,
