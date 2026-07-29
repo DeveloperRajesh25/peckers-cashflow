@@ -142,8 +142,11 @@ export function ManualClockEntryModal({
               <option value="">Select…</option>
               {candidates.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.name}
-                  {c.scheduled_start ? ` — scheduled ${c.scheduled_start.slice(0, 5)}` : ""}
+                  {/* One child, not two: React joins multiple option children
+                      with a comma, which rendered names as "Harish,". */}
+                  {c.scheduled_start
+                    ? `${c.name} — scheduled ${c.scheduled_start.slice(0, 5)}`
+                    : c.name}
                 </option>
               ))}
             </Select>
