@@ -131,7 +131,7 @@ async function computeSummary(
     // attribute cash hours to the store where they were worked.
     supabase
       .from("clock_events")
-      .select("employee_id, store_id, event_date, clock_in_at, clock_out_at, short_deliveries_count, long_deliveries_count, extra_short_deliveries, extra_long_deliveries, hours_approved, approved_hours")
+      .select("employee_id, store_id, event_date, clock_in_at, clock_out_at, worked_hours, short_deliveries_count, long_deliveries_count, extra_short_deliveries, extra_long_deliveries, hours_approved, approved_hours")
       .gte("event_date", payWeek.start)
       .lte("event_date", payWeek.end),
     supabase

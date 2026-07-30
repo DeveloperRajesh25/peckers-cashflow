@@ -7,6 +7,7 @@ import { createAdminClient, isProvisioningConfigured } from "@/lib/supabase-admi
 import { writeAudit } from "./audit";
 import {
   addDays,
+  dayWorkedHours,
   startOfISOWeek,
   toISODate,
   todayISO,
@@ -489,9 +490,9 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
 
     // scheduled vs actual variance (only for completed shifts)
     if (clk?.clock_in_at && clk.clock_out_at) {
-      const actualHours =
-        (new Date(clk.clock_out_at).getTime() - new Date(clk.clock_in_at).getTime()) /
-        3_600_000;
+      // Summed shifts: a day worked 09:00–13:00 and 17:00–21:00 is 8h against
+      // an 8h rota, not the 12h variance the raw span would report.
+      const actualHours = dayWorkedHours(clk);
       const scheduled = Number(s.scheduled_hours ?? shiftHours(s.start_time, s.end_time));
       if (scheduled > 0) {
         const delta = percentDelta(actualHours, scheduled);

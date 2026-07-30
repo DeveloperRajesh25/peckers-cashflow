@@ -23,6 +23,7 @@ export default async function ManagerEmployeesPage() {
     hoursRes,
     storesRes,
     clocksRes,
+    sessionsRes,
     coverDriversRes,
     coverClocksRes,
     coverHoursRes,
@@ -41,11 +42,19 @@ export default async function ManagerEmployeesPage() {
     supabase.from("stores").select("*").eq("id", storeId),
     supabase
       .from("clock_events")
-      .select("id, employee_id, store_id, event_date, clock_in_at, clock_out_at, hours_approved, approved_hours, auto_clocked_out, manual_entry, manual_entry_reason")
+      .select("id, employee_id, store_id, event_date, clock_in_at, clock_out_at, worked_hours, hours_approved, approved_hours, auto_clocked_out, manual_entry, manual_entry_reason")
       .eq("store_id", storeId)
       .gte("event_date", eightWeeksBack)
       .not("clock_out_at", "is", null)
       .order("event_date", { ascending: false }),
+    // The individual shifts inside those days. A day can hold several, and the
+    // approval row lists them under the total it is signing off.
+    supabase
+      .from("clock_sessions")
+      .select("clock_event_id, seq, clock_in_at, clock_out_at, auto_clocked_out, manual_entry")
+      .eq("store_id", storeId)
+      .gte("event_date", eightWeeksBack)
+      .order("clock_in_at", { ascending: true }),
     supabase.from("cover_drivers").select("*").eq("store_id", storeId).order("name"),
     supabase
       .from("cover_driver_clock_events")
@@ -76,7 +85,19 @@ export default async function ManagerEmployeesPage() {
     console.error("[manager/employees] clock_events query failed:", clocksRes.error.message);
   }
   const clockSummaries = groupClockEventsByWeek(clocksRes.data ?? [], empMap);
-  const clockDailySummaries = mapClockEventsToDaily(clocksRes.data ?? [], empMap);
+  // Shifts keyed by the day they belong to, so an approval row can show the
+  // windows that make up its total.
+  const sessionsByEvent = new Map<string, NonNullable<typeof sessionsRes.data>>();
+  for (const s of sessionsRes.data ?? []) {
+    const arr = sessionsByEvent.get(s.clock_event_id) ?? [];
+    arr.push(s);
+    sessionsByEvent.set(s.clock_event_id, arr);
+  }
+  const clockDailySummaries = mapClockEventsToDaily(
+    clocksRes.data ?? [],
+    empMap,
+    sessionsByEvent,
+  );
 
   // Cover drivers are summarised per DAY, not per week — each cover shift is a
   // discrete engagement that is approved and paid on its own.

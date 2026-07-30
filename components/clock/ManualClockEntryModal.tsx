@@ -19,6 +19,12 @@ export type ManualEntryCandidate = {
   /** "HH:MM" scheduled start, if known — pre-fills the clock-in box. */
   scheduled_start?: string | null;
   scheduled_end?: string | null;
+  /**
+   * Shifts already recorded for them that day. Non-zero means this entry ADDS
+   * another shift rather than recording a missed one — a day can hold several
+   * (migration 029), so they stay pickable, just labelled.
+   */
+  existing_shifts?: number;
 };
 
 const REASON_PRESETS = [
@@ -129,8 +135,8 @@ export function ManualClockEntryModal({
       <div className="flex flex-col gap-4">
         {candidates.length === 0 ? (
           <p className="text-sm text-text-muted">
-            Everyone {mode === "employee" ? "on shift" : "working"} that day already has a
-            clock record — nothing to add.
+            Nobody available to record right now — everyone {mode === "employee" ? "on shift" : "working"}{" "}
+            is either currently clocked in or not attached to this store today.
           </p>
         ) : (
           <>
@@ -144,12 +150,22 @@ export function ManualClockEntryModal({
                 <option key={c.id} value={c.id}>
                   {/* One child, not two: React joins multiple option children
                       with a comma, which rendered names as "Harish,". */}
-                  {c.scheduled_start
-                    ? `${c.name} — scheduled ${c.scheduled_start.slice(0, 5)}`
-                    : c.name}
+                  {c.existing_shifts
+                    ? `${c.name} — ${c.existing_shifts} shift${c.existing_shifts > 1 ? "s" : ""} already today`
+                    : c.scheduled_start
+                      ? `${c.name} — scheduled ${c.scheduled_start.slice(0, 5)}`
+                      : c.name}
                 </option>
               ))}
             </Select>
+
+            {!!selected?.existing_shifts && (
+              <p className="text-xs text-warning bg-warning/10 border border-warning/30 rounded-xl px-3 py-2 -mt-1">
+                {selected.name} already has {selected.existing_shifts} shift
+                {selected.existing_shifts > 1 ? "s" : ""} recorded that day. This adds
+                another — the times must not overlap one already recorded.
+              </p>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <Input

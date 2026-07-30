@@ -5,7 +5,14 @@ import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
 import { createAdminClient, isProvisioningConfigured } from "@/lib/supabase-admin";
 import { normalizeContactEmail, validateContactEmail } from "@/lib/credentials";
 import { writeAudit } from "./audit";
-import { addDays, parseISODate, startOfISOWeek, toISODate } from "@/lib/utils";
+import {
+  addDays,
+  dayWorkedHours,
+  parseISODate,
+  startOfISOWeek,
+  toISODate,
+} from "@/lib/utils";
+import { employeeNiRate, rollupApprovedWeek } from "@/lib/employee-hours-rollup";
 import type {
   EmployeeHoursComputed,
   EmployeePosition,
@@ -406,17 +413,16 @@ export async function approveClockedHours(input: {
   const weekEnd = toISODate(addDays(parseISODate(input.week_start_date), 6));
   const { data: events } = await supabase
     .from("clock_events")
-    .select("clock_in_at, clock_out_at")
+    .select("clock_in_at, clock_out_at, worked_hours")
     .eq("employee_id", input.employee_id)
     .gte("event_date", input.week_start_date)
     .lte("event_date", weekEnd)
     .not("clock_out_at", "is", null);
 
-  const clockedHours = (events ?? []).reduce((sum, ev) => {
-    if (!ev.clock_in_at || !ev.clock_out_at) return sum;
-    const ms = new Date(ev.clock_out_at).getTime() - new Date(ev.clock_in_at).getTime();
-    return sum + Math.max(0, ms) / 3_600_000;
-  }, 0);
+  const clockedHours = (events ?? []).reduce(
+    (sum, ev) => sum + dayWorkedHours(ev),
+    0,
+  );
   const clockedTotal = Math.round(clockedHours * 100) / 100;
   if (clockedTotal <= 0) {
     throw new Error("No completed clock-in/out sessions to approve for this week.");
@@ -506,83 +512,6 @@ export async function deleteEmployeeHours(id: string) {
 
 type ServerSupabase = ReturnType<typeof createServerSupabase>;
 
-async function employeeNiRate(supabase: ServerSupabase, employee_id: string) {
-  const { data: emp } = await supabase
-    .from("employees")
-    .select("hourly_rate, hourly_ni_rate")
-    .eq("id", employee_id)
-    .maybeSingle();
-  return Number(emp?.hourly_ni_rate ?? emp?.hourly_rate ?? 0);
-}
-
-/**
- * Recompute the weekly employee_hours rollup for one (employee, week) from the
- * approved clocked days. Removes the clocked rollup row if no day is approved.
- */
-async function rollupApprovedWeek(
-  supabase: ServerSupabase,
-  employee_id: string,
-  week_start_date: string,
-  rate: number,
-  userId: string,
-) {
-  const weekEnd = toISODate(addDays(parseISODate(week_start_date), 6));
-  const { data: days } = await supabase
-    .from("clock_events")
-    .select("approved_hours")
-    .eq("employee_id", employee_id)
-    .eq("hours_approved", true)
-    .gte("event_date", week_start_date)
-    .lte("event_date", weekEnd);
-
-  const total =
-    Math.round(
-      (days ?? []).reduce(
-        (s, d) => s + (d.approved_hours != null ? Number(d.approved_hours) : 0),
-        0,
-      ) * 100,
-    ) / 100;
-
-  const { data: existing } = await supabase
-    .from("employee_hours")
-    .select("id, source")
-    .eq("employee_id", employee_id)
-    .eq("week_start_date", week_start_date)
-    .maybeSingle();
-
-  if (total <= 0) {
-    // No approved days left this week — drop the clocked rollup row, but never
-    // touch an admin's manual correction for the same week.
-    if (existing && existing.source === "clocked") {
-      await supabase.from("employee_hours").delete().eq("id", existing.id);
-    }
-    return;
-  }
-
-  const payload = {
-    employee_id,
-    week_start_date,
-    total_hours_worked: total,
-    hourly_rate_snapshot: rate,
-    logged_by: userId,
-    source: "clocked" as const,
-    approved: true,
-    approved_by: userId,
-    approved_at: new Date().toISOString(),
-  };
-
-  if (existing) {
-    const { error } = await supabase
-      .from("employee_hours")
-      .update(payload)
-      .eq("id", existing.id);
-    if (error) throw new Error(error.message);
-  } else {
-    const { error } = await supabase.from("employee_hours").insert(payload);
-    if (error) throw new Error(error.message);
-  }
-}
-
 /** Refetch computed weekly rows + revalidate the pages that show hours. */
 async function freshHoursResult(supabase: ServerSupabase) {
   const { data: freshHours } = await supabase
@@ -613,7 +542,7 @@ export async function approveDailyHours(input: {
 
   const { data: ce, error: ceErr } = await supabase
     .from("clock_events")
-    .select("id, clock_in_at, clock_out_at")
+    .select("id, clock_in_at, clock_out_at, worked_hours")
     .eq("employee_id", input.employee_id)
     .eq("event_date", input.event_date)
     .maybeSingle();
@@ -621,8 +550,9 @@ export async function approveDailyHours(input: {
   if (!ce || !ce.clock_in_at || !ce.clock_out_at)
     throw new Error("No completed clock-in/out for this day.");
 
-  const rawMs = new Date(ce.clock_out_at).getTime() - new Date(ce.clock_in_at).getTime();
-  const rawHours = Math.round((Math.max(0, rawMs) / 3_600_000) * 100) / 100;
+  // Summed shifts, so a day worked 09:00–13:00 and 17:00–21:00 approves at 8h
+  // rather than the 12h the first-in-to-last-out span would suggest.
+  const rawHours = Math.round(dayWorkedHours(ce) * 100) / 100;
   const hasOverride =
     input.override_hours != null && !isNaN(Number(input.override_hours));
   const approvedHours = hasOverride ? Number(input.override_hours) : rawHours;
@@ -716,16 +646,17 @@ export async function approveDailyHoursForDate(input: {
 
   const { data: events } = await supabase
     .from("clock_events")
-    .select("id, employee_id, clock_in_at, clock_out_at, hours_approved")
+    .select("id, employee_id, clock_in_at, clock_out_at, worked_hours, hours_approved")
     .eq("event_date", input.event_date)
     .in("employee_id", ids);
 
   const nowIso = new Date().toISOString();
   const affected = new Set<string>();
   for (const e of events ?? []) {
+    // A null clock_out_at also means "a shift is still open", so anyone mid-way
+    // through a split day is skipped rather than approved at half their hours.
     if (!e.clock_in_at || !e.clock_out_at || e.hours_approved) continue;
-    const rawMs = new Date(e.clock_out_at).getTime() - new Date(e.clock_in_at).getTime();
-    const rawHours = Math.round((Math.max(0, rawMs) / 3_600_000) * 100) / 100;
+    const rawHours = Math.round(dayWorkedHours(e) * 100) / 100;
     if (rawHours <= 0) continue;
     const { error } = await supabase
       .from("clock_events")

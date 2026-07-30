@@ -11,12 +11,14 @@ import {
   formatGBP,
   formatShiftRange,
   formatTimeOnly,
+  liveDayWorkedHours,
   shiftHours,
   toISODate,
 } from "@/lib/utils";
 import type {
   AllowedUser,
   ClockEvent,
+  ClockSession,
   CoverDriver,
   CoverDriverClockEvent,
   CoverDriverScheduleDay,
@@ -52,6 +54,8 @@ type Props = {
   schedules?: EmployeeScheduleDay[];
   /** Manager login accounts (allowed_users, role=manager) for attendance. */
   managers?: AllowedUser[];
+  /** Today's individual shifts, keyed by clock_events.id — a day can hold several. */
+  clockSessions?: ClockSession[];
   /** Today's manager clock rows, keyed on the login account. */
   managerClocks?: ManagerClockEvent[];
   /** Today's manager rota shifts — used to place a manager scheduled to cover
@@ -154,6 +158,7 @@ export function LiveDashboard({
   employees,
   shifts,
   clocks,
+  clockSessions = [],
   schedules = [],
   managers = [],
   managerClocks = [],
@@ -220,6 +225,19 @@ export function LiveDashboard({
 
   const shiftByEmp = new Map(shifts.map((s) => [s.employee_id, s]));
   const clockByEmp = new Map(clocks.map((c) => [c.employee_id, c]));
+  // The day's individual shifts, per employee. The clock row above is the day's
+  // header: its In is the FIRST clock-in and its Out the last, so hours have to
+  // come from the sessions or a split day would bill the gap between shifts.
+  const sessionsByEmp = new Map<string, ClockSession[]>();
+  for (const s of clockSessions) {
+    const arr = sessionsByEmp.get(s.employee_id) ?? [];
+    arr.push(s);
+    sessionsByEmp.set(s.employee_id, arr);
+  }
+  // By clock time, not seq — a shift recorded by a manager after the fact can
+  // carry a higher seq than one that happened earlier in the day.
+  for (const arr of sessionsByEmp.values())
+    arr.sort((a, b) => a.clock_in_at.localeCompare(b.clock_in_at));
   const managerClockByMgr = new Map(managerClocks.map((mc) => [mc.manager_id, mc]));
   const managerShiftByMgr = new Map(managerShifts.map((s) => [s.manager_id, s]));
 
@@ -365,6 +383,7 @@ export function LiveDashboard({
             const { shift, fromTemplate } = effectiveShiftFor(emp.id);
             const realShift = shiftByEmp.get(emp.id);
             const clock = clockByEmp.get(emp.id);
+            const sessions = sessionsByEmp.get(emp.id);
             const status = computeStatus(shift, clock, now);
             const rate = rateOf(emp);
             const expHours =
@@ -373,12 +392,15 @@ export function LiveDashboard({
                   ? Number(realShift.scheduled_hours)
                   : shiftHours(shift.start_time, shift.end_time)
                 : 0;
-            const actHours = clockedHours(clock?.clock_in_at, clock?.clock_out_at, now);
+            const actHours = clock
+              ? liveDayWorkedHours(clock, sessions, now)
+              : 0;
             return {
               emp,
               shift,
               fromTemplate,
               clock,
+              sessions,
               status,
               expectedWage: expHours * rate,
               actualWage: actHours * rate,
@@ -642,8 +664,17 @@ export function LiveDashboard({
                         </td>
                       </tr>
                     )}
-                    {wageRows.map(({ emp, shift, fromTemplate, clock, status, expectedWage, actualWage }) => {
+                    {wageRows.map(({ emp, shift, fromTemplate, clock, sessions, status, expectedWage, actualWage }) => {
                       const style = STATUS_STYLES[status];
+                      const shiftCount = sessions?.length ?? 0;
+                      // "09:00–13:00, 17:00–now" — hover detail so a second
+                      // shift is never mistaken for one long unbroken day.
+                      const shiftsLabel = (sessions ?? [])
+                        .map(
+                          (s) =>
+                            `${formatTimeOnly(s.clock_in_at)}–${s.clock_out_at ? formatTimeOnly(s.clock_out_at) : "now"}`,
+                        )
+                        .join(", ");
                       return (
                         <tr
                           key={emp.id}
@@ -673,7 +704,17 @@ export function LiveDashboard({
                             )}
                           </td>
                           <td className="px-2 py-2 text-center text-xs">
-                            {formatTimeOnly(clock?.clock_in_at)}
+                            <span title={shiftCount > 1 ? shiftsLabel : undefined}>
+                              {formatTimeOnly(clock?.clock_in_at)}
+                            </span>
+                            {shiftCount > 1 && (
+                              <span
+                                className="ml-1 text-[9px] font-medium text-gold"
+                                title={`${shiftCount} shifts today — ${shiftsLabel}`}
+                              >
+                                ×{shiftCount}
+                              </span>
+                            )}
                             {clock?.manual_entry && (
                               <span
                                 className="block text-[9px] uppercase tracking-wide text-warning"
@@ -688,7 +729,9 @@ export function LiveDashboard({
                             )}
                           </td>
                           <td className="px-2 py-2 text-center text-xs">
-                            {formatTimeOnly(clock?.clock_out_at)}
+                            <span title={shiftCount > 1 ? shiftsLabel : undefined}>
+                              {formatTimeOnly(clock?.clock_out_at)}
+                            </span>
                           </td>
                           <td className="px-2 py-2 text-center">
                             <span
@@ -845,12 +888,16 @@ export function LiveDashboard({
           candidates={
             adding.mode === "employee"
               ? employees
-                  .filter(
-                    (e) =>
-                      e.employment_status === "active" &&
-                      todayStoreOf(e) === adding.storeId &&
-                      !clockByEmp.get(e.id)?.clock_in_at,
-                  )
+                  .filter((e) => {
+                    if (e.employment_status !== "active") return false;
+                    if (todayStoreOf(e) !== adding.storeId) return false;
+                    // Only someone CURRENTLY on shift is excluded. Having
+                    // already worked and clocked out is no bar — a day can hold
+                    // several shifts, and recording a forgotten second one is
+                    // exactly what this is for.
+                    const c = clockByEmp.get(e.id);
+                    return !(c?.clock_in_at && !c.clock_out_at);
+                  })
                   .map<ManualEntryCandidate>((e) => {
                     const { shift } = effectiveShiftFor(e.id);
                     return {
@@ -858,6 +905,7 @@ export function LiveDashboard({
                       name: e.name,
                       scheduled_start: shift?.is_day_off ? null : shift?.start_time ?? null,
                       scheduled_end: shift?.is_day_off ? null : shift?.end_time ?? null,
+                      existing_shifts: sessionsByEmp.get(e.id)?.length ?? 0,
                     };
                   })
               : coverDrivers

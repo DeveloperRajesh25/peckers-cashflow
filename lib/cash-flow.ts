@@ -286,26 +286,41 @@ type ClockRow = {
   /** Deliveries beyond the normal round — paid the matching per-type rate. */
   extra_short_deliveries?: number | null;
   extra_long_deliveries?: number | null;
+  /** Summed shifts for the day — see resolvedDayHours(). */
+  worked_hours?: number | string | null;
   /** Manager approval override — see resolvedDayHours(). */
   hours_approved?: boolean | null;
   approved_hours?: number | string | null;
 };
 
 /**
- * Hours that count for a completed clock day: the manager-approved override
- * once the day is approved, else the raw clock_in→clock_out delta. A manager
- * can correct a mis-clocked day during approval (DailyHoursApproval); every
- * downstream wage calc must honour that correction instead of re-deriving the
- * raw timestamps, or an approved edit silently reverts to the original clock.
+ * Hours that count for a completed clock day, in order of authority:
+ *
+ *   1. the manager-approved override, once the day is approved;
+ *   2. worked_hours — the sum of the day's shifts (migration 029);
+ *   3. the raw clock_in→clock_out delta, for rows with no sessions.
+ *
+ * (1) exists because a manager can correct a mis-clocked day during approval
+ * (DailyHoursApproval), and every downstream wage calc must honour that
+ * correction rather than re-deriving the timestamps.
+ *
+ * (2) exists because a day can hold several shifts, and the span from the first
+ * clock-in to the last clock-out includes the unpaid gap between them — paying
+ * from the delta would pay a split day for the afternoon off.
  */
 function resolvedDayHours(row: {
   clock_in_at: string | null;
   clock_out_at: string | null;
+  worked_hours?: number | string | null;
   hours_approved?: boolean | null;
   approved_hours?: number | string | null;
 }): number {
   if (row.hours_approved && row.approved_hours != null) {
     return Number(row.approved_hours) || 0;
+  }
+  if (row.worked_hours != null) {
+    const h = Number(row.worked_hours);
+    if (!isNaN(h)) return Math.max(0, h);
   }
   if (!row.clock_in_at || !row.clock_out_at) return 0;
   const ms = new Date(row.clock_out_at).getTime() - new Date(row.clock_in_at).getTime();
@@ -405,6 +420,8 @@ export type StoreClockRow = {
   long_deliveries_count: number | null;
   extra_short_deliveries?: number | null;
   extra_long_deliveries?: number | null;
+  /** Summed shifts for the day — see resolvedDayHours(). */
+  worked_hours?: number | string | null;
   /** Manager approval override — see resolvedDayHours(). */
   hours_approved?: boolean | null;
   approved_hours?: number | string | null;

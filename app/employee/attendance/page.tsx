@@ -10,6 +10,7 @@ import {
 } from "@/lib/utils";
 import type {
   ClockEvent,
+  ClockSession,
   Employee,
   EmployeeScheduleDay,
   RotaShift,
@@ -43,7 +44,8 @@ export default async function AttendancePage() {
   const weekStart = startOfISOWeek(new Date());
   const weekEnd = endOfISOWeek(new Date());
 
-  const [storesRes, shiftsRes, weekClocksRes, schedulesRes] = await Promise.all([
+  const [storesRes, shiftsRes, weekClocksRes, weekSessionsRes, schedulesRes] =
+    await Promise.all([
     // All stores — staff can clock in at whichever one they're physically at,
     // not only their home store.
     supabase.from("stores").select("*").order("name"),
@@ -62,6 +64,15 @@ export default async function AttendancePage() {
       .eq("employee_id", employee.id)
       .gte("event_date", toISODate(weekStart))
       .lte("event_date", toISODate(weekEnd)),
+    // A day can hold several shifts, so the individual in/out pairs come from
+    // clock_sessions — the clock_events row above is only the day's header.
+    supabase
+      .from("clock_sessions")
+      .select("*")
+      .eq("employee_id", employee.id)
+      .gte("event_date", toISODate(weekStart))
+      .lte("event_date", toISODate(weekEnd))
+      .order("clock_in_at", { ascending: true }),
     supabase
       .from("employee_schedules")
       .select("*")
@@ -84,6 +95,7 @@ export default async function AttendancePage() {
         schedules={(schedulesRes.data ?? []) as EmployeeScheduleDay[]}
         todayClock={todayClock}
         weekClocks={weekClocks}
+        weekSessions={(weekSessionsRes.data ?? []) as ClockSession[]}
       />
     </>
   );

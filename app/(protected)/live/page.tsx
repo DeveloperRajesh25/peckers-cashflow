@@ -5,6 +5,7 @@ import { todayISO } from "@/lib/utils";
 import type {
   AllowedUser,
   ClockEvent,
+  ClockSession,
   CoverDriver,
   CoverDriverClockEvent,
   CoverDriverScheduleDay,
@@ -29,6 +30,7 @@ export default async function LivePage() {
     employeesRes,
     shiftsRes,
     clocksRes,
+    sessionsRes,
     schedulesRes,
     managersRes,
     managerClocksRes,
@@ -42,6 +44,12 @@ export default async function LivePage() {
     supabase.from("employees").select("*").neq("employment_status", "left"),
     supabase.from("rota_shifts").select("*").eq("shift_date", today),
     supabase.from("clock_events").select("*").eq("event_date", today),
+    // The day's individual shifts — the clock row above is only its header.
+    supabase
+      .from("clock_sessions")
+      .select("*")
+      .eq("event_date", today)
+      .order("clock_in_at", { ascending: true }),
     supabase.from("employee_schedules").select("*"),
     supabase.from("allowed_users").select("*").eq("role", "manager"),
     supabase.from("manager_clock_events").select("*").eq("event_date", today),
@@ -63,6 +71,7 @@ export default async function LivePage() {
         employees={(employeesRes.data ?? []) as Employee[]}
         shifts={(shiftsRes.data ?? []) as RotaShift[]}
         clocks={(clocksRes.data ?? []) as ClockEvent[]}
+        clockSessions={(sessionsRes.data ?? []) as ClockSession[]}
         schedules={(schedulesRes.data ?? []) as EmployeeScheduleDay[]}
         managers={(managersRes.data ?? []) as AllowedUser[]}
         managerClocks={(managerClocksRes.data ?? []) as ManagerClockEvent[]}

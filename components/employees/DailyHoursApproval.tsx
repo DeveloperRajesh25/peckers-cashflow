@@ -69,6 +69,12 @@ type ApprovalRow = {
   store_id: string | null;
   event_date: string;
   clocked_hours: number;
+  /**
+   * The day's individual shifts. Approval stays per DAY on the total — this is
+   * shown so a manager can see WHY a day totals what it does before signing it
+   * off. Empty for cover drivers and for days with no session detail.
+   */
+  shifts: string[];
   approved: boolean;
   approved_hours: number | null;
   /** cover_driver_hours row id — cover rows only, needed to undo. */
@@ -77,6 +83,23 @@ type ApprovalRow = {
   manual_entry: boolean;
   manual_entry_reason: string | null;
 };
+
+/** "09:00–13:00" for one shift; an unfinished one reads "17:00–…". */
+function shiftLabels(
+  sessions: ClockDailySummary["sessions"] | undefined,
+): string[] {
+  if (!sessions || sessions.length < 2) return []; // a single shift adds nothing
+  return sessions.map(
+    (s) =>
+      `${hhmm(s.clock_in_at)}–${s.clock_out_at ? hhmm(s.clock_out_at) : "…"}`,
+  );
+}
+
+function hhmm(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
 
 const rowKey = (r: ApprovalRow) => `${r.kind}:${r.person_id}:${r.event_date}`;
 
@@ -88,6 +111,7 @@ function fromEmployee(s: ClockDailySummary): ApprovalRow {
     store_id: s.store_id,
     event_date: s.event_date,
     clocked_hours: s.clocked_hours,
+    shifts: shiftLabels(s.sessions),
     approved: s.hours_approved,
     approved_hours: s.approved_hours,
     approved_row_id: null,
@@ -105,6 +129,8 @@ function fromCover(c: CoverDailyApprovalRow): ApprovalRow {
     store_id: c.store_id,
     event_date: c.work_date,
     clocked_hours: c.clocked_hours,
+    // Cover drivers are single-shift: multi-shift days are an employee feature.
+    shifts: [],
     approved: c.approved,
     approved_hours: c.approved_hours,
     approved_row_id: c.approved_row_id,
@@ -223,13 +249,22 @@ export function DailyHoursApproval({
   // clock record. Deliberately the whole roster rather than "expected today" —
   // the rota isn't loaded here, and someone who picked up an unscheduled shift
   // is exactly the person most likely to have forgotten to clock in.
+  // Everyone active stays pickable, including those who already worked that
+  // day: a day can hold several shifts, so "already has a record" is no longer
+  // a reason to hide someone — it's just something to label. The server rejects
+  // a window overlapping one already recorded.
   const manualCandidates = React.useMemo(() => {
-    const withRecord = new Set(
-      summaries.filter((s) => s.event_date === selectedDate).map((s) => s.employee_id),
-    );
+    const shiftsThatDay = new Map<string, number>();
+    for (const s of summaries) {
+      if (s.event_date !== selectedDate) continue;
+      shiftsThatDay.set(s.employee_id, Math.max(1, s.sessions.length));
+    }
     return employees
-      .filter((e) => !withRecord.has(e.id))
-      .map((e) => ({ id: e.id, name: e.name }))
+      .map((e) => ({
+        id: e.id,
+        name: e.name,
+        existing_shifts: shiftsThatDay.get(e.id) ?? 0,
+      }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [employees, summaries, selectedDate]);
 
@@ -363,12 +398,25 @@ export function DailyHoursApproval({
                 Manual
               </span>
             )}
+            {s.shifts.length > 1 && (
+              <span
+                className="ml-2 align-middle text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-border bg-surface-hover text-text-subtle font-medium"
+                title={`Worked in ${s.shifts.length} separate shifts — ${s.shifts.join(", ")}`}
+              >
+                {s.shifts.length} shifts
+              </span>
+            )}
           </p>
           <p className="text-xs text-text-muted">
             {s.auto_clocked_out ? "Assumed" : "Clocked"} {s.clocked_hours.toFixed(2)}h
             {store && <> · {store}</>}
             {s.kind === "cover" && <> · cash</>}
           </p>
+          {/* The total above is the SUM of these, never last-out minus
+              first-in — the gap between shifts isn't worked time. */}
+          {s.shifts.length > 1 && (
+            <p className="text-[11px] text-text-subtle">{s.shifts.join(" · ")}</p>
+          )}
         </div>
 
         {s.approved ? (
@@ -485,7 +533,7 @@ export function DailyHoursApproval({
               size="sm"
               variant="outline"
               onClick={() => setShowAddMissed("employee")}
-              title="Record a day for an employee who forgot to clock in"
+              title="Record a shift an employee forgot to clock in for — including a second shift on a day they already worked"
             >
               Add missed entry
             </Button>

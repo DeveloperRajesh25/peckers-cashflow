@@ -452,6 +452,57 @@ export type ClockEvent = {
   manual_entry_reason?: string | null;
   /** 'in' | 'out' | 'both' — which timestamps the manager supplied. */
   manual_entry_fields?: string | null;
+  /**
+   * Sum of the day's completed clock_sessions — NOT clock_out_at − clock_in_at,
+   * which on a split day spans the gap between shifts. Null on rows with no
+   * sessions; read it through dayWorkedHours() in lib/utils, never directly.
+   */
+  worked_hours?: number | null;
+  session_count?: number | null;
+};
+
+/**
+ * One clock-in/clock-out pair. A day can hold several — morning shift, break,
+ * evening shift — and clock_events is the per-day header that sums them.
+ * See migration 029.
+ */
+export type ClockSession = {
+  id: string;
+  clock_event_id: string;
+  employee_id: string;
+  store_id: string | null;
+  /** The date the session STARTED; one crossing midnight stays on its opening day. */
+  event_date: string;
+  /**
+   * 1, 2, 3… INSERTION order within the day — a stable per-day identity, not a
+   * chronological one. A manager filling in a forgotten morning shift after the
+   * evening one gives it the higher seq. Always sort and derive day bounds by
+   * `clock_in_at`.
+   */
+  seq: number;
+  clock_in_at: string;
+  clock_out_at: string | null;
+  clock_in_lat: number | null;
+  clock_in_lng: number | null;
+  clock_out_lat: number | null;
+  clock_out_lng: number | null;
+  manual_entry: boolean;
+  manual_entry_by?: string | null;
+  manual_entry_at?: string | null;
+  manual_entry_reason?: string | null;
+  auto_clocked_out: boolean;
+  auto_clock_out_source?: string | null;
+  auto_clock_out_at?: string | null;
+  created_at: string;
+};
+
+/** The part of a session the UI needs to render a day's shifts. */
+export type ClockSessionSpan = {
+  seq: number;
+  clock_in_at: string;
+  clock_out_at: string | null;
+  auto_clocked_out?: boolean | null;
+  manual_entry?: boolean | null;
 };
 
 /**
@@ -633,14 +684,18 @@ export type ClockWeeklySummary = {
 };
 
 // One clocked DAY for an employee, used by the daily hours-approval view.
-// clock_events holds exactly one row per (employee, day), so this maps 1:1.
+// clock_events still holds exactly one row per (employee, day), so this maps
+// 1:1 — but that day may contain several shifts, carried in `sessions`.
+// Approval is per DAY on the total, with the shifts shown for context.
 export type ClockDailySummary = {
   employee_id: string;
   employee_name: string;
   event_date: string; // YYYY-MM-DD
   store_id: string | null;
-  /** Raw hours from clock-in/out for the day. */
+  /** Hours worked across every shift that day (gaps between shifts excluded). */
   clocked_hours: number;
+  /** The day's individual shifts, earliest first. Empty on pre-029 rows. */
+  sessions: ClockSessionSpan[];
   /** Has a manager approved this day for payroll? */
   hours_approved: boolean;
   /** Manager-confirmed hours (may differ from clocked_hours); null until approved. */

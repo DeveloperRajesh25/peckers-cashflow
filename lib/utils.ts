@@ -272,6 +272,52 @@ export function clockedHours(
   return ms > 0 ? ms / 3_600_000 : 0;
 }
 
+/**
+ * Hours worked on a clocked DAY. A day can hold several shifts (migration 029),
+ * so the answer is the summed sessions in `worked_hours` — NOT
+ * clock_out_at − clock_in_at, which spans the gap between a morning and an
+ * evening shift and would pay someone for their afternoon off.
+ *
+ * The raw-delta fallback is permanent, not transitional: it covers rows with no
+ * sessions (pre-029 history, a row written by an older build mid-deploy, a
+ * hand-fixed row), where the day is single-shift and the two agree.
+ *
+ * This is the ONE place a day's hours are derived. Approval overrides
+ * (`approved_hours`) sit above it — see resolvedDayHours in lib/cash-flow.
+ */
+export function dayWorkedHours(row: {
+  clock_in_at: string | null;
+  clock_out_at: string | null;
+  worked_hours?: number | string | null;
+}): number {
+  if (row.worked_hours != null) {
+    const h = Number(row.worked_hours);
+    if (!isNaN(h)) return Math.max(0, h);
+  }
+  if (!row.clock_in_at || !row.clock_out_at) return 0;
+  const ms = new Date(row.clock_out_at).getTime() - new Date(row.clock_in_at).getTime();
+  return ms > 0 ? ms / 3_600_000 : 0;
+}
+
+/**
+ * Hours worked so far on a day that may still be running: every completed
+ * session plus the open one counted up to `now`. Used by the live boards, where
+ * an in-progress shift has to keep ticking.
+ */
+export function liveDayWorkedHours(
+  row: { clock_in_at: string | null; clock_out_at: string | null; worked_hours?: number | string | null },
+  sessions: Array<{ clock_in_at: string; clock_out_at: string | null }> | undefined,
+  now: Date = new Date(),
+): number {
+  if (!sessions || sessions.length === 0) {
+    // No session detail (pre-029 row): the header is the whole day.
+    return clockedHours(row.clock_in_at, row.clock_out_at, now);
+  }
+  let total = 0;
+  for (const s of sessions) total += clockedHours(s.clock_in_at, s.clock_out_at, now);
+  return total;
+}
+
 // ---------------- geofencing ----------------
 /** Haversine distance in metres between two lat/lng points. */
 export function haversineMeters(
@@ -329,6 +375,7 @@ export function groupClockEventsByWeek(
     event_date: string;
     clock_in_at: string | null;
     clock_out_at: string | null;
+    worked_hours?: number | string | null;
   }>,
   employeeMap: Map<
     string,
@@ -349,10 +396,8 @@ export function groupClockEventsByWeek(
     if (!ce.clock_in_at || !ce.clock_out_at) continue;
     const weekStart = toISODate(startOfISOWeek(parseISODate(ce.event_date)));
     const key = `${ce.employee_id}:${weekStart}`;
-    const ms =
-      new Date(ce.clock_out_at).getTime() - new Date(ce.clock_in_at).getTime();
     const prev = byKey.get(key) ?? { hours: 0, count: 0 };
-    byKey.set(key, { hours: prev.hours + ms / 3_600_000, count: prev.count + 1 });
+    byKey.set(key, { hours: prev.hours + dayWorkedHours(ce), count: prev.count + 1 });
   }
 
   return Array.from(byKey.entries())
@@ -376,18 +421,21 @@ export function groupClockEventsByWeek(
 
 /**
  * Map raw clock_events into per-DAY summaries for the daily approval view.
- * clock_events already holds one row per (employee, day), so this is 1:1 —
- * we just compute the day's clocked hours and carry the approval state.
+ * clock_events still holds one row per (employee, day), so this stays 1:1 —
+ * but a day may contain several shifts, so the hours come from dayWorkedHours
+ * and the individual shifts ride along in `sessions` for display.
  * Structurally matches the ClockDailySummary type (kept inline to avoid a
  * lib/types <-> lib/utils import cycle).
  */
 export function mapClockEventsToDaily(
   clockEvents: Array<{
+    id?: string;
     employee_id: string;
     event_date: string;
     store_id?: string | null;
     clock_in_at: string | null;
     clock_out_at: string | null;
+    worked_hours?: number | string | null;
     hours_approved?: boolean | null;
     approved_hours?: number | string | null;
     auto_clocked_out?: boolean | null;
@@ -395,12 +443,30 @@ export function mapClockEventsToDaily(
     manual_entry_reason?: string | null;
   }>,
   employeeMap: Map<string, { name: string }>,
+  /** Shifts per clock_events.id — omit and every day renders as a single shift. */
+  sessionsByEventId?: Map<
+    string,
+    Array<{
+      seq: number;
+      clock_in_at: string;
+      clock_out_at: string | null;
+      auto_clocked_out?: boolean | null;
+      manual_entry?: boolean | null;
+    }>
+  >,
 ): Array<{
   employee_id: string;
   employee_name: string;
   event_date: string;
   store_id: string | null;
   clocked_hours: number;
+  sessions: Array<{
+    seq: number;
+    clock_in_at: string;
+    clock_out_at: string | null;
+    auto_clocked_out?: boolean | null;
+    manual_entry?: boolean | null;
+  }>;
   hours_approved: boolean;
   approved_hours: number | null;
   auto_clocked_out: boolean;
@@ -410,14 +476,13 @@ export function mapClockEventsToDaily(
   const out = [];
   for (const ce of clockEvents) {
     if (!ce.clock_in_at || !ce.clock_out_at) continue;
-    const ms =
-      new Date(ce.clock_out_at).getTime() - new Date(ce.clock_in_at).getTime();
     out.push({
       employee_id: ce.employee_id,
       employee_name: employeeMap.get(ce.employee_id)?.name ?? "—",
       event_date: ce.event_date,
       store_id: ce.store_id ?? null,
-      clocked_hours: Math.round((Math.max(0, ms) / 3_600_000) * 100) / 100,
+      clocked_hours: Math.round(dayWorkedHours(ce) * 100) / 100,
+      sessions: (ce.id ? sessionsByEventId?.get(ce.id) : undefined) ?? [],
       hours_approved: !!ce.hours_approved,
       approved_hours:
         ce.approved_hours != null ? Number(ce.approved_hours) : null,

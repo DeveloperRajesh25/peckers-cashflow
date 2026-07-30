@@ -12,11 +12,13 @@ import {
   WEEKDAY_LONG,
   addDays,
   clockedHours,
+  dayWorkedHours,
   formatDDMMYYYY,
   formatShiftRange,
   formatTimeOnly,
   haversineMeters,
   isWithinGeofence,
+  liveDayWorkedHours,
   startOfISOWeek,
   toISODate,
   todayISO,
@@ -28,6 +30,7 @@ import { savePushSubscription, deletePushSubscription, sendTestPush } from "@/ap
 import { ClockIcon } from "@/components/ui/icons";
 import type {
   ClockEvent,
+  ClockSession,
   Employee,
   EmployeeScheduleDay,
   RotaShift,
@@ -44,7 +47,16 @@ type Props = {
   todayClock: ClockEvent | null;
   /** This week's clock events (Mon–Sun) — drives the worked-hours history. */
   weekClocks?: ClockEvent[];
+  /** The individual shifts inside those days — a day can hold several. */
+  weekSessions?: ClockSession[];
 };
+
+/**
+ * How soon after clocking out a second clock-in asks for confirmation. Clocking
+ * back in is one tap by design, which also makes it one mis-tap — and a
+ * phantom shift on a payroll record is worth a moment's friction.
+ */
+const RECLOCK_CONFIRM_WINDOW_MS = 5 * 60_000;
 
 type GeoState =
   | { status: "idle" }
@@ -59,6 +71,7 @@ export function CrewClockApp({
   schedules = [],
   todayClock,
   weekClocks = [],
+  weekSessions = [],
 }: Props) {
   const router = useRouter();
   const toast = useToast();
@@ -107,13 +120,32 @@ export function CrewClockApp({
     return m;
   }, [weekClocks]);
 
+  // The day's individual shifts. A day can hold several — morning in, out,
+  // evening back in — and each is its own session row.
+  const sessionsByDate = React.useMemo(() => {
+    const m = new Map<string, ClockSession[]>();
+    for (const s of weekSessions) {
+      const arr = m.get(s.event_date) ?? [];
+      arr.push(s);
+      m.set(s.event_date, arr);
+    }
+    // By clock time, not seq — a shift recorded by a manager after the fact can
+    // carry a higher seq than one that happened earlier in the day.
+    for (const arr of m.values()) arr.sort((a, b) => a.clock_in_at.localeCompare(b.clock_in_at));
+    return m;
+  }, [weekSessions]);
+
+  const todaySessions = sessionsByDate.get(today) ?? [];
+  const openSession = todaySessions.find((s) => !s.clock_out_at) ?? null;
+
   // A manager can correct a day's hours during approval (DailyHoursApproval) —
   // once approved, that confirmed value is authoritative and must override the
-  // raw clock-in/out delta, or the crew screen would show a value the manager
-  // already fixed.
+  // clocked total, or the crew screen would show a value the manager already
+  // fixed. Otherwise it's the SUM of the day's shifts, never last-out minus
+  // first-in, which would count the gap between them.
   function effectiveWorkedHours(c: ClockEvent): number {
     if (c.hours_approved && c.approved_hours != null) return Number(c.approved_hours);
-    return c.clock_out_at ? clockedHours(c.clock_in_at, c.clock_out_at) : 0;
+    return dayWorkedHours(c);
   }
 
   const weekWorkedHours = React.useMemo(
@@ -121,7 +153,31 @@ export function CrewClockApp({
     [weekClocks],
   );
 
-  const todayWorkedHours = todayClock?.clock_out_at ? effectiveWorkedHours(todayClock) : 0;
+  // Includes the shift currently running, so the figure keeps up during the day.
+  const todayWorkedHours = todayClock
+    ? todayClock.hours_approved && todayClock.approved_hours != null
+      ? Number(todayClock.approved_hours)
+      : liveDayWorkedHours(todayClock, todaySessions)
+    : 0;
+
+  const completedTodayCount = todaySessions.filter((s) => s.clock_out_at).length;
+  const lastClockOutAt = todaySessions
+    .filter((s) => s.clock_out_at)
+    .reduce<string | null>(
+      (latest, s) =>
+        !latest || new Date(s.clock_out_at!).getTime() > new Date(latest).getTime()
+          ? s.clock_out_at!
+          : latest,
+      todayClock?.clock_out_at ?? null,
+    );
+
+  /** "09:00–13:00, 17:00–21:00" — the day's shifts, for the summary line. */
+  const todayShiftLabel = todaySessions
+    .map(
+      (s) =>
+        `${formatTimeOnly(s.clock_in_at)}–${s.clock_out_at ? formatTimeOnly(s.clock_out_at) : "now"}`,
+    )
+    .join(", ");
 
   // Effective shift for a date: published rota row first, else the employee's
   // recurring schedule template for that weekday.
@@ -149,11 +205,17 @@ export function CrewClockApp({
 
   const todayEff = effFor(today, weekdayIndex(new Date()));
 
-  const clockedIn = !!todayClock?.clock_in_at && !todayClock?.clock_out_at;
-  const clockedOut = !!todayClock?.clock_out_at;
+  // On shift = a session is open. Pre-029 days have no sessions, so fall back
+  // to the header's "clocked in, not yet out".
+  const clockedIn = openSession
+    ? true
+    : todaySessions.length === 0 && !!todayClock?.clock_in_at && !todayClock?.clock_out_at;
 
-  // What the big action button should do right now: clock in, clock out, or done.
-  const currentPhase: "in" | "out" | "done" = clockedOut ? "done" : clockedIn ? "out" : "in";
+  // Only two states now. A finished shift no longer ends the day — the button
+  // goes back to Clock In so a second shift needs no new gesture, and the day's
+  // completed work is summarised in the card above it.
+  const currentPhase: "in" | "out" = clockedIn ? "out" : "in";
+  const finishedShiftToday = !clockedIn && (completedTodayCount > 0 || !!todayClock?.clock_out_at);
 
   const requestLocation = React.useCallback(() => {
     setGeo({ status: "loading" });
@@ -206,7 +268,7 @@ export function CrewClockApp({
   }, [geo, locatedStores]);
 
   // The store this clock action applies to:
-  //  - clocking out / done: the store they clocked IN at (fixed for the day).
+  //  - clocking out: the store they clocked IN at (fixed for the shift).
   //  - clocking in: auto-detected — the nearest store they're within range of.
   const clockedStore =
     todayClock?.store_id ? stores.find((s) => s.id === todayClock.store_id) ?? null : null;
@@ -214,7 +276,7 @@ export function CrewClockApp({
   let targetStore: Store | null;
   let targetDistance: number | null;
   let inRange: boolean;
-  if (currentPhase === "out" || currentPhase === "done") {
+  if (currentPhase === "out") {
     targetStore = clockedStore;
     const d = storeDistances.find((sd) => sd.store.id === clockedStore?.id) ?? null;
     targetDistance = d?.distance ?? null;
@@ -234,6 +296,18 @@ export function CrewClockApp({
     }
     if (!inRange || !targetStore) {
       toast.error("You're not within range of a store yet.");
+      return;
+    }
+    // Clocking back in is one tap, which also makes it one mis-tap. Only asks
+    // when the clock-out was moments ago — a genuine second shift starts hours
+    // later and is never interrupted.
+    if (
+      lastClockOutAt &&
+      Date.now() - new Date(lastClockOutAt).getTime() < RECLOCK_CONFIRM_WINDOW_MS &&
+      !window.confirm(
+        `You clocked out at ${formatTimeOnly(lastClockOutAt)}. Start another shift?`,
+      )
+    ) {
       return;
     }
     setBusy(true);
@@ -370,7 +444,7 @@ export function CrewClockApp({
                     {geo.status === "loading"
                       ? "Getting your location…"
                       : geo.status === "ok"
-                        ? currentPhase === "out" || currentPhase === "done"
+                        ? currentPhase === "out"
                           ? targetStore
                             ? `${targetDistance != null ? `${Math.round(targetDistance)}m from ` : "At "}${targetStore.name} · ±${Math.round(geo.accuracy)}m GPS accuracy`
                             : "Clocked-in store unavailable."
@@ -395,24 +469,37 @@ export function CrewClockApp({
               </div>
             </div>
 
-            {/* Big primary action */}
-            {currentPhase === "done" ? (
+            {/* What's been worked today. Shown once a shift is finished, and
+                again alongside the Clock In button when a second one starts —
+                a day can hold several shifts, so this is a running total
+                rather than a full stop. */}
+            {finishedShiftToday && (
               <div className="rounded-xl border border-success/30 bg-success/10 p-4 text-sm text-success">
                 <div className="flex items-center justify-between gap-2 font-medium">
                   <span className="flex items-center gap-2">
-                    <ClockIcon size={16} /> Shift complete for today
+                    <ClockIcon size={16} />
+                    {completedTodayCount > 1
+                      ? `${completedTodayCount} shifts done today`
+                      : "Shift complete for today"}
                   </span>
                   <span className="text-base font-semibold tabular-nums">
                     {todayWorkedHours.toFixed(2)}h
                   </span>
                 </div>
                 <p className="text-xs mt-1 text-success/80">
-                  You worked {todayWorkedHours.toFixed(2)}h{clockedStore ? ` at ${clockedStore.name}` : ""} — clocked in{" "}
-                  {formatTimeOnly(todayClock?.clock_in_at)} · clocked out{" "}
-                  {formatTimeOnly(todayClock?.clock_out_at)}
+                  You worked {todayWorkedHours.toFixed(2)}h
+                  {clockedStore ? ` at ${clockedStore.name}` : ""} —{" "}
+                  {todayShiftLabel ||
+                    `clocked in ${formatTimeOnly(todayClock?.clock_in_at)} · clocked out ${formatTimeOnly(todayClock?.clock_out_at)}`}
+                </p>
+                <p className="text-[11px] mt-1 text-success/70">
+                  Back later today? Just clock in again below.
                 </p>
               </div>
-            ) : (
+            )}
+
+            {/* Big primary action */}
+            {(
               <div className="flex flex-col gap-3">
                 {/* Drivers enter short + long deliveries before clocking out */}
                 {currentPhase === "out" && isDriver && (
@@ -485,7 +572,9 @@ export function CrewClockApp({
                 >
                   {currentPhase === "out"
                     ? `Clock Out${targetStore ? ` — ${targetStore.name}` : " Now"}`
-                    : `Clock In${inRange && targetStore ? ` at ${targetStore.name}` : " Now"}`}
+                    : finishedShiftToday
+                      ? `Start Another Shift${inRange && targetStore ? ` at ${targetStore.name}` : ""}`
+                      : `Clock In${inRange && targetStore ? ` at ${targetStore.name}` : " Now"}`}
                 </Button>
 
                 {!inRange && geo.status === "ok" && (
@@ -498,7 +587,7 @@ export function CrewClockApp({
                 {geo.status === "ok" && (
                   <p className="text-[11px] text-text-muted text-center">
                     {currentPhase === "out"
-                      ? `Clocked in at ${formatTimeOnly(todayClock?.clock_in_at)}${clockedStore ? ` · ${clockedStore.name}` : ""}.`
+                      ? `Clocked in at ${formatTimeOnly(openSession?.clock_in_at ?? todayClock?.clock_in_at)}${clockedStore ? ` · ${clockedStore.name}` : ""}.`
                       : "Tip: tap Refresh if you've just arrived and you're showing out of range."}
                   </p>
                 )}
@@ -605,7 +694,9 @@ export function CrewClockApp({
             const dateIso = toISODate(date);
             const eff = effFor(dateIso, i);
             const clk = clockByDate.get(dateIso);
-            const worked = clk?.clock_out_at ? effectiveWorkedHours(clk) : 0;
+            const daySessions = sessionsByDate.get(dateIso) ?? [];
+            const worked = clk ? effectiveWorkedHours(clk) : 0;
+            const openToday = daySessions.some((s) => !s.clock_out_at);
             const isToday = dateIso === today;
             return (
               <div
@@ -641,27 +732,42 @@ export function CrewClockApp({
                           )}
                         </>
                     : <span className="text-text-muted">No shift</span>}
-                  {clk?.clock_in_at &&
-                    (clk.clock_out_at ? (
-                      <span className="block text-[11px] mt-0.5">
-                        <span className="text-text-muted">
-                          Worked {formatTimeOnly(clk.clock_in_at)}–{formatTimeOnly(clk.clock_out_at)}
-                        </span>{" "}
+                  {clk?.clock_in_at && (
+                    <span className="block text-[11px] mt-0.5">
+                      <span className="text-text-muted">
+                        {/* Every shift of the day, so a split day reads as two
+                            windows rather than one long one that never happened. */}
+                        Worked{" "}
+                        {daySessions.length > 0
+                          ? daySessions
+                              .map(
+                                (s) =>
+                                  `${formatTimeOnly(s.clock_in_at)}–${s.clock_out_at ? formatTimeOnly(s.clock_out_at) : "now"}`,
+                              )
+                              .join(", ")
+                          : `${formatTimeOnly(clk.clock_in_at)}–${clk.clock_out_at ? formatTimeOnly(clk.clock_out_at) : "now"}`}
+                      </span>{" "}
+                      {worked > 0 && (
                         <span className="text-success font-medium">{worked.toFixed(2)}h</span>
-                        {clk.auto_clocked_out && (
-                          <span
-                            className="block text-[10px] text-warning"
-                            title="You didn't clock out — your scheduled shift end was used. Tell your manager if that's wrong."
-                          >
-                            auto clock-out (shift end used)
-                          </span>
-                        )}
-                      </span>
-                    ) : (
-                      <span className="block text-[11px] text-success mt-0.5">
-                        On shift since {formatTimeOnly(clk.clock_in_at)}
-                      </span>
-                    ))}
+                      )}
+                      {daySessions.length > 1 && (
+                        <span className="text-text-muted"> · {daySessions.length} shifts</span>
+                      )}
+                      {openToday && (
+                        <span className="block text-[10px] text-success">
+                          On shift now
+                        </span>
+                      )}
+                      {clk.auto_clocked_out && (
+                        <span
+                          className="block text-[10px] text-warning"
+                          title="You didn't clock out — your scheduled shift end was used. Tell your manager if that's wrong."
+                        >
+                          auto clock-out (shift end used)
+                        </span>
+                      )}
+                    </span>
+                  )}
                 </div>
               </div>
             );

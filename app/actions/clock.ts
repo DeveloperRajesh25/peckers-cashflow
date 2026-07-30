@@ -5,7 +5,13 @@ import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
 import { createAdminClient, isProvisioningConfigured } from "@/lib/supabase-admin";
 import { writeAudit } from "./audit";
 import { scanForAlertsBackground } from "./alerts";
-import { londonHHMM, shiftHours, todayISO } from "@/lib/utils";
+import {
+  londonHHMM,
+  parseISODate,
+  startOfISOWeek,
+  toISODate,
+  todayISO,
+} from "@/lib/utils";
 import {
   detectStoreForLocation,
   verifyGeofenceAtStore,
@@ -13,6 +19,16 @@ import {
 } from "@/lib/geofence-verify";
 import { findEmployeeForUser } from "@/lib/employee-lookup";
 import { londonWallClockToUtc, MAX_AUTO_SHIFT_HOURS } from "@/lib/auto-clock-out";
+import {
+  adoptHeaderIntoSession,
+  closeSession,
+  findOpenSession,
+  openSession,
+  overlapsExistingSession,
+  recomputeDayHeader,
+  sessionsForEvent,
+} from "@/lib/clock-sessions";
+import { employeeNiRate, rollupApprovedWeek } from "@/lib/employee-hours-rollup";
 import { hasRole, resolveActiveStoreId, type ActionResult } from "@/lib/types";
 
 /** Marker note for shifts the system created from a clock-in (no rota entry). */
@@ -137,6 +153,106 @@ async function applyAutoShiftForClockIn(input: {
   return shiftId;
 }
 
+/**
+ * Stamp an auto-created rota cell with the day's real window.
+ *
+ * `scheduled_hours` is the SUMMED session hours, not end − start: on a day
+ * worked 09:00–13:00 and 17:00–21:00 the cell reads 09:00–21:00 but must total
+ * 8h, or the Rota (and every wage forecast built on it) pays for the afternoon
+ * off as well.
+ *
+ * `manager_notes` is left as exactly AUTO_SHIFT_NOTE even on a multi-shift day.
+ * Three modules compare that string with strict equality to decide whether a
+ * cell is system-managed — the auto clock-out sweep among them — so appending
+ * a shift count here would quietly stop them recognising their own cells. The
+ * shift count is shown from session data instead.
+ *
+ * Best-effort throughout: needs the service-role client, and must never block
+ * a clock action.
+ */
+async function stampAutoShiftWindow(
+  supabase: ReturnType<typeof createServerSupabase>,
+  shiftId: string | null,
+  endHHMM: string,
+  workedHours: number,
+) {
+  if (!shiftId || !isProvisioningConfigured()) return;
+  try {
+    const { data: shift } = await supabase
+      .from("rota_shifts")
+      .select("id, start_time, manager_notes")
+      .eq("id", shiftId)
+      .maybeSingle();
+    if (!shift?.start_time || shift.manager_notes !== AUTO_SHIFT_NOTE) return;
+
+    const admin = createAdminClient();
+    await admin
+      .from("rota_shifts")
+      .update({
+        end_time: endHHMM,
+        scheduled_hours: Math.round(workedHours * 100) / 100,
+      })
+      .eq("id", shift.id);
+  } catch (err) {
+    console.error(
+      "[clock] auto-shift end-stamp failed (clock action continues):",
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
+/**
+ * A day that was already approved has just gained another shift, so the
+ * approved figure is no longer the day's total. Revoke the approval and
+ * re-roll the week, putting the day back in the manager's pending queue.
+ *
+ * Without this the second shift is invisible to payroll: resolvedDayHours
+ * prefers approved_hours, so a day approved at 4h stays paid at 4h no matter
+ * how much more was worked.
+ *
+ * Service-role, because employee_hours writes are staff-only under RLS and the
+ * actor here is the employee. Best-effort — it must never block a clock-in.
+ */
+async function revokeApprovalForAddedShift(input: {
+  clockEventId: string;
+  employeeId: string;
+  eventDate: string;
+}) {
+  if (!isProvisioningConfigured()) return;
+  try {
+    const admin = createAdminClient();
+    await admin
+      .from("clock_events")
+      .update({
+        hours_approved: false,
+        approved_hours: null,
+        hours_approved_by: null,
+        hours_approved_at: null,
+      })
+      .eq("id", input.clockEventId);
+
+    const rate = await employeeNiRate(admin, input.employeeId);
+    const weekStart = toISODate(startOfISOWeek(parseISODate(input.eventDate)));
+    await rollupApprovedWeek(admin, input.employeeId, weekStart, rate, null);
+
+    await writeAudit({
+      action: "approval_revoked_new_shift",
+      entity: "clock_event",
+      entity_id: input.clockEventId,
+      changes: {
+        employee_id: input.employeeId,
+        event_date: input.eventDate,
+        reason: "Another shift was started on an already-approved day",
+      },
+    });
+  } catch (err) {
+    console.error(
+      "[clock] could not revoke approval for an added shift:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+}
+
 /** Paths refreshed after any clock write, self-service or manager-entered. */
 function revalidateClockPaths() {
   revalidatePath("/employee/attendance");
@@ -184,6 +300,20 @@ async function performClockIn(input: {
 
   const today = todayISO();
 
+  // The only thing that blocks a clock-in is ALREADY BEING CLOCKED IN. A day can
+  // hold several shifts — morning, break, evening — so "you've already clocked
+  // in today" is no longer a reason to refuse. The open session is looked up
+  // across every date, not just today, because a shift opened at 22:00 and
+  // still running belongs to yesterday.
+  const open = await findOpenSession(supabase, employee.id);
+  if (open) {
+    throw new Error(
+      open.event_date === today
+        ? "You're already clocked in. Clock out before starting another shift."
+        : `You're still clocked in from ${open.event_date}. Clock out of that shift first.`,
+    );
+  }
+
   // Link to today's scheduled shift if one exists. Clock-in is self-service:
   // staff can clock in whenever they're on-site, with or without a shift on the
   // rota (covering a colleague, picking up an extra shift, etc.). A scheduled
@@ -202,10 +332,6 @@ async function performClockIn(input: {
     .eq("event_date", today)
     .maybeSingle();
 
-  if (existing?.clock_in_at) {
-    throw new Error("You've already clocked in today.");
-  }
-
   const nowDate = new Date();
   const now = nowDate.toISOString();
 
@@ -213,29 +339,77 @@ async function performClockIn(input: {
     employeeId: employee.id,
     storeId: workedStoreId,
     eventDate: today,
-    startTime: londonHHMM(nowDate),
+    // Later shifts must not move the rota cell's start time — the day began
+    // when the FIRST shift did.
+    startTime: londonHHMM(existing?.clock_in_at ? new Date(existing.clock_in_at) : nowDate),
     shift,
   });
 
-  const payload = {
-    employee_id: employee.id,
-    shift_id: shiftId,
-    store_id: workedStoreId,
-    event_date: today,
-    clock_in_at: now,
-    clock_in_lat: input.latitude,
-    clock_in_lng: input.longitude,
-  };
-
+  // One header row per day, unchanged (clock_events_unique). It carries the
+  // day's store and rota link; the shift itself goes in clock_sessions.
+  let clockEventId = existing?.id as string | undefined;
   if (existing) {
     const { error } = await supabase
       .from("clock_events")
-      .update(payload)
+      .update({
+        shift_id: shiftId,
+        // A day already carrying a shift keeps the store it started at; only a
+        // fresh day takes the store just detected.
+        store_id: existing.clock_in_at ? existing.store_id : workedStoreId,
+      })
       .eq("id", existing.id);
     if (error) throw new Error(error.message);
   } else {
-    const { error } = await supabase.from("clock_events").insert(payload);
+    const { data: created, error } = await supabase
+      .from("clock_events")
+      .insert({
+        employee_id: employee.id,
+        shift_id: shiftId,
+        store_id: workedStoreId,
+        event_date: today,
+        clock_in_at: now,
+        clock_in_lat: input.latitude,
+        clock_in_lng: input.longitude,
+      })
+      .select("id")
+      .maybeSingle();
     if (error) throw new Error(error.message);
+    clockEventId = created?.id;
+  }
+  if (!clockEventId) throw new Error("Could not record the clock-in. Please try again.");
+
+  // A pre-029 day may have a clock-in on the header but no session to sit
+  // beside. Adopt it so the day's shifts are complete before adding this one.
+  if (existing?.clock_in_at) {
+    await adoptHeaderIntoSession(supabase, {
+      ...existing,
+      id: existing.id,
+      employee_id: employee.id,
+      store_id: existing.store_id,
+      event_date: today,
+    });
+  }
+
+  await openSession(supabase, {
+    clockEventId,
+    employeeId: employee.id,
+    storeId: workedStoreId,
+    eventDate: today,
+    clockInAt: now,
+    lat: input.latitude,
+    lng: input.longitude,
+  });
+
+  await recomputeDayHeader(supabase, clockEventId);
+
+  // Signing off 4h and then working another 4h must not leave the day paid at
+  // 4h. Revoking returns it to the pending queue with the full total.
+  if (existing?.hours_approved) {
+    await revokeApprovalForAddedShift({
+      clockEventId,
+      employeeId: employee.id,
+      eventDate: today,
+    });
   }
 
   await writeAudit({
@@ -275,25 +449,42 @@ async function performClockOut(input: ClockOutInput) {
   const employee = await getEmployeeForUser(user.id, user.email);
   if (!employee) throw new Error("Your account is not linked to a crew profile.");
 
+  // Resolve the shift being closed from the OPEN SESSION, not from today's
+  // date: a shift that started at 22:00 and runs past midnight is clocked out
+  // on the following calendar day but belongs to the day it opened on.
+  let session = await findOpenSession(supabase, employee.id);
+
   const today = todayISO();
   const { data: existing } = await supabase
     .from("clock_events")
     .select("*")
     .eq("employee_id", employee.id)
-    .eq("event_date", today)
+    .eq("event_date", session?.event_date ?? today)
     .maybeSingle();
 
   if (!existing?.clock_in_at) {
     throw new Error("You haven't clocked in yet today.");
   }
-  if (existing.clock_out_at) {
-    throw new Error("You've already clocked out today.");
+  if (!session) {
+    if (existing.clock_out_at) {
+      throw new Error("You've already clocked out today.");
+    }
+    // Clocked in under the pre-029 build, clocking out after the deploy: the
+    // header has the shift but no session row. Adopt it, then close it.
+    session = await adoptHeaderIntoSession(supabase, {
+      ...existing,
+      id: existing.id,
+      employee_id: employee.id,
+      store_id: existing.store_id,
+      event_date: existing.event_date,
+    });
+    if (!session) throw new Error("You haven't clocked in yet today.");
   }
 
   // Clock out at the same store they clocked in at — that's where the day's
   // work is recorded, so it's where they must be to sign off.
   await verifyGeofence(
-    existing.store_id,
+    session.store_id ?? existing.store_id,
     input.latitude,
     input.longitude,
     input.accuracy,
@@ -325,65 +516,60 @@ async function performClockOut(input: ClockOutInput) {
     throw new Error("Please give a reason for the extra long deliveries.");
   }
 
-  const now = new Date().toISOString();
-  const payload: Record<string, unknown> = {
-    clock_out_at: now,
-    clock_out_lat: input.latitude,
-    clock_out_lng: input.longitude,
-  };
+  const nowDate = new Date();
+  const now = nowDate.toISOString();
+
+  const closedOk = await closeSession(supabase, session.id, {
+    clockOutAt: now,
+    lat: input.latitude,
+    lng: input.longitude,
+  });
+  if (!closedOk) throw new Error("You've already clocked out of that shift.");
+
+  // Delivery counts are a DAY total on the header, not per shift: a driver
+  // entering "12 short" at the end of their evening shift is reporting the
+  // day's round so far, and the clock-out form pre-fills with what's already
+  // recorded. Keeping them on the header also leaves the payout, the rota
+  // delivery column and the Vita Mojo cross-check reading one row, unchanged.
   if (isDriver) {
-    payload.short_deliveries_count = Math.max(0, Number(input.short_deliveries_count) || 0);
-    payload.long_deliveries_count = Math.max(0, Number(input.long_deliveries_count) || 0);
     const extraShort = Math.max(0, Number(input.extra_short_deliveries) || 0);
     const extraLong = Math.max(0, Number(input.extra_long_deliveries) || 0);
-    payload.extra_short_deliveries = extraShort;
-    payload.extra_long_deliveries = extraLong;
-    payload.extra_short_reason = extraShort > 0 ? input.extra_short_reason?.trim() || null : null;
-    payload.extra_long_reason = extraLong > 0 ? input.extra_long_reason?.trim() || null : null;
+    const { error } = await supabase
+      .from("clock_events")
+      .update({
+        short_deliveries_count: Math.max(0, Number(input.short_deliveries_count) || 0),
+        long_deliveries_count: Math.max(0, Number(input.long_deliveries_count) || 0),
+        extra_short_deliveries: extraShort,
+        extra_long_deliveries: extraLong,
+        extra_short_reason:
+          extraShort > 0 ? input.extra_short_reason?.trim() || null : null,
+        extra_long_reason: extraLong > 0 ? input.extra_long_reason?.trim() || null : null,
+      })
+      .eq("id", existing.id);
+    if (error) throw new Error(error.message);
   }
 
-  const { error } = await supabase
-    .from("clock_events")
-    .update(payload)
-    .eq("id", existing.id);
-  if (error) throw new Error(error.message);
+  // Header last: first-in / last-out / summed hours all come from the sessions.
+  const { workedHours, lastOut } = await recomputeDayHeader(supabase, existing.id);
 
-  // If the shift was auto-created at clock-in, stamp its end time now so the
-  // rota shows the real worked window (clock-in → clock-out).
-  if (existing.shift_id && isProvisioningConfigured()) {
-    // Best-effort, same as clock-in: stamping the auto-shift's end time must not
-    // block the clock-out itself.
-    try {
-      const { data: shift } = await supabase
-        .from("rota_shifts")
-        .select("id, start_time, manager_notes")
-        .eq("id", existing.shift_id)
-        .maybeSingle();
-      if (shift?.manager_notes === AUTO_SHIFT_NOTE && shift.start_time) {
-        const endTime = londonHHMM(new Date());
-        const admin = createAdminClient();
-        await admin
-          .from("rota_shifts")
-          .update({
-            end_time: endTime,
-            scheduled_hours: shiftHours(shift.start_time.slice(0, 5), endTime),
-          })
-          .eq("id", shift.id);
-      }
-    } catch (err) {
-      console.error(
-        "[clock] auto-shift end-stamp failed (clock-out continues):",
-        err instanceof Error ? err.message : err,
-      );
-    }
-  }
+  // If the shift was auto-created at clock-in, stamp the real worked window on
+  // it. The end is the day's LATEST clock-out and the hours are the SUM of its
+  // shifts, so a split day neither bills the gap nor ends at the wrong time.
+  await stampAutoShiftWindow(
+    supabase,
+    existing.shift_id,
+    londonHHMM(lastOut ? new Date(lastOut) : nowDate),
+    workedHours,
+  );
 
   await writeAudit({
     action: "clock_out",
     entity: "clock_event",
     entity_id: employee.id,
     changes: {
-      date: today,
+      date: session.event_date,
+      session_seq: session.seq,
+      worked_hours: workedHours,
       location: [input.latitude, input.longitude],
       short_deliveries: input.short_deliveries_count ?? null,
       long_deliveries: input.long_deliveries_count ?? null,
@@ -694,6 +880,36 @@ async function performManualClockEntry(input: ManualClockEntryInput) {
     );
   }
 
+  // A day the employee is still working can't take an open manual shift on top
+  // — the one-open-session rule applies however the shift was recorded.
+  if (!clockOutAt) {
+    const open = await findOpenSession(supabase, employee.id);
+    if (open) {
+      throw new Error(
+        `${employee.name} is already clocked in. Record the clock-out time as well, or wait for them to clock out.`,
+      );
+    }
+  }
+
+  // Adopt a pre-029 day so its existing shift is visible to the overlap check
+  // below — otherwise a second manual entry could double-pay the same hours.
+  if (existing?.clock_in_at) {
+    await adoptHeaderIntoSession(supabase, {
+      ...existing,
+      id: existing.id,
+      employee_id: employee.id,
+      store_id: existing.store_id,
+      event_date: input.event_date,
+    });
+  }
+
+  const daySessions = existing ? await sessionsForEvent(supabase, existing.id) : [];
+  if (overlapsExistingSession(daySessions, clockInAt, clockOutAt)) {
+    throw new Error(
+      "Those times overlap a shift already recorded for that day. Check the existing times first.",
+    );
+  }
+
   const { data: shift } = await supabase
     .from("rota_shifts")
     .select("id, is_day_off, start_time")
@@ -701,57 +917,110 @@ async function performManualClockEntry(input: ManualClockEntryInput) {
     .eq("shift_date", input.event_date)
     .maybeSingle();
 
+  // The rota cell starts when the day's EARLIEST shift did — by clock time, not
+  // by which shift was recorded first. A manager filling in a forgotten morning
+  // after the evening is the case that breaks any entry-order assumption.
+  const earliestIn = daySessions.reduce(
+    (min, s) =>
+      new Date(s.clock_in_at).getTime() < min.getTime() ? new Date(s.clock_in_at) : min,
+    clockInAt,
+  );
+
   const shiftId = await applyAutoShiftForClockIn({
     employeeId: employee.id,
     storeId,
     eventDate: input.event_date,
-    startTime: input.clock_in_time.slice(0, 5),
+    startTime: londonHHMM(earliestIn),
     shift,
   });
 
   const fields: ManualEntryFields = clockOutAt ? "both" : "in";
-  const payload: Record<string, unknown> = {
-    employee_id: employee.id,
+  // The header flags mean "this day contains manager-entered time" — a day whose
+  // second shift was hand-recorded is still a day that wasn't fully
+  // geofence-verified, and the badge is what tells a reviewer to look.
+  const headerFlags = {
     shift_id: shiftId,
-    store_id: storeId,
-    event_date: input.event_date,
-    clock_in_at: clockInAt.toISOString(),
-    // Deliberately null: a row with no coordinates was never location-verified.
-    clock_in_lat: null,
-    clock_in_lng: null,
     manual_entry: true,
     manual_entry_by: user.id,
     manual_entry_at: now.toISOString(),
     manual_entry_reason: input.reason.trim(),
     manual_entry_fields: fields,
   };
-  if (clockOutAt) {
-    payload.clock_out_at = clockOutAt.toISOString();
-    payload.clock_out_lat = null;
-    payload.clock_out_lng = null;
-  }
 
+  let clockEventId = existing?.id as string | undefined;
   if (existing) {
     const { error } = await supabase
       .from("clock_events")
-      .update(payload)
+      .update(headerFlags)
       .eq("id", existing.id);
     if (error) throw new Error(error.message);
   } else {
-    const { error } = await supabase.from("clock_events").insert(payload);
+    const { data: created, error } = await supabase
+      .from("clock_events")
+      .insert({
+        employee_id: employee.id,
+        store_id: storeId,
+        event_date: input.event_date,
+        clock_in_at: clockInAt.toISOString(),
+        // Deliberately null: a row with no coordinates was never location-verified.
+        clock_in_lat: null,
+        clock_in_lng: null,
+        ...headerFlags,
+      })
+      .select("id")
+      .maybeSingle();
     if (error) throw new Error(error.message);
+    clockEventId = created?.id;
+  }
+  if (!clockEventId) throw new Error("Could not record those times. Please try again.");
+
+  const manualStamp = {
+    by: user.id,
+    at: now.toISOString(),
+    reason: input.reason.trim(),
+  };
+  const session = await openSession(supabase, {
+    clockEventId,
+    employeeId: employee.id,
+    storeId,
+    eventDate: input.event_date,
+    clockInAt: clockInAt.toISOString(),
+    lat: null,
+    lng: null,
+    manual: manualStamp,
+  });
+  if (clockOutAt) {
+    await closeSession(supabase, session.id, {
+      clockOutAt: clockOutAt.toISOString(),
+      lat: null,
+      lng: null,
+      manual: manualStamp,
+    });
+  }
+
+  const { workedHours, lastOut } = await recomputeDayHeader(supabase, clockEventId);
+  // Stamp the day's LATEST clock-out, not the one just typed — adding a
+  // forgotten morning shift must not pull the cell's end back to 13:00.
+  if (lastOut) {
+    await stampAutoShiftWindow(
+      supabase,
+      shiftId,
+      londonHHMM(new Date(lastOut)),
+      workedHours,
+    );
   }
 
   await writeAudit({
-    action: existing ? "manual_clock_entry_update" : "manual_clock_entry",
+    action: daySessions.length > 0 ? "manual_clock_entry_added_shift" : "manual_clock_entry",
     entity: "clock_event",
-    entity_id: existing?.id ?? employee.id,
+    entity_id: clockEventId,
     changes: {
       employee_id: employee.id,
       employee_name: employee.name,
       event_date: input.event_date,
-      clock_in_at: payload.clock_in_at,
-      clock_out_at: payload.clock_out_at ?? null,
+      session_seq: session.seq,
+      clock_in_at: clockInAt.toISOString(),
+      clock_out_at: clockOutAt?.toISOString() ?? null,
       reason: input.reason.trim(),
       by: user.email,
     },

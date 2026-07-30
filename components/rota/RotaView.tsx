@@ -1048,6 +1048,20 @@ export function RotaView({
                           {clk?.clock_in_at && (
                             <div className="text-[9px] text-text-muted mt-0.5">
                               in {new Date(clk.clock_in_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                              {/* Labelled as WORKED, on its own line: the row
+                                  above is the scheduled shift, and the two are
+                                  different things on a split day. */}
+                              {Number(clk.session_count) > 1 && (
+                                <span
+                                  className="block text-gold"
+                                  title={`Attendance, not the schedule: ${clk.session_count} separate shifts worked this day, ${Number(clk.worked_hours ?? 0).toFixed(2)}h in total excluding the gap between them.`}
+                                >
+                                  {clk.session_count} shifts worked
+                                  {clk.worked_hours != null && (
+                                    <> · {Number(clk.worked_hours).toFixed(2)}h</>
+                                  )}
+                                </span>
+                              )}
                               {clk.manual_entry && (
                                 <span
                                   className="text-warning"

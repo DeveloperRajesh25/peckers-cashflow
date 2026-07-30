@@ -25,6 +25,12 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { parseISODate, shiftHours, timeToMinutes, weekdayIndex } from "@/lib/utils";
+import {
+  adoptHeaderIntoSession,
+  closeSession,
+  findOpenSession,
+  recomputeDayHeader,
+} from "@/lib/clock-sessions";
 
 /** Marker note for shifts the system created from a clock-in (see actions/clock.ts). */
 const AUTO_SHIFT_NOTE = "Auto-created from clock-in";
@@ -175,10 +181,17 @@ export type AutoCloseResult = {
 type OpenClock = {
   id: string;
   employee_id: string;
-  store_id: string | null;
+  store_id: string;
   event_date: string;
   clock_in_at: string;
+  clock_out_at: string | null;
+  clock_in_lat: number | null;
+  clock_in_lng: number | null;
   shift_id: string | null;
+  manual_entry: boolean | null;
+  manual_entry_by: string | null;
+  manual_entry_at: string | null;
+  manual_entry_reason: string | null;
 };
 
 type OpenManagerClock = {
@@ -217,8 +230,13 @@ export async function autoCloseOpenClocks(
   try {
     const [empOpenRes, mgrOpenRes, coverOpenRes, storesRes] = await Promise.all([
       admin
+        // clock_events.clock_out_at is null exactly when a day is still open —
+        // either a session is running, or the row pre-dates migration 029 and
+        // has no session at all. One query still finds both.
         .from("clock_events")
-        .select("id, employee_id, store_id, event_date, clock_in_at, shift_id")
+        .select(
+          "id, employee_id, store_id, event_date, clock_in_at, clock_out_at, clock_in_lat, clock_in_lng, shift_id, manual_entry, manual_entry_by, manual_entry_at, manual_entry_reason",
+        )
         .not("clock_in_at", "is", null)
         .is("clock_out_at", null)
         .gte("event_date", from)
@@ -302,13 +320,26 @@ export async function autoCloseOpenClocks(
       }
 
       for (const row of openEmp) {
+        // Close the open SESSION, not the day. On a split day the header's
+        // clock_in_at is the morning shift's start, so resolving from it would
+        // measure the assumed end against the wrong shift — and the rota end
+        // would fall before the evening shift even began.
+        const session =
+          (await findOpenSession(admin, row.employee_id)) ??
+          (await adoptHeaderIntoSession(admin, row));
+        if (!session || session.clock_event_id !== row.id) continue;
+
         const rota = rotaByKey.get(`${row.employee_id}:${row.event_date}`);
         const tmpl = tmplByKey.get(
           `${row.employee_id}:${weekdayIndex(parseISODate(row.event_date))}`,
         );
         const resolved = resolveAutoClockOut({
           eventDate: row.event_date,
-          clockInAt: row.clock_in_at,
+          clockInAt: session.clock_in_at,
+          // A rota end that lands before this shift started is discarded by
+          // resolveAutoClockOut's `worked <= 0` guard, which is what makes a
+          // second shift fall through to the store close / fallback instead of
+          // inheriting the morning's finish time.
           rota: rota && !rota.is_day_off ? { start: rota.start_time, end: rota.end_time } : null,
           template: tmpl ? { start: tmpl.start_time, end: tmpl.end_time } : null,
           storeClose: row.store_id ? storeClose.get(row.store_id) ?? null : null,
@@ -319,31 +350,41 @@ export async function autoCloseOpenClocks(
         }
 
         const clockOutAt = resolved.at.toISOString();
-        const { data: updated, error } = await admin
-          .from("clock_events")
-          .update({
-            clock_out_at: clockOutAt,
-            auto_clocked_out: true,
-            auto_clock_out_source: resolved.source,
-            auto_clock_out_at: now.toISOString(),
-          })
-          .eq("id", row.id)
-          .is("clock_out_at", null) // a real clock-out that landed meanwhile wins
-          .select("id");
-        if (error) {
-          console.error("[auto-clock-out] employee update failed:", error.message);
+        let workedHours: number;
+        try {
+          // Guarded on the session still being open, so a real clock-out that
+          // landed meanwhile wins.
+          const didClose = await closeSession(admin, session.id, {
+            clockOutAt,
+            auto: { source: resolved.source, at: now.toISOString() },
+          });
+          if (!didClose) continue;
+          await admin
+            .from("clock_events")
+            .update({
+              auto_clocked_out: true,
+              auto_clock_out_source: resolved.source,
+              auto_clock_out_at: now.toISOString(),
+            })
+            .eq("id", row.id);
+          ({ workedHours } = await recomputeDayHeader(admin, row.id));
+        } catch (err) {
+          console.error(
+            "[auto-clock-out] employee update failed:",
+            err instanceof Error ? err.message : err,
+          );
           continue;
         }
-        if (!updated || updated.length === 0) continue;
 
-        // A shift the system created at clock-in has no end time yet — stamp it
-        // so the rota shows the same window the clock row now records.
-        if (rota && rota.manager_notes === AUTO_SHIFT_NOTE && !rota.end_time && rota.start_time) {
+        // A shift the system created at clock-in needs the real window stamped
+        // on it. scheduled_hours is the SUMMED shifts, never end − start, which
+        // on a split day would bill the gap between them.
+        if (rota && rota.manager_notes === AUTO_SHIFT_NOTE && rota.start_time) {
           const endHHMM = londonParts(resolved.at);
           const end = `${String(endHHMM.hour).padStart(2, "0")}:${String(endHHMM.minute).padStart(2, "0")}`;
           await admin
             .from("rota_shifts")
-            .update({ end_time: end, scheduled_hours: shiftHours(rota.start_time.slice(0, 5), end) })
+            .update({ end_time: end, scheduled_hours: workedHours })
             .eq("id", rota.id);
         }
 
@@ -354,8 +395,8 @@ export async function autoCloseOpenClocks(
           eventDate: row.event_date,
           clockOutAt,
           source: resolved.source,
-          hours:
-            Math.round(((resolved.at.getTime() - new Date(row.clock_in_at).getTime()) / 3_600_000) * 100) / 100,
+          // The day's total across every shift, not just the one just closed.
+          hours: workedHours,
         });
       }
     }

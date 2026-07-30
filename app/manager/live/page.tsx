@@ -13,6 +13,7 @@ import {
 import { todayISO } from "@/lib/utils";
 import type {
   ClockEvent,
+  ClockSession,
   CoverDriver,
   CoverDriverClockEvent,
   CoverDriverScheduleDay,
@@ -107,7 +108,7 @@ export default async function ManagerLivePage() {
   // Full records for just those people — clocks/shifts across ALL stores (so a
   // home employee who clocked in elsewhere resolves away from this store rather
   // than showing as absent here).
-  const [employeesRes, shiftsRes, clocksRes] = relevantIds.length
+  const [employeesRes, shiftsRes, clocksRes, sessionsRes] = relevantIds.length
     ? await Promise.all([
         supabase
           .from("employees")
@@ -116,8 +117,15 @@ export default async function ManagerLivePage() {
           .neq("employment_status", "left"),
         supabase.from("rota_shifts").select("*").eq("shift_date", today).in("employee_id", relevantIds),
         supabase.from("clock_events").select("*").eq("event_date", today).in("employee_id", relevantIds),
+        // The day's individual shifts — the clock row above is only its header.
+        supabase
+          .from("clock_sessions")
+          .select("*")
+          .eq("event_date", today)
+          .in("employee_id", relevantIds)
+          .order("clock_in_at", { ascending: true }),
       ])
-    : [{ data: [] }, { data: [] }, { data: [] }];
+    : [{ data: [] }, { data: [] }, { data: [] }, { data: [] }];
 
   const todayEntry = (cashRes.data ?? null) as DailyCashEntry | null;
   const stores = (storesRes.data ?? []) as Store[];
@@ -153,6 +161,7 @@ export default async function ManagerLivePage() {
         employees={(employeesRes.data ?? []) as Employee[]}
         shifts={(shiftsRes.data ?? []) as RotaShift[]}
         clocks={(clocksRes.data ?? []) as ClockEvent[]}
+        clockSessions={(sessionsRes.data ?? []) as ClockSession[]}
         schedules={(schedulesRes.data ?? []) as EmployeeScheduleDay[]}
         coverDrivers={(coverDriversRes.data ?? []) as CoverDriver[]}
         coverDriverClocks={(coverClocksRes.data ?? []) as CoverDriverClockEvent[]}
