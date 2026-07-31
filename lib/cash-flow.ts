@@ -20,7 +20,13 @@
 
 import type { DailyCashEntry, Employee, PrePaymentSummary, WageLine } from "./types";
 import { hasRole } from "./types";
-import { addDays, parseISODate, startOfISOWeek, toISODate } from "./utils";
+import {
+  addDays,
+  parseISODate,
+  resolvedDayHours,
+  startOfISOWeek,
+  toISODate,
+} from "./utils";
 
 export function round2(n: number): number {
   return Math.round((Number(n) || 0) * 100) / 100;
@@ -293,39 +299,6 @@ type ClockRow = {
   approved_hours?: number | string | null;
 };
 
-/**
- * Hours that count for a completed clock day, in order of authority:
- *
- *   1. the manager-approved override, once the day is approved;
- *   2. worked_hours — the sum of the day's shifts (migration 029);
- *   3. the raw clock_in→clock_out delta, for rows with no sessions.
- *
- * (1) exists because a manager can correct a mis-clocked day during approval
- * (DailyHoursApproval), and every downstream wage calc must honour that
- * correction rather than re-deriving the timestamps.
- *
- * (2) exists because a day can hold several shifts, and the span from the first
- * clock-in to the last clock-out includes the unpaid gap between them — paying
- * from the delta would pay a split day for the afternoon off.
- */
-function resolvedDayHours(row: {
-  clock_in_at: string | null;
-  clock_out_at: string | null;
-  worked_hours?: number | string | null;
-  hours_approved?: boolean | null;
-  approved_hours?: number | string | null;
-}): number {
-  if (row.hours_approved && row.approved_hours != null) {
-    return Number(row.approved_hours) || 0;
-  }
-  if (row.worked_hours != null) {
-    const h = Number(row.worked_hours);
-    if (!isNaN(h)) return Math.max(0, h);
-  }
-  if (!row.clock_in_at || !row.clock_out_at) return 0;
-  const ms = new Date(row.clock_out_at).getTime() - new Date(row.clock_in_at).getTime();
-  return ms > 0 ? ms / 3_600_000 : 0;
-}
 
 type ShiftRow = {
   employee_id: string;

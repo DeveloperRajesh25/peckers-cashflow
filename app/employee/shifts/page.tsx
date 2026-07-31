@@ -3,20 +3,59 @@ import { Card, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { createServerSupabase, requireRole } from "@/lib/supabase-server";
 import { findEmployeeForUser } from "@/lib/employee-lookup";
+import { PastWeekHours } from "@/components/crew/PastWeekHours";
 import {
   WEEKDAY_LONG,
   addDays,
   formatDDMMYYYY,
   formatShiftRange,
+  parseISODate,
   shiftHours,
   startOfISOWeek,
   toISODate,
   todayISO,
   weekLabel,
 } from "@/lib/utils";
-import type { EmployeeScheduleDay, RotaShift } from "@/lib/types";
+import type {
+  ClockEvent,
+  ClockSession,
+  EmployeeScheduleDay,
+  RotaShift,
+} from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * How far back crew can browse their own hours. Bounded so a hand-edited URL
+ * can't ask for an unbounded range, and because attendance older than a quarter
+ * is a payroll question for a manager, not a self-service one.
+ */
+const MAX_HISTORY_WEEKS = 12;
+
+/**
+ * Resolve the past week to display from the `?week=` param: the Monday of that
+ * week, clamped to [12 weeks back, last week]. Anything missing or unparseable
+ * falls back to LAST week, which is the default this feature exists to serve.
+ */
+function resolvePastWeek(
+  raw: string | undefined,
+  thisWeekStart: Date,
+): { weekStart: Date; minWeekStart: Date; maxWeekStart: Date } {
+  // The newest browsable week is the one that has finished — never this week,
+  // which the block above already shows and which is still accruing hours.
+  const maxWeekStart = addDays(thisWeekStart, -7);
+  const minWeekStart = addDays(thisWeekStart, -7 * MAX_HISTORY_WEEKS);
+
+  let weekStart = maxWeekStart;
+  if (raw && /^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const parsed = parseISODate(raw);
+    if (!isNaN(parsed.getTime())) weekStart = startOfISOWeek(parsed);
+  }
+  if (weekStart.getTime() < minWeekStart.getTime()) weekStart = minWeekStart;
+  if (weekStart.getTime() > maxWeekStart.getTime()) weekStart = maxWeekStart;
+
+  return { weekStart, minWeekStart, maxWeekStart };
+}
 
 function WeekBlock({
   weekStart,
@@ -129,7 +168,11 @@ function WeekBlock({
   );
 }
 
-export default async function ShiftsPage() {
+export default async function ShiftsPage({
+  searchParams,
+}: {
+  searchParams?: { week?: string };
+}) {
   const user = await requireRole(["employee"]);
   const supabase = createServerSupabase();
 
@@ -140,7 +183,14 @@ export default async function ShiftsPage() {
   const rangeStart = toISODate(thisWeek);
   const rangeEnd = toISODate(addDays(nextWeek, 6));
 
-  const [shiftsData, schedulesData] = employee
+  const { weekStart: pastWeek, minWeekStart, maxWeekStart } = resolvePastWeek(
+    searchParams?.week,
+    thisWeek,
+  );
+  const pastStart = toISODate(pastWeek);
+  const pastEnd = toISODate(addDays(pastWeek, 6));
+
+  const [shiftsData, schedulesData, pastClocksRes, pastSessionsRes] = employee
     ? await Promise.all([
         supabase
           .from("rota_shifts")
@@ -153,11 +203,36 @@ export default async function ShiftsPage() {
           .from("employee_schedules")
           .select("*")
           .eq("employee_id", employee.id),
+        // What actually happened that week. Scoped to this employee explicitly
+        // as well as by RLS — the belt-and-braces filter means a future policy
+        // change can't quietly widen what crew see of each other.
+        supabase
+          .from("clock_events")
+          .select("*")
+          .eq("employee_id", employee.id)
+          .gte("event_date", pastStart)
+          .lte("event_date", pastEnd),
+        // The day's individual shifts; the clock_events row is only the header.
+        supabase
+          .from("clock_sessions")
+          .select("*")
+          .eq("employee_id", employee.id)
+          .gte("event_date", pastStart)
+          .lte("event_date", pastEnd)
+          .order("clock_in_at", { ascending: true }),
       ])
-    : [{ data: [] }, { data: [] }];
+    : [{ data: [] }, { data: [] }, { data: [], error: null }, { data: [], error: null }];
 
   const shifts = (shiftsData.data ?? []) as RotaShift[];
   const schedules = (schedulesData.data ?? []) as EmployeeScheduleDay[];
+
+  // A failed query and a week with no work look identical once rendered, and
+  // "you worked 0h" is a far more damaging thing to show wrongly than an error.
+  const pastLoadError =
+    ("error" in pastClocksRes && pastClocksRes.error) ||
+    ("error" in pastSessionsRes && pastSessionsRes.error)
+      ? "We couldn't load your hours for this week. Pull to refresh, or try again shortly."
+      : null;
 
   const thisWeekShifts = shifts.filter((s) => s.shift_date < toISODate(nextWeek));
   const nextWeekShifts = shifts.filter((s) => s.shift_date >= toISODate(nextWeek));
@@ -166,11 +241,21 @@ export default async function ShiftsPage() {
     <>
       <PageHeader
         title="My Shifts"
-        description="Your upcoming rota. Days shown as “default schedule” come from your standard weekly pattern until the manager publishes the rota."
+        description="Your rota for this week and next, plus the hours you've already worked. Days shown as “default schedule” come from your standard weekly pattern until the manager publishes the rota."
       />
       <div className="flex flex-col gap-5">
         <WeekBlock weekStart={thisWeek} shifts={thisWeekShifts} schedules={schedules} />
         <WeekBlock weekStart={nextWeek} shifts={nextWeekShifts} schedules={schedules} />
+        {employee && (
+          <PastWeekHours
+            weekStartIso={pastStart}
+            minWeekStartIso={toISODate(minWeekStart)}
+            maxWeekStartIso={toISODate(maxWeekStart)}
+            clocks={(pastClocksRes.data ?? []) as ClockEvent[]}
+            sessions={(pastSessionsRes.data ?? []) as ClockSession[]}
+            loadError={pastLoadError}
+          />
+        )}
       </div>
     </>
   );

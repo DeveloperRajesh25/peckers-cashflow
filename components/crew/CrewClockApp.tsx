@@ -12,13 +12,13 @@ import {
   WEEKDAY_LONG,
   addDays,
   clockedHours,
-  dayWorkedHours,
   formatDDMMYYYY,
   formatShiftRange,
   formatTimeOnly,
   haversineMeters,
   isWithinGeofence,
   liveDayWorkedHours,
+  resolvedDayHours,
   startOfISOWeek,
   toISODate,
   todayISO,
@@ -138,18 +138,11 @@ export function CrewClockApp({
   const todaySessions = sessionsByDate.get(today) ?? [];
   const openSession = todaySessions.find((s) => !s.clock_out_at) ?? null;
 
-  // A manager can correct a day's hours during approval (DailyHoursApproval) —
-  // once approved, that confirmed value is authoritative and must override the
-  // clocked total, or the crew screen would show a value the manager already
-  // fixed. Otherwise it's the SUM of the day's shifts, never last-out minus
-  // first-in, which would count the gap between them.
-  function effectiveWorkedHours(c: ClockEvent): number {
-    if (c.hours_approved && c.approved_hours != null) return Number(c.approved_hours);
-    return dayWorkedHours(c);
-  }
-
+  // resolvedDayHours is the same function payroll uses: a manager's approval
+  // override wins, else the SUM of the day's shifts (never last-out minus
+  // first-in, which counts the gap between them).
   const weekWorkedHours = React.useMemo(
-    () => weekClocks.reduce((sum, c) => sum + effectiveWorkedHours(c), 0),
+    () => weekClocks.reduce((sum, c) => sum + resolvedDayHours(c), 0),
     [weekClocks],
   );
 
@@ -695,7 +688,7 @@ export function CrewClockApp({
             const eff = effFor(dateIso, i);
             const clk = clockByDate.get(dateIso);
             const daySessions = sessionsByDate.get(dateIso) ?? [];
-            const worked = clk ? effectiveWorkedHours(clk) : 0;
+            const worked = clk ? resolvedDayHours(clk) : 0;
             const openToday = daySessions.some((s) => !s.clock_out_at);
             const isToday = dateIso === today;
             return (

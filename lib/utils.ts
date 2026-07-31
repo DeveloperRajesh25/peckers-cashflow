@@ -310,6 +310,38 @@ export function dayWorkedHours(row: {
 }
 
 /**
+ * Hours that COUNT for a completed clock day, in order of authority:
+ *
+ *   1. the manager-approved override, once the day is approved;
+ *   2. worked_hours — the sum of the day's shifts (migration 029);
+ *   3. the raw clock_in→clock_out delta, for rows with no sessions.
+ *
+ * (1) exists because a manager can correct a mis-clocked day during approval
+ * (DailyHoursApproval), and every downstream reader — wage calcs AND anything
+ * shown back to the employee — must honour that correction rather than
+ * re-deriving the timestamps. Showing crew a number the manager has already
+ * fixed is how "the app says X but my payslip says Y" starts.
+ *
+ * (2) is dayWorkedHours: a day can hold several shifts, and the span from first
+ * clock-in to last clock-out includes the unpaid gap between them.
+ *
+ * Lives here rather than in lib/cash-flow so client components can import it
+ * without pulling the payout maths in with it.
+ */
+export function resolvedDayHours(row: {
+  clock_in_at: string | null;
+  clock_out_at: string | null;
+  worked_hours?: number | string | null;
+  hours_approved?: boolean | null;
+  approved_hours?: number | string | null;
+}): number {
+  if (row.hours_approved && row.approved_hours != null) {
+    return Number(row.approved_hours) || 0;
+  }
+  return dayWorkedHours(row);
+}
+
+/**
  * Hours worked so far on a day that may still be running: every completed
  * session plus the open one counted up to `now`. Used by the live boards, where
  * an in-progress shift has to keep ticking.
