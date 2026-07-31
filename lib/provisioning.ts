@@ -24,6 +24,32 @@ export function generatePassword(len = 10): string {
   return out;
 }
 
+/**
+ * The account already using a reset address, if any.
+ *
+ * Checked BEFORE provisioning starts. The address is unique across every account
+ * (migration 019), so without this the clash only surfaces as a constraint
+ * violation after an auth user and a profile row have already been written and
+ * have to be rolled back — and the person is told nothing useful.
+ *
+ * Matched with eq(), not ilike(): addresses are stored normalised (lowercased),
+ * and ilike would treat an underscore in a real address as a wildcard. A legacy
+ * mixed-case row would slip past this, which is why the unique index remains the
+ * backstop rather than the only check.
+ */
+export async function findAccountByContactEmail(
+  contactEmail: string,
+): Promise<{ name: string | null; role: string } | null> {
+  const supabase = createServerSupabase();
+  const { data } = await supabase
+    .from("allowed_users")
+    .select("name, role")
+    .eq("contact_email", contactEmail)
+    .limit(1)
+    .maybeSingle();
+  return (data as { name: string | null; role: string } | null) ?? null;
+}
+
 /** Find a free username based on a name stem, checking existing accounts. */
 export async function uniqueUsername(name: string): Promise<string> {
   const supabase = createServerSupabase();

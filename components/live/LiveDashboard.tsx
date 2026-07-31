@@ -27,6 +27,7 @@ import type {
   EmployeeScheduleDay,
   LiveDashboardStatus,
   ManagerClockEvent,
+  ManagerClockSession,
   ManagerShift,
   RotaShift,
   Store,
@@ -58,6 +59,8 @@ type Props = {
   clockSessions?: ClockSession[];
   /** Today's manager clock rows, keyed on the login account. */
   managerClocks?: ManagerClockEvent[];
+  /** Today's individual manager shifts — a manager's day can hold several. */
+  managerClockSessions?: ManagerClockSession[];
   /** Today's manager rota shifts — used to place a manager scheduled to cover
    *  another store under that store before they've clocked in. */
   managerShifts?: ManagerShift[];
@@ -162,6 +165,7 @@ export function LiveDashboard({
   schedules = [],
   managers = [],
   managerClocks = [],
+  managerClockSessions = [],
   managerShifts = [],
   coverDrivers = [],
   coverDriverClocks = [],
@@ -239,6 +243,17 @@ export function LiveDashboard({
   for (const arr of sessionsByEmp.values())
     arr.sort((a, b) => a.clock_in_at.localeCompare(b.clock_in_at));
   const managerClockByMgr = new Map(managerClocks.map((mc) => [mc.manager_id, mc]));
+  // Same treatment as employees: the clock row is the day's header, so a
+  // manager's worked hours have to come from the sessions or a split day would
+  // count the gap between the morning and evening shifts.
+  const managerSessionsByMgr = new Map<string, ManagerClockSession[]>();
+  for (const s of managerClockSessions) {
+    const arr = managerSessionsByMgr.get(s.manager_id) ?? [];
+    arr.push(s);
+    managerSessionsByMgr.set(s.manager_id, arr);
+  }
+  for (const arr of managerSessionsByMgr.values())
+    arr.sort((a, b) => a.clock_in_at.localeCompare(b.clock_in_at));
   const managerShiftByMgr = new Map(managerShifts.map((s) => [s.manager_id, s]));
 
   const storeById = new Map(stores.map((s) => [s.id, s]));
@@ -515,9 +530,19 @@ export function LiveDashboard({
                         const mc = managerClockByMgr.get(m.id);
                         const status = managerStatusOf(mc);
                         const style = MANAGER_STATUS[status];
+                        const mgrSessions = managerSessionsByMgr.get(m.id);
                         const worked = mc?.clock_in_at
-                          ? clockedHours(mc.clock_in_at, mc.clock_out_at, now)
+                          ? liveDayWorkedHours(mc, mgrSessions, now)
                           : 0;
+                        const mgrShiftCount = mgrSessions?.length ?? 0;
+                        // "09:00–13:00, 17:00–now" — hover detail so a second
+                        // shift is never mistaken for one long unbroken day.
+                        const mgrShiftsLabel = (mgrSessions ?? [])
+                          .map(
+                            (s) =>
+                              `${formatTimeOnly(s.clock_in_at)}–${s.clock_out_at ? formatTimeOnly(s.clock_out_at) : "now"}`,
+                          )
+                          .join(", ");
                         return (
                           <div
                             key={m.id}
@@ -551,12 +576,23 @@ export function LiveDashboard({
                                 {style.label}
                               </span>
                               {mc?.clock_in_at && (
-                                <div className="text-[11px] text-text-muted mt-0.5 tabular-nums">
+                                <div
+                                  className="text-[11px] text-text-muted mt-0.5 tabular-nums"
+                                  title={mgrShiftCount > 1 ? mgrShiftsLabel : undefined}
+                                >
                                   In {formatTimeOnly(mc.clock_in_at)}
                                   {mc.clock_out_at
                                     ? ` · Out ${formatTimeOnly(mc.clock_out_at)}`
                                     : ""}{" "}
                                   · {worked.toFixed(1)}h
+                                  {mgrShiftCount > 1 && (
+                                    <span
+                                      className="ml-1 font-medium text-gold"
+                                      title={`${mgrShiftCount} shifts today — ${mgrShiftsLabel}`}
+                                    >
+                                      ×{mgrShiftCount}
+                                    </span>
+                                  )}
                                 </div>
                               )}
                             </div>

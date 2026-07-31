@@ -40,8 +40,13 @@ export function AddEmployeeModal({
   const [errors, setErrors] = React.useState<FormErrors>({});
   const [busy, setBusy] = React.useState(false);
   const [creds, setCreds] = React.useState<Credentials | null>(null);
+  // Shown inline rather than as a toast: these are things the person has to go
+  // back and change (a duplicate email, a taken login name), so the message has
+  // to stay on screen while they fix the field.
+  const [error, setError] = React.useState<string | null>(null);
 
   async function submit() {
+    setError(null);
     const errs = validateEmployeeForm(form, { requireContactEmail: true });
     setErrors(errs);
     if (Object.keys(errs).length > 0) {
@@ -69,13 +74,18 @@ export function AddEmployeeModal({
         sort_code: form.sort_code || null,
         notes: form.notes || null,
       });
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      setError(null);
       setCreds({
         username: res.username,
         password: res.password,
         loginUrl: res.loginUrl,
       });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed");
+      setError(err instanceof Error ? err.message : "Failed");
     } finally {
       setBusy(false);
     }
@@ -115,6 +125,11 @@ export function AddEmployeeModal({
         </>
       }
     >
+      {error && (
+        <p className="text-xs text-danger bg-danger/10 border border-danger/30 rounded-xl px-3 py-2 mb-4">
+          {error}
+        </p>
+      )}
       <EmployeeProfileForm
         form={form}
         setForm={setForm}

@@ -37,6 +37,73 @@ function sessionHours(s: { clock_in_at: string; clock_out_at: string | null }): 
   return ms > 0 ? ms / 3_600_000 : 0;
 }
 
+export type DerivedDayHeader = {
+  workedHours: number;
+  sessionCount: number;
+  /** How many of them are closed. Zero means worked_hours must stay null. */
+  completedCount: number;
+  open: boolean;
+  /** Earliest clock-in of the day, by clock time. */
+  firstIn: string | null;
+  /** Latest clock-out of the day, by clock time. Null while a shift is open. */
+  lastOut: string | null;
+};
+
+/**
+ * What a day's header columns should read, given its sessions. Pure — the
+ * employee and manager halves share it so the two cannot drift on what a split
+ * day totals or where its bounds are.
+ *
+ * Bounds are the MIN clock-in and MAX clock-out by CLOCK TIME, never whichever
+ * session happens to be first or last in the table. Shifts can be recorded out
+ * of order (a manager entering a forgotten morning after the evening), which
+ * would otherwise stamp the day as 17:00 → 13:00 (Update 72).
+ */
+export function deriveDayHeader(
+  sessions: Array<{ clock_in_at: string; clock_out_at: string | null }>,
+): DerivedDayHeader {
+  if (sessions.length === 0) {
+    return {
+      workedHours: 0,
+      sessionCount: 0,
+      completedCount: 0,
+      open: false,
+      firstIn: null,
+      lastOut: null,
+    };
+  }
+
+  const completed = sessions.filter((s) => s.clock_out_at);
+  const open = sessions.some((s) => !s.clock_out_at);
+  const workedHours = round2(completed.reduce((sum, s) => sum + sessionHours(s), 0));
+
+  const firstIn = sessions.reduce<string | null>(
+    (min, s) =>
+      !min || new Date(s.clock_in_at).getTime() < new Date(min).getTime()
+        ? s.clock_in_at
+        : min,
+    null,
+  );
+  const lastOut = open
+    ? null // still on shift — the day reads as open everywhere
+    : completed.reduce<string | null>(
+        (max, s) =>
+          !max || new Date(s.clock_out_at!).getTime() > new Date(max).getTime()
+            ? s.clock_out_at!
+            : max,
+        null,
+      );
+
+  return {
+    workedHours,
+    sessionCount: sessions.length,
+    completedCount: completed.length,
+    open,
+    firstIn,
+    lastOut,
+  };
+}
+
 /**
  * The employee's currently open session, if any — across ALL dates, not just
  * today. A shift started at 22:00 and closed at 01:00 belongs to the day it
@@ -109,60 +176,29 @@ export async function sessionsByEventId(
 export async function recomputeDayHeader(
   supabase: SupabaseClient,
   clockEventId: string,
-): Promise<{
-  workedHours: number;
-  sessionCount: number;
-  open: boolean;
-  /** Earliest clock-in of the day, by clock time. */
-  firstIn: string | null;
-  /** Latest clock-out of the day, by clock time. Null while a shift is open. */
-  lastOut: string | null;
-}> {
+): Promise<DerivedDayHeader> {
   const sessions = await sessionsForEvent(supabase, clockEventId);
 
   // Never derive a header from nothing: with no sessions there is nothing to
   // sum, and writing the nulls would erase a day recorded by an older build.
   if (sessions.length === 0) {
-    return { workedHours: 0, sessionCount: 0, open: false, firstIn: null, lastOut: null };
+    return deriveDayHeader(sessions);
   }
 
-  const completed = sessions.filter((s) => s.clock_out_at);
-  const open = sessions.some((s) => !s.clock_out_at);
-  const workedHours = round2(completed.reduce((sum, s) => sum + sessionHours(s), 0));
-
-  // Bounds are the MIN clock-in and MAX clock-out by clock time — never
-  // whichever session happens to be first or last in the table. Shifts can be
-  // recorded out of order (a manager entering a forgotten morning after the
-  // evening), which would otherwise stamp the day as 17:00 → 13:00.
-  const firstIn = sessions.reduce<string | null>(
-    (min, s) =>
-      !min || new Date(s.clock_in_at).getTime() < new Date(min).getTime()
-        ? s.clock_in_at
-        : min,
-    null,
-  );
-  const lastOut = open
-    ? null // still on shift — the day reads as open everywhere
-    : completed.reduce<string | null>(
-        (max, s) =>
-          !max || new Date(s.clock_out_at!).getTime() > new Date(max).getTime()
-            ? s.clock_out_at!
-            : max,
-        null,
-      );
+  const derived = deriveDayHeader(sessions);
 
   const { error } = await supabase
     .from("clock_events")
     .update({
-      clock_in_at: firstIn,
-      clock_out_at: lastOut,
-      worked_hours: completed.length > 0 ? workedHours : null,
-      session_count: sessions.length,
+      clock_in_at: derived.firstIn,
+      clock_out_at: derived.lastOut,
+      worked_hours: derived.completedCount > 0 ? derived.workedHours : null,
+      session_count: derived.sessionCount,
     })
     .eq("id", clockEventId);
   if (error) throw new Error(error.message);
 
-  return { workedHours, sessionCount: sessions.length, open, firstIn, lastOut };
+  return derived;
 }
 
 /**

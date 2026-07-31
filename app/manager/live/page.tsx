@@ -22,6 +22,7 @@ import type {
   Employee,
   EmployeeScheduleDay,
   ManagerClockEvent,
+  ManagerClockSession,
   RotaShift,
   Store,
 } from "@/lib/types";
@@ -46,6 +47,7 @@ export default async function ManagerLivePage() {
     schedulesRes,
     cashRes,
     managerClockRes,
+    managerSessionsRes,
     coverDriversRes,
     coverClocksRes,
     coverShiftsRes,
@@ -76,6 +78,12 @@ export default async function ManagerLivePage() {
       .select("*")
       .eq("event_date", today)
       .maybeSingle(),
+    // Their day's individual shifts — the clock row above is only its header.
+    supabase
+      .from("manager_clock_sessions")
+      .select("*")
+      .eq("event_date", today)
+      .order("clock_in_at", { ascending: true }),
     // Cover drivers are scoped to this store — unlike employees they aren't
     // shared between stores, so there's no "visiting cover driver" case to
     // resolve across the estate.
@@ -131,6 +139,7 @@ export default async function ManagerLivePage() {
   const stores = (storesRes.data ?? []) as Store[];
   const myStore = stores.find((s) => s.id === storeId) ?? stores[0] ?? null;
   const managerClock = (managerClockRes.data ?? null) as ManagerClockEvent | null;
+  const managerSessions = (managerSessionsRes.data ?? []) as ManagerClockSession[];
 
   return (
     <>
@@ -144,6 +153,7 @@ export default async function ManagerLivePage() {
           store={myStore}
           allStores={stores}
           todayClock={managerClock}
+          todaySessions={managerSessions}
         />
         {storeId && (
           <ManagerQuickEntry storeId={storeId} today={today} existing={todayEntry} />

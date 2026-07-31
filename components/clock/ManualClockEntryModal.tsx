@@ -7,7 +7,16 @@ import { Input, Select } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { upsertManualClockEntry } from "@/app/actions/clock";
 import { upsertManualCoverDriverClockEntry } from "@/app/actions/cover-driver-clock";
-import { formatDDMMYYYY } from "@/lib/utils";
+import {
+  addDays,
+  formatDDMMYYYY,
+  londonHHMM,
+  londonISODate,
+  parseISODate,
+  shiftHours,
+  timeToMinutes,
+  toISODate,
+} from "@/lib/utils";
 
 // One modal for all four entry points: employee / cover driver × Live board
 // (same day, clock-out optional) / Daily Approval (yesterday, both required).
@@ -70,8 +79,36 @@ export function ManualClockEntryModal({
   }, [selected, requireClockOut]);
 
   const reason = preset === "Other" ? otherReason.trim() : preset;
+
+  // A clock-out at or before the clock-in crossed midnight (14:00 → 00:00 is a
+  // ten-hour shift). Shown before saving so the next-day end isn't a surprise.
+  const bothTimes = !!inTime && !!outTime;
+  const sameTime = bothTimes && timeToMinutes(inTime) === timeToMinutes(outTime);
+  const overnight = bothTimes && !sameTime && timeToMinutes(outTime) < timeToMinutes(inTime);
+  const workedHours = bothTimes && !sameTime ? shiftHours(inTime, outTime) : null;
+  const endDate = overnight
+    ? toISODate(addDays(parseISODate(eventDate), 1))
+    : eventDate;
+
+  // Hours nobody has worked yet can't be recorded, and the server refuses them.
+  // Compared in UK wall clock rather than instants: the person filling this in
+  // may be in another timezone, where their own midnight is a different moment.
+  const now = new Date();
+  const londonNow = londonISODate(now);
+  const notYetWorked =
+    bothTimes &&
+    !sameTime &&
+    (endDate > londonNow ||
+      (endDate === londonNow && timeToMinutes(outTime) > timeToMinutes(londonHHMM(now))));
+
   const canSave =
-    !!personId && !!inTime && (!requireClockOut || !!outTime) && !!reason && !busy;
+    !!personId &&
+    !!inTime &&
+    (!requireClockOut || !!outTime) &&
+    !sameTime &&
+    !notYetWorked &&
+    !!reason &&
+    !busy;
 
   async function save() {
     setError(null);
@@ -181,6 +218,31 @@ export function ManualClockEntryModal({
                 onChange={(e) => setOutTime(e.target.value)}
               />
             </div>
+
+            {sameTime && (
+              <p className="text-xs text-danger -mt-1">
+                Clock-out can&apos;t be the same time as clock-in.
+              </p>
+            )}
+
+            {workedHours != null && (
+              <p className="text-xs text-text-muted -mt-1">
+                {workedHours.toFixed(2)}h
+                {overnight
+                  ? ` — overnight, finishing ${outTime} on ${formatDDMMYYYY(endDate)}.`
+                  : "."}
+              </p>
+            )}
+
+            {notYetWorked && (
+              <p className="text-xs text-warning bg-warning/10 border border-warning/30 rounded-xl px-3 py-2 -mt-1">
+                That shift ends at {outTime} on {formatDDMMYYYY(endDate)}, which hasn&apos;t
+                happened yet, so the hours can&apos;t be recorded.{" "}
+                {requireClockOut
+                  ? "Come back once the shift has finished."
+                  : "Leave clock-out blank if they're still working — they can clock out themselves."}
+              </p>
+            )}
 
             {!requireClockOut && (
               <p className="text-xs text-text-muted -mt-1">

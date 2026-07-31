@@ -258,6 +258,16 @@ export function londonHHMM(d: Date): string {
   });
 }
 
+/**
+ * YYYY-MM-DD in Europe/London. Pairs with londonHHMM so a UK wall clock can be
+ * compared against a shift date without instant maths — which matters on the
+ * client, where the viewer's own timezone (UK, India, anywhere) would otherwise
+ * shift the answer. en-CA is the locale that formats as YYYY-MM-DD.
+ */
+export function londonISODate(d: Date): string {
+  return d.toLocaleDateString("en-CA", { timeZone: "Europe/London" });
+}
+
 export function clockedHours(
   clockInAt: string | null | undefined,
   clockOutAt: string | null | undefined,

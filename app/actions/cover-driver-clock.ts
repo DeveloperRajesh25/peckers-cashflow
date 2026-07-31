@@ -4,10 +4,20 @@ import { revalidatePath } from "next/cache";
 import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
 import { writeAudit } from "./audit";
 import { createAdminClient, isProvisioningConfigured } from "@/lib/supabase-admin";
-import { londonHHMM, shiftHours, todayISO } from "@/lib/utils";
+import {
+  formatDDMMYYYY,
+  londonHHMM,
+  shiftHours,
+  timeToMinutes,
+  todayISO,
+} from "@/lib/utils";
 import { detectStoreForLocation, verifyGeofenceAtStore } from "@/lib/geofence-verify";
 import { findCoverDriverForUser } from "@/lib/cover-driver-lookup";
-import { londonWallClockToUtc, MAX_AUTO_SHIFT_HOURS } from "@/lib/auto-clock-out";
+import {
+  londonWallClockToUtc,
+  MAX_AUTO_SHIFT_HOURS,
+  resolveManualClockOut,
+} from "@/lib/auto-clock-out";
 import { resolveActiveStoreId, type ActionResult } from "@/lib/types";
 
 // =============================================================
@@ -465,13 +475,23 @@ async function performManualCoverEntry(input: ManualCoverDriverClockEntryInput) 
 
   let clockOutAt: Date | null = null;
   if (input.clock_out_time) {
-    clockOutAt = londonWallClockToUtc(input.event_date, input.clock_out_time);
+    if (timeToMinutes(input.clock_out_time) === timeToMinutes(input.clock_in_time)) {
+      throw new Error("Clock-out can't be the same time as clock-in.");
+    }
+    // A clock-out earlier in the day than the clock-in means the shift crossed
+    // midnight, so it lands on the following date — the day still belongs to
+    // event_date, matching how a real overnight clock-out is recorded.
+    const resolved = resolveManualClockOut(
+      input.event_date,
+      input.clock_in_time,
+      input.clock_out_time,
+    );
+    clockOutAt = resolved.at;
     if (isNaN(clockOutAt.getTime())) throw new Error("Clock-out time is not valid.");
     if (clockOutAt.getTime() > now.getTime()) {
-      throw new Error("Clock-out time can't be in the future.");
-    }
-    if (clockOutAt.getTime() <= clockInAt.getTime()) {
-      throw new Error("Clock-out must be after clock-in.");
+      throw new Error(
+        `That shift ends at ${input.clock_out_time} on ${formatDDMMYYYY(resolved.date)}, which hasn't happened yet. Record it once the shift has finished — or leave clock-out blank if they're still working.`,
+      );
     }
     const hours = (clockOutAt.getTime() - clockInAt.getTime()) / 3_600_000;
     if (hours > MAX_AUTO_SHIFT_HOURS) {

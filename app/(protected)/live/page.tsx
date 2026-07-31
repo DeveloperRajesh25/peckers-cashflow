@@ -13,6 +13,7 @@ import type {
   Employee,
   EmployeeScheduleDay,
   ManagerClockEvent,
+  ManagerClockSession,
   ManagerShift,
   RotaShift,
   Store,
@@ -34,6 +35,7 @@ export default async function LivePage() {
     schedulesRes,
     managersRes,
     managerClocksRes,
+    managerSessionsRes,
     managerShiftsRes,
     coverDriversRes,
     coverClocksRes,
@@ -53,6 +55,14 @@ export default async function LivePage() {
     supabase.from("employee_schedules").select("*"),
     supabase.from("allowed_users").select("*").eq("role", "manager"),
     supabase.from("manager_clock_events").select("*").eq("event_date", today),
+    // A manager's day can hold several shifts — the clock row above is only its
+    // header, so hours have to be summed from these or a split day would count
+    // the gap between shifts.
+    supabase
+      .from("manager_clock_sessions")
+      .select("*")
+      .eq("event_date", today)
+      .order("clock_in_at", { ascending: true }),
     supabase.from("manager_shifts").select("*").eq("shift_date", today),
     supabase.from("cover_drivers").select("*").eq("is_active", true),
     supabase.from("cover_driver_clock_events").select("*").eq("event_date", today),
@@ -75,6 +85,7 @@ export default async function LivePage() {
         schedules={(schedulesRes.data ?? []) as EmployeeScheduleDay[]}
         managers={(managersRes.data ?? []) as AllowedUser[]}
         managerClocks={(managerClocksRes.data ?? []) as ManagerClockEvent[]}
+        managerClockSessions={(managerSessionsRes.data ?? []) as ManagerClockSession[]}
         managerShifts={(managerShiftsRes.data ?? []) as ManagerShift[]}
         coverDrivers={(coverDriversRes.data ?? []) as CoverDriver[]}
         coverDriverClocks={(coverClocksRes.data ?? []) as CoverDriverClockEvent[]}

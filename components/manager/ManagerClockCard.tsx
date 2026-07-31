@@ -11,12 +11,12 @@ import { managerClockIn, managerClockOut } from "@/app/actions/manager-clock";
 import { switchStore } from "@/app/actions/store-switch";
 import { getBestPosition, isPermissionDenied } from "@/lib/geolocation";
 import {
-  clockedHours,
   formatTimeOnly,
   haversineMeters,
   isWithinGeofence,
+  liveDayWorkedHours,
 } from "@/lib/utils";
-import type { ManagerClockEvent, Store } from "@/lib/types";
+import type { ManagerClockEvent, ManagerClockSession, Store } from "@/lib/types";
 
 type Props = {
   managerName: string;
@@ -24,7 +24,13 @@ type Props = {
   store: Store | null;
   /** All stores, so we can detect which one the manager is physically at. */
   allStores?: Store[];
+  /** The day's header row. Its In is the FIRST clock-in and its Out the last. */
   todayClock: ManagerClockEvent | null;
+  /**
+   * The day's individual shifts. A manager can open up, go home and come back
+   * for the evening, so the day is a list of in/out pairs rather than one.
+   */
+  todaySessions?: ManagerClockSession[];
 };
 
 type GeoState =
@@ -33,7 +39,13 @@ type GeoState =
   | { status: "ok"; lat: number; lng: number; accuracy: number; distance: number | null }
   | { status: "denied" | "error"; message: string };
 
-export function ManagerClockCard({ managerName, store, allStores, todayClock }: Props) {
+export function ManagerClockCard({
+  managerName,
+  store,
+  allStores,
+  todayClock,
+  todaySessions = [],
+}: Props) {
   const router = useRouter();
   const toast = useToast();
   const [geo, setGeo] = React.useState<GeoState>({ status: "idle" });
@@ -129,11 +141,23 @@ export function ManagerClockCard({ managerName, store, allStores, todayClock }: 
     }
   }
 
-  const clockedIn = !!todayClock?.clock_in_at && !todayClock?.clock_out_at;
-  const clockedOut = !!todayClock?.clock_out_at;
-  const phase: "in" | "out" | "done" = clockedOut ? "done" : clockedIn ? "out" : "in";
-  const workedToday = todayClock?.clock_out_at
-    ? clockedHours(todayClock.clock_in_at, todayClock.clock_out_at)
+  // Chronological, never by seq — seq is insertion order.
+  const sessions = React.useMemo(
+    () => [...todaySessions].sort((a, b) => a.clock_in_at.localeCompare(b.clock_in_at)),
+    [todaySessions],
+  );
+  // The header's clock_out_at is nulled while any shift is open, so it answers
+  // "still on shift" for pre-031 days that have no session rows too.
+  const openSession = sessions.find((s) => !s.clock_out_at) ?? null;
+  const clockedIn =
+    !!openSession || (!!todayClock?.clock_in_at && !todayClock?.clock_out_at);
+  // There is no terminal phase any more: having clocked out is no bar to
+  // starting another shift, which is the whole point of the feature.
+  const phase: "in" | "out" = clockedIn ? "out" : "in";
+  const completedCount = sessions.filter((s) => s.clock_out_at).length;
+  const hasFinishedShift = completedCount > 0 || !!todayClock?.clock_out_at;
+  const workedToday = todayClock?.clock_in_at
+    ? liveDayWorkedHours(todayClock, sessions)
     : 0;
 
   async function act() {
@@ -218,7 +242,7 @@ export function ManagerClockCard({ managerName, store, allStores, todayClock }: 
           </div>
 
           {/* You're at another store — offer to switch the whole app to it. */}
-          {atDifferentStore && phase !== "done" && (
+          {atDifferentStore && (
             <div className="rounded-xl border border-gold/40 bg-gold/10 p-4">
               <p className="text-sm font-medium text-text-primary">
                 You&apos;re at {detectedStore!.name}
@@ -238,46 +262,81 @@ export function ManagerClockCard({ managerName, store, allStores, todayClock }: 
             </div>
           )}
 
-          {phase === "done" ? (
+          {/* Today's shifts so far. Shown alongside the button rather than
+              instead of it: finishing a shift no longer ends the day. */}
+          {hasFinishedShift && (
             <div className="rounded-xl border border-success/30 bg-success/10 p-4 text-sm text-success">
               <div className="flex items-center justify-between gap-2 font-medium">
                 <span className="flex items-center gap-2">
-                  <ClockIcon size={16} /> Shift logged for today
+                  <ClockIcon size={16} />
+                  {completedCount > 1
+                    ? `${completedCount} shifts logged today`
+                    : "Shift logged for today"}
                 </span>
                 <span className="text-base font-semibold tabular-nums">
                   {workedToday.toFixed(2)}h
                 </span>
               </div>
-              <p className="text-xs mt-1 text-success/80">
-                Clocked in {formatTimeOnly(todayClock?.clock_in_at)} · Clocked out{" "}
-                {formatTimeOnly(todayClock?.clock_out_at)}
-              </p>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-2">
-              <Button
-                size="lg"
-                className="w-full text-base h-14"
-                variant={phase === "out" ? "secondary" : "primary"}
-                onClick={act}
-                loading={busy}
-                disabled={!inRange || busy}
-                iconLeft={<ClockIcon size={18} />}
-              >
-                {phase === "out" ? "Clock Out Now" : "Clock In Now"}
-              </Button>
-              {!inRange && geo.status === "ok" && (
-                <p className="text-xs text-danger text-center">
-                  You&apos;re too far from {store?.name ?? "your store"} to clock {phase === "out" ? "out" : "in"}.
-                </p>
-              )}
-              {phase === "out" && (
-                <p className="text-[11px] text-text-muted text-center">
-                  Clocked in at {formatTimeOnly(todayClock?.clock_in_at)}.
+              {sessions.length > 0 ? (
+                <ul className="text-xs mt-1 text-success/80 space-y-0.5">
+                  {sessions.map((s) => (
+                    <li key={s.id} className="tabular-nums">
+                      {formatTimeOnly(s.clock_in_at)} –{" "}
+                      {s.clock_out_at ? formatTimeOnly(s.clock_out_at) : "still on shift"}
+                      {s.auto_clocked_out && (
+                        <span
+                          className="ml-1 text-warning"
+                          title="No clock-out recorded — the scheduled shift end was used."
+                        >
+                          (auto)
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-xs mt-1 text-success/80">
+                  Clocked in {formatTimeOnly(todayClock?.clock_in_at)} · Clocked out{" "}
+                  {formatTimeOnly(todayClock?.clock_out_at)}
                 </p>
               )}
             </div>
           )}
+
+          <div className="flex flex-col gap-2">
+            <Button
+              size="lg"
+              className="w-full text-base h-14"
+              variant={phase === "out" ? "secondary" : "primary"}
+              onClick={act}
+              loading={busy}
+              disabled={!inRange || busy}
+              iconLeft={<ClockIcon size={18} />}
+            >
+              {phase === "out"
+                ? "Clock Out Now"
+                : hasFinishedShift
+                  ? "Start Another Shift"
+                  : "Clock In Now"}
+            </Button>
+            {!inRange && geo.status === "ok" && (
+              <p className="text-xs text-danger text-center">
+                You&apos;re too far from {store?.name ?? "your store"} to clock{" "}
+                {phase === "out" ? "out" : "in"}.
+              </p>
+            )}
+            {phase === "out" && (
+              <p className="text-[11px] text-text-muted text-center">
+                Clocked in at{" "}
+                {formatTimeOnly(openSession?.clock_in_at ?? todayClock?.clock_in_at)}.
+              </p>
+            )}
+            {phase === "in" && hasFinishedShift && (
+              <p className="text-[11px] text-text-muted text-center">
+                Coming back later? Clock in again and today&apos;s hours add up.
+              </p>
+            )}
+          </div>
         </div>
       )}
     </Card>

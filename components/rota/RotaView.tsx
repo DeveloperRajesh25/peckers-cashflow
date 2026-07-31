@@ -768,6 +768,20 @@ export function RotaView({
                                     )}
                                   </>
                                 )}
+                                {/* Attendance, not the schedule: the times above
+                                    span the whole day, so a split day needs its
+                                    real total spelling out. */}
+                                {Number(clk.session_count) > 1 && (
+                                  <span
+                                    className="block text-gold"
+                                    title={`${clk.session_count} separate shifts worked this day, ${Number(clk.worked_hours ?? 0).toFixed(2)}h in total excluding the gap between them.`}
+                                  >
+                                    {clk.session_count} shifts worked
+                                    {clk.worked_hours != null && (
+                                      <> · {Number(clk.worked_hours).toFixed(2)}h</>
+                                    )}
+                                  </span>
+                                )}
                               </div>
                             )}
                             {missed && (

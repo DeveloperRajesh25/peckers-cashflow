@@ -526,6 +526,39 @@ export type ManagerClockEvent = {
   auto_clocked_out?: boolean | null;
   /** Where the assumed clock-out time came from: 'rota' | 'store_close' | 'fallback'. */
   auto_clock_out_source?: string | null;
+  /**
+   * Sum of the day's completed manager_clock_sessions (migration 031). NOT
+   * clock_out_at − clock_in_at, which spans the gap between a morning and an
+   * evening shift. Null on a pre-031 row — fall back to the raw delta.
+   */
+  worked_hours?: number | string | null;
+  /** How many shifts the day holds. 0 or 1 reads exactly as it always did. */
+  session_count?: number | null;
+};
+
+/**
+ * One clock-in/clock-out pair inside a manager's day (migration 031). Mirrors
+ * ClockSession; manager_clock_events is the per-day header that sums these.
+ */
+export type ManagerClockSession = {
+  id: string;
+  clock_event_id: string;
+  manager_id: string;
+  store_id: string | null;
+  /** The date the session STARTED; one crossing midnight stays on its opening day. */
+  event_date: string;
+  /** INSERTION order within the day, not chronological — sort by clock_in_at. */
+  seq: number;
+  clock_in_at: string;
+  clock_out_at: string | null;
+  clock_in_lat: number | null;
+  clock_in_lng: number | null;
+  clock_out_lat: number | null;
+  clock_out_lng: number | null;
+  auto_clocked_out: boolean;
+  auto_clock_out_source?: string | null;
+  auto_clock_out_at?: string | null;
+  created_at: string;
 };
 
 /**

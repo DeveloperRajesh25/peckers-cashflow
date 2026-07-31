@@ -9,7 +9,11 @@ import {
   normalizeContactEmail,
   validateContactEmail,
 } from "@/lib/credentials";
-import { generatePassword, uniqueUsername } from "@/lib/provisioning";
+import {
+  findAccountByContactEmail,
+  generatePassword,
+  uniqueUsername,
+} from "@/lib/provisioning";
 import { resolveActiveStoreId, type EmployeePosition } from "@/lib/types";
 
 async function requireAdmin() {
@@ -54,6 +58,24 @@ function describeAccountWriteError(err: { code?: string; message: string }): str
     return "That email is already used by another account. Each person needs their own.";
   }
   return err.message;
+}
+
+/**
+ * Reject a reset address already in use, naming who holds it so the person
+ * filling the form knows which one to change.
+ *
+ * Safe to name: reading allowed_users is staff-only under RLS (is_staff), so
+ * both admins and managers can already see these accounts.
+ */
+async function assertContactEmailFree(contactEmail: string) {
+  const holder = await findAccountByContactEmail(contactEmail);
+  if (!holder) return;
+  const who = holder.name?.trim();
+  throw new Error(
+    who
+      ? `That email is already used by ${who}'s account. Each person needs their own address, because password-reset links are sent to it.`
+      : "That email is already used by another account. Each person needs their own address, because password-reset links are sent to it.",
+  );
 }
 
 export type ProvisionResult = {
@@ -235,7 +257,39 @@ export async function createAdminAccount(input: {
  * Create an EMPLOYEE record AND its login account in one step.
  * Builds the HR profile (employees row) and a username/password login.
  */
-export async function createEmployeeWithAccount(input: {
+export type CreateEmployeeResult =
+  | { ok: true; username: string; password: string; loginUrl: string; employee_id: string }
+  | { ok: false; error: string };
+
+/**
+ * Boundary for employee provisioning: converts a thrown error into a returned
+ * { ok:false, error } so the message survives production.
+ *
+ * Next.js masks anything THROWN from a server action in a prod build, replacing
+ * it with "An error occurred in the Server Components render". Every reason this
+ * can fail — a duplicate reset address, no store on the manager's account, a
+ * login-name clash — reached the user as that one meaningless string, which is
+ * exactly how the duplicate-email case got reported as a mystery bug. Same
+ * pattern as asResult in app/actions/clock.ts.
+ */
+export async function createEmployeeWithAccount(
+  input: Parameters<typeof performCreateEmployeeWithAccount>[0],
+): Promise<CreateEmployeeResult> {
+  try {
+    return { ok: true, ...(await performCreateEmployeeWithAccount(input)) };
+  } catch (err) {
+    console.error("[accounts] createEmployeeWithAccount failed:", err);
+    return {
+      ok: false,
+      error:
+        err instanceof Error && err.message
+          ? err.message
+          : "Could not create the employee. Please try again.",
+    };
+  }
+}
+
+async function performCreateEmployeeWithAccount(input: {
   name: string;
   /** Real address for password-reset links. Required — see requireContactEmail. */
   contact_email: string;
@@ -254,20 +308,33 @@ export async function createEmployeeWithAccount(input: {
   account_number?: string | null;
   sort_code?: string | null;
   notes?: string | null;
-}): Promise<ProvisionResult & { employee_id: string }> {
+}): Promise<{
+  username: string;
+  password: string;
+  loginUrl: string;
+  employee_id: string;
+}> {
   const actor = await requireStaff();
   if (!input.name?.trim()) throw new Error("Name is required");
   if (!input.position) throw new Error("Position is required");
   if (!input.hourly_ni_rate || input.hourly_ni_rate <= 0)
     throw new Error("Hourly NI rate must be greater than 0");
   const contactEmail = requireContactEmail(input.contact_email);
+  // Before anything is created, so a clash costs nothing to recover from.
+  await assertContactEmailFree(contactEmail);
 
   // Managers create staff for the store they're currently managing; admins choose freely.
   const store_id =
     actor.allowed!.role === "manager"
       ? resolveActiveStoreId(actor.allowed)
       : input.store_id;
-  if (!store_id) throw new Error("Store is required");
+  if (!store_id) {
+    throw new Error(
+      actor.allowed!.role === "manager"
+        ? "Your account has no store assigned, so there's nowhere to add this employee. Ask an admin to set your store."
+        : "Store is required",
+    );
+  }
 
   // Service-role client: provisioning writes to employees + allowed_users are
   // privileged and already authorised above (requireStaff), so we bypass RLS.
@@ -355,8 +422,10 @@ export async function createEmployeeWithAccount(input: {
   });
 
   revalidatePath("/employees");
+  revalidatePath("/manager/employees");
+  revalidatePath("/rota");
+  revalidatePath("/manager/rota");
   return {
-    ok: true,
     username,
     password,
     loginUrl: "/employee/login",

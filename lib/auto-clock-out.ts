@@ -31,6 +31,12 @@ import {
   findOpenSession,
   recomputeDayHeader,
 } from "@/lib/clock-sessions";
+import {
+  adoptManagerHeaderIntoSession,
+  closeManagerSession,
+  findOpenManagerSession,
+  recomputeManagerDayHeader,
+} from "@/lib/manager-clock-sessions";
 
 /** Marker note for shifts the system created from a clock-in (see actions/clock.ts). */
 const AUTO_SHIFT_NOTE = "Auto-created from clock-in";
@@ -109,6 +115,24 @@ function shiftDate(dateIso: string, days: number): string {
   const d = parseISODate(dateIso);
   d.setDate(d.getDate() + days);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * The instant a hand-entered clock-out happened, given the day the shift STARTED
+ * on. A wall-clock time at or before the clock-in belongs to the next calendar
+ * day: 14:00 → 00:00 is a ten-hour overnight shift, not a negative one.
+ *
+ * Equal times are rejected by the caller — 14:00 → 14:00 is ambiguous, not a
+ * 24-hour shift.
+ */
+export function resolveManualClockOut(
+  eventDate: string,
+  clockInHHMM: string,
+  clockOutHHMM: string,
+): { at: Date; overnight: boolean; date: string } {
+  const overnight = timeToMinutes(clockOutHHMM) <= timeToMinutes(clockInHHMM);
+  const date = overnight ? shiftDate(eventDate, 1) : eventDate;
+  return { at: londonWallClockToUtc(date, clockOutHHMM), overnight, date };
 }
 
 const hhmm = (t: string | null | undefined) => (t ? t.slice(0, 5) : null);
@@ -424,10 +448,23 @@ export async function autoCloseOpenClocks(
       }
 
       for (const row of openMgr) {
+        // Close the open SESSION, not the day. On a split day the header's
+        // clock_in_at is the morning shift's start, so resolving from it would
+        // measure the assumed end against the wrong shift — and the rota end
+        // would fall before the evening shift even began.
+        const session =
+          (await findOpenManagerSession(admin, row.manager_id)) ??
+          (await adoptManagerHeaderIntoSession(admin, row));
+        if (!session || session.clock_event_id !== row.id) continue;
+
         const shift = shiftByKey.get(`${row.manager_id}:${row.event_date}`);
         const resolved = resolveAutoClockOut({
           eventDate: row.event_date,
-          clockInAt: row.clock_in_at,
+          clockInAt: session.clock_in_at,
+          // A shift end that lands before this shift started is discarded by
+          // resolveAutoClockOut's `worked <= 0` guard, which is what makes a
+          // second shift fall through to the store close / fallback instead of
+          // inheriting the morning's finish time.
           rota: shift && !shift.is_day_off ? { start: shift.start_time, end: shift.end_time } : null,
           storeClose: row.store_id ? storeClose.get(row.store_id) ?? null : null,
         });
@@ -437,22 +474,31 @@ export async function autoCloseOpenClocks(
         }
 
         const clockOutAt = resolved.at.toISOString();
-        const { data: updated, error } = await admin
-          .from("manager_clock_events")
-          .update({
-            clock_out_at: clockOutAt,
-            auto_clocked_out: true,
-            auto_clock_out_source: resolved.source,
-            auto_clock_out_at: now.toISOString(),
-          })
-          .eq("id", row.id)
-          .is("clock_out_at", null)
-          .select("id");
-        if (error) {
-          console.error("[auto-clock-out] manager update failed:", error.message);
+        let workedHours: number;
+        try {
+          // Guarded on the session still being open, so a real clock-out that
+          // landed meanwhile wins.
+          const didClose = await closeManagerSession(admin, session.id, {
+            clockOutAt,
+            auto: { source: resolved.source, at: now.toISOString() },
+          });
+          if (!didClose) continue;
+          await admin
+            .from("manager_clock_events")
+            .update({
+              auto_clocked_out: true,
+              auto_clock_out_source: resolved.source,
+              auto_clock_out_at: now.toISOString(),
+            })
+            .eq("id", row.id);
+          ({ workedHours } = await recomputeManagerDayHeader(admin, row.id));
+        } catch (err) {
+          console.error(
+            "[auto-clock-out] manager update failed:",
+            err instanceof Error ? err.message : err,
+          );
           continue;
         }
-        if (!updated || updated.length === 0) continue;
 
         closed.push({
           kind: "manager",
@@ -461,8 +507,8 @@ export async function autoCloseOpenClocks(
           eventDate: row.event_date,
           clockOutAt,
           source: resolved.source,
-          hours:
-            Math.round(((resolved.at.getTime() - new Date(row.clock_in_at).getTime()) / 3_600_000) * 100) / 100,
+          // The day's total across every shift, not just the one just closed.
+          hours: workedHours,
         });
       }
     }
