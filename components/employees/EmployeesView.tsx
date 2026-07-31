@@ -166,8 +166,26 @@ export function EmployeesView({
     employee_id: string,
     event_date: string,
     override_hours?: number,
+    deliveries?: {
+      short?: number;
+      long?: number;
+      extraShort?: number;
+      extraShortReason?: string;
+      extraLong?: number;
+      extraLongReason?: string;
+    },
   ) {
-    const res = await approveDailyHours({ employee_id, event_date, override_hours });
+    const res = await approveDailyHours({
+      employee_id,
+      event_date,
+      override_hours,
+      short_deliveries: deliveries?.short,
+      long_deliveries: deliveries?.long,
+      extra_short_deliveries: deliveries?.extraShort,
+      extra_short_reason: deliveries?.extraShortReason,
+      extra_long_deliveries: deliveries?.extraLong,
+      extra_long_reason: deliveries?.extraLongReason,
+    });
     setHours(res.hours);
     patchDaily(
       (d) => d.employee_id === employee_id && d.event_date === event_date,
@@ -180,6 +198,22 @@ export function EmployeesView({
                 (d) =>
                   d.employee_id === employee_id && d.event_date === event_date,
               )?.clocked_hours ?? null,
+        // Optimistically reflect a delivery correction so the approved row
+        // shows the confirmed figure before router.refresh() lands.
+        ...(deliveries?.short != null ? { short_deliveries: deliveries.short } : {}),
+        ...(deliveries?.long != null ? { long_deliveries: deliveries.long } : {}),
+        ...(deliveries?.extraShort != null
+          ? {
+              extra_short_deliveries: deliveries.extraShort,
+              extra_short_reason: deliveries.extraShortReason ?? null,
+            }
+          : {}),
+        ...(deliveries?.extraLong != null
+          ? {
+              extra_long_deliveries: deliveries.extraLong,
+              extra_long_reason: deliveries.extraLongReason ?? null,
+            }
+          : {}),
       },
     );
     router.refresh();

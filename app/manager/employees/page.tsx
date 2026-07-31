@@ -1,6 +1,6 @@
 import { PageHeader } from "@/components/layout/PageHeader";
 import { createServerSupabase, requireRole } from "@/lib/supabase-server";
-import { resolveActiveStoreId } from "@/lib/types";
+import { hasRole, resolveActiveStoreId } from "@/lib/types";
 import { EmployeesView } from "@/components/employees/EmployeesView";
 import { withContactEmails } from "@/lib/contact-email";
 import { getAppSettings } from "@/app/actions/settings";
@@ -42,7 +42,7 @@ export default async function ManagerEmployeesPage() {
     supabase.from("stores").select("*").eq("id", storeId),
     supabase
       .from("clock_events")
-      .select("id, employee_id, store_id, event_date, clock_in_at, clock_out_at, worked_hours, hours_approved, approved_hours, auto_clocked_out, manual_entry, manual_entry_reason")
+      .select("id, employee_id, store_id, event_date, clock_in_at, clock_out_at, worked_hours, hours_approved, approved_hours, auto_clocked_out, manual_entry, manual_entry_reason, short_deliveries_count, long_deliveries_count, extra_short_deliveries, extra_long_deliveries, extra_short_reason, extra_long_reason")
       .eq("store_id", storeId)
       .gte("event_date", eightWeeksBack)
       .not("clock_out_at", "is", null)
@@ -78,6 +78,9 @@ export default async function ManagerEmployeesPage() {
       name: e.name,
       hourly_ni_rate: e.hourly_ni_rate,
       hourly_rate: e.hourly_rate,
+      // Only a Driver earns the per-delivery allowance, so only their approval
+      // row offers delivery inputs.
+      is_driver: hasRole(e.position, "Driver"),
     })).map((e) => [e.id, e]),
   );
   // A failed clock query must not read as "nobody worked" on a payroll screen.

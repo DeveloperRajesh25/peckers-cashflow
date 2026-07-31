@@ -82,6 +82,19 @@ type ApprovalRow = {
   auto_clocked_out: boolean;
   manual_entry: boolean;
   manual_entry_reason: string | null;
+  /** Only drivers earn a per-delivery allowance, so only they get the inputs. */
+  is_driver: boolean;
+  /** The normal round — editable here; a correction replaces the driver's figure. */
+  short_deliveries: number;
+  long_deliveries: number;
+  /**
+   * Beyond the normal round. Editable here, but a count above zero requires
+   * a reason — the same rule every other delivery write path enforces.
+   */
+  extra_short_deliveries: number;
+  extra_long_deliveries: number;
+  extra_short_reason: string | null;
+  extra_long_reason: string | null;
 };
 
 /** "09:00–13:00" for one shift; an unfinished one reads "17:00–…". */
@@ -118,6 +131,13 @@ function fromEmployee(s: ClockDailySummary): ApprovalRow {
     auto_clocked_out: Boolean(s.auto_clocked_out),
     manual_entry: Boolean(s.manual_entry),
     manual_entry_reason: s.manual_entry_reason ?? null,
+    is_driver: Boolean(s.is_driver),
+    short_deliveries: s.short_deliveries ?? 0,
+    long_deliveries: s.long_deliveries ?? 0,
+    extra_short_deliveries: s.extra_short_deliveries ?? 0,
+    extra_long_deliveries: s.extra_long_deliveries ?? 0,
+    extra_short_reason: s.extra_short_reason ?? null,
+    extra_long_reason: s.extra_long_reason ?? null,
   };
 }
 
@@ -137,6 +157,15 @@ function fromCover(c: CoverDailyApprovalRow): ApprovalRow {
     auto_clocked_out: c.auto_clocked_out,
     manual_entry: c.manual_entry,
     manual_entry_reason: c.manual_entry_reason,
+    // Cover drivers' deliveries are settled by their own per-day approval
+    // (approveCoverDriverDay snapshots the rates), so they are not edited here.
+    is_driver: false,
+    short_deliveries: 0,
+    long_deliveries: 0,
+    extra_short_deliveries: 0,
+    extra_long_deliveries: 0,
+    extra_short_reason: null,
+    extra_long_reason: null,
   };
 }
 
@@ -145,6 +174,14 @@ type Handlers = {
     employee_id: string,
     event_date: string,
     override_hours?: number,
+    deliveries?: {
+      short?: number;
+      long?: number;
+      extraShort?: number;
+      extraShortReason?: string;
+      extraLong?: number;
+      extraLongReason?: string;
+    },
   ) => Promise<void>;
   onApproveDate: (event_date: string, employee_ids: string[]) => Promise<void>;
   onUnapprove: (employee_id: string, event_date: string) => Promise<void>;
@@ -193,6 +230,16 @@ export function DailyHoursApproval({
     "employee" | "cover_driver" | null
   >(null);
   const [edited, setEdited] = React.useState<Record<string, string>>({});
+  // Corrected delivery counts, keyed `<rowKey>:short` / `<rowKey>:long`. Kept
+  // separate from `edited` (hours) so an untouched field stays undefined and is
+  // never sent — the server only writes a count it was actually given.
+  const [editedDeliv, setEditedDeliv] = React.useState<Record<string, string>>({});
+  // Reason text for a corrected extra count, keyed `<rowKey>:extraShort` /
+  // `<rowKey>:extraLong`. Only rendered (and only required) once the matching
+  // extra count has actually been changed to something above zero.
+  const [editedExtraReason, setEditedExtraReason] = React.useState<
+    Record<string, string>
+  >({});
   const [busyKey, setBusyKey] = React.useState<string | null>(null);
   const [busyDate, setBusyDate] = React.useState<string | null>(null);
   const [hideApproved, setHideApproved] = React.useState(false);
@@ -216,6 +263,66 @@ export function DailyHoursApproval({
     if (raw !== undefined && !isNaN(parsed) && parsed > 0) return parsed;
     if (s.approved_hours != null) return s.approved_hours;
     return s.clocked_hours;
+  }
+
+  type DeliveryField = "short" | "long" | "extraShort" | "extraLong";
+
+  function storedDeliveryValue(s: ApprovalRow, which: DeliveryField): number {
+    switch (which) {
+      case "short":
+        return s.short_deliveries;
+      case "long":
+        return s.long_deliveries;
+      case "extraShort":
+        return s.extra_short_deliveries;
+      case "extraLong":
+        return s.extra_long_deliveries;
+    }
+  }
+
+  /** Manager-confirmed delivery count for a row: the edit if valid, else the
+   *  count the driver entered (or, for the extras, the count already on
+   *  record). Zero is legitimate, so the guard is on the parse succeeding,
+   *  not on the number being truthy. */
+  function effDeliveries(s: ApprovalRow, which: DeliveryField): number {
+    const raw = editedDeliv[`${rowKey(s)}:${which}`];
+    const parsed = raw !== undefined ? parseInt(raw, 10) : NaN;
+    if (raw !== undefined && !isNaN(parsed) && parsed >= 0) return parsed;
+    return storedDeliveryValue(s, which);
+  }
+
+  function deliveryChanged(s: ApprovalRow, which: DeliveryField): boolean {
+    return effDeliveries(s, which) !== storedDeliveryValue(s, which);
+  }
+
+  function effExtraReason(s: ApprovalRow, which: "extraShort" | "extraLong"): string {
+    const raw = editedExtraReason[`${rowKey(s)}:${which}`];
+    if (raw !== undefined) return raw;
+    return (which === "extraShort" ? s.extra_short_reason : s.extra_long_reason) ?? "";
+  }
+
+  /** An extra count the manager raised above zero, with nothing explaining it
+   *  yet — mirrors the rule setClockDeliveries and DeliveryEditModal already
+   *  enforce, surfaced here before the write is attempted rather than after. */
+  function extraNeedsReason(s: ApprovalRow, which: "extraShort" | "extraLong"): boolean {
+    return (
+      deliveryChanged(s, which) &&
+      effDeliveries(s, which) > 0 &&
+      !effExtraReason(s, which).trim()
+    );
+  }
+
+  /** A driver day with nothing recorded — flagged, never blocked. A real
+   *  zero-delivery shift happens, and refusing would strand the day's hours. */
+  function missingDeliveries(s: ApprovalRow): boolean {
+    return (
+      s.is_driver &&
+      !s.approved &&
+      s.short_deliveries === 0 &&
+      s.long_deliveries === 0 &&
+      s.extra_short_deliveries === 0 &&
+      s.extra_long_deliveries === 0
+    );
   }
 
   const selectedRows = allRows.filter((s) => s.event_date === selectedDate);
@@ -291,18 +398,83 @@ export function DailyHoursApproval({
     const eff = effHours(s);
     if (!(eff > 0)) return;
     const override = Math.abs(eff - s.clocked_hours) > 0.01 ? eff : undefined;
+
+    // An extra raised above zero with nothing explaining it is refused before
+    // the request is even sent — the server enforces the same rule, but there
+    // is no reason to make a round trip for it.
+    if (s.is_driver && extraNeedsReason(s, "extraShort")) {
+      toast.error("Give a reason for the extra short deliveries.");
+      return;
+    }
+    if (s.is_driver && extraNeedsReason(s, "extraLong")) {
+      toast.error("Give a reason for the extra long deliveries.");
+      return;
+    }
+
+    // Only send a field the manager actually changed. Sending the unchanged
+    // value would be harmless but makes every approval look like a correction
+    // in the audit log.
+    const short = effDeliveries(s, "short");
+    const long = effDeliveries(s, "long");
+    const extraShort = effDeliveries(s, "extraShort");
+    const extraLong = effDeliveries(s, "extraLong");
+    const shortChanged = deliveryChanged(s, "short");
+    const longChanged = deliveryChanged(s, "long");
+    const extraShortChanged = deliveryChanged(s, "extraShort");
+    const extraLongChanged = deliveryChanged(s, "extraLong");
+    const anyDeliveryChanged =
+      shortChanged || longChanged || extraShortChanged || extraLongChanged;
+
+    const deliveries =
+      s.is_driver && anyDeliveryChanged
+        ? {
+            ...(shortChanged ? { short } : {}),
+            ...(longChanged ? { long } : {}),
+            ...(extraShortChanged
+              ? {
+                  extraShort,
+                  extraShortReason: effExtraReason(s, "extraShort").trim(),
+                }
+              : {}),
+            ...(extraLongChanged
+              ? {
+                  extraLong,
+                  extraLongReason: effExtraReason(s, "extraLong").trim(),
+                }
+              : {}),
+          }
+        : undefined;
+
     setBusyKey(key);
     try {
       if (s.kind === "cover") {
         if (!onCoverApprove) return;
         await onCoverApprove(s.person_id, s.event_date, override);
       } else {
-        await onApprove(s.person_id, s.event_date, override);
+        await onApprove(s.person_id, s.event_date, override, deliveries);
       }
-      toast.success(`Approved ${s.name} — ${eff.toFixed(2)}h`);
+      toast.success(
+        deliveries
+          ? `Approved ${s.name} — ${eff.toFixed(2)}h, ${short + long + extraShort + extraLong} deliveries`
+          : `Approved ${s.name} — ${eff.toFixed(2)}h`,
+      );
       setEdited((p) => {
         const n = { ...p };
         delete n[key];
+        return n;
+      });
+      setEditedDeliv((p) => {
+        const n = { ...p };
+        delete n[`${key}:short`];
+        delete n[`${key}:long`];
+        delete n[`${key}:extraShort`];
+        delete n[`${key}:extraLong`];
+        return n;
+      });
+      setEditedExtraReason((p) => {
+        const n = { ...p };
+        delete n[`${key}:extraShort`];
+        delete n[`${key}:extraLong`];
         return n;
       });
     } catch (err) {
@@ -406,6 +578,14 @@ export function DailyHoursApproval({
                 {s.shifts.length} shifts
               </span>
             )}
+            {missingDeliveries(s) && (
+              <span
+                className="ml-2 align-middle text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-warning/40 bg-warning/10 text-warning font-medium"
+                title="This driver recorded no deliveries for the day. If that's wrong, correct it before approving — deliveries are paid per drop."
+              >
+                No deliveries
+              </span>
+            )}
           </p>
           <p className="text-xs text-text-muted">
             {s.auto_clocked_out ? "Assumed" : "Clocked"} {s.clocked_hours.toFixed(2)}h
@@ -425,6 +605,20 @@ export function DailyHoursApproval({
               <CheckIcon size={12} />
               {(s.approved_hours ?? s.clocked_hours).toFixed(2)}h approved
             </Badge>
+            {s.is_driver && (
+              <span
+                className="text-[11px] text-text-muted tabular-nums"
+                title="Confirmed deliveries for this day — normal round, plus any extras."
+              >
+                {s.short_deliveries} SD · {s.long_deliveries} LD
+                {(s.extra_short_deliveries > 0 || s.extra_long_deliveries > 0) && (
+                  <>
+                    {" "}
+                    · {s.extra_short_deliveries} MS · {s.extra_long_deliveries} ML
+                  </>
+                )}
+              </span>
+            )}
             {adjusted && (
               <span
                 className="text-[11px] text-warning"
@@ -444,7 +638,7 @@ export function DailyHoursApproval({
             </Button>
           </div>
         ) : (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap justify-end">
             <div className="flex items-center gap-1">
               <input
                 type="number"
@@ -459,12 +653,137 @@ export function DailyHoursApproval({
               />
               <span className="text-xs text-text-muted">h</span>
             </div>
+
+            {/* Drivers only — everyone else is paid on hours alone, and empty
+                delivery boxes on a kitchen shift are just noise. */}
+            {s.is_driver && (
+              <>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    step="1"
+                    min="0"
+                    value={editedDeliv[`${key}:short`] ?? String(s.short_deliveries)}
+                    onChange={(e) =>
+                      setEditedDeliv((p) => ({ ...p, [`${key}:short`]: e.target.value }))
+                    }
+                    aria-label={`Short deliveries for ${s.name} on ${longDate(s.event_date)}`}
+                    title="SD — short deliveries, the normal round"
+                    className={cn(
+                      "w-14 rounded-lg border bg-surface px-2 py-1 text-right text-sm tabular-nums outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/30",
+                      missingDeliveries(s) ? "border-warning/50" : "border-border",
+                    )}
+                  />
+                  <span className="text-xs text-text-muted">sd</span>
+                  <input
+                    type="number"
+                    step="1"
+                    min="0"
+                    value={editedDeliv[`${key}:long`] ?? String(s.long_deliveries)}
+                    onChange={(e) =>
+                      setEditedDeliv((p) => ({ ...p, [`${key}:long`]: e.target.value }))
+                    }
+                    aria-label={`Long deliveries for ${s.name} on ${longDate(s.event_date)}`}
+                    title="LD — long deliveries, the normal round"
+                    className={cn(
+                      "w-14 rounded-lg border bg-surface px-2 py-1 text-right text-sm tabular-nums outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/30",
+                      missingDeliveries(s) ? "border-warning/50" : "border-border",
+                    )}
+                  />
+                  <span className="text-xs text-text-muted">ld</span>
+                </div>
+
+                {/* Extras — beyond the normal round, paid at the same per-drop
+                    rate. Raising either above zero requires a reason, exactly
+                    like the Rota's delivery modal, so a reason box appears
+                    inline the moment that becomes true rather than after the
+                    server rejects the approval. */}
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    step="1"
+                    min="0"
+                    value={
+                      editedDeliv[`${key}:extraShort`] ?? String(s.extra_short_deliveries)
+                    }
+                    onChange={(e) =>
+                      setEditedDeliv((p) => ({
+                        ...p,
+                        [`${key}:extraShort`]: e.target.value,
+                      }))
+                    }
+                    aria-label={`Extra short deliveries for ${s.name} on ${longDate(s.event_date)}`}
+                    title="MS — miscellaneous (extra) short deliveries, beyond the normal round"
+                    className="w-14 rounded-lg border border-border bg-surface px-2 py-1 text-right text-sm tabular-nums outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/30"
+                  />
+                  <span className="text-xs text-text-muted">ms</span>
+                  <input
+                    type="number"
+                    step="1"
+                    min="0"
+                    value={
+                      editedDeliv[`${key}:extraLong`] ?? String(s.extra_long_deliveries)
+                    }
+                    onChange={(e) =>
+                      setEditedDeliv((p) => ({
+                        ...p,
+                        [`${key}:extraLong`]: e.target.value,
+                      }))
+                    }
+                    aria-label={`Extra long deliveries for ${s.name} on ${longDate(s.event_date)}`}
+                    title="ML — miscellaneous (extra) long deliveries, beyond the normal round"
+                    className="w-14 rounded-lg border border-border bg-surface px-2 py-1 text-right text-sm tabular-nums outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/30"
+                  />
+                  <span className="text-xs text-text-muted">ml</span>
+                </div>
+
+                {/* Two independent boxes, not one shared one — extra short and
+                    extra long can each be raised with a DIFFERENT reason, and
+                    a single box could only ever satisfy one of them, leaving
+                    Approve stuck disabled if both were raised at once. */}
+                {extraNeedsReason(s, "extraShort") && (
+                  <input
+                    type="text"
+                    value={editedExtraReason[`${key}:extraShort`] ?? ""}
+                    onChange={(e) =>
+                      setEditedExtraReason((p) => ({
+                        ...p,
+                        [`${key}:extraShort`]: e.target.value,
+                      }))
+                    }
+                    placeholder="Reason for extra SD"
+                    aria-label={`Reason for extra short deliveries for ${s.name} on ${longDate(s.event_date)}`}
+                    className="w-36 rounded-lg border border-warning/50 bg-surface px-2 py-1 text-xs outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/30"
+                  />
+                )}
+                {extraNeedsReason(s, "extraLong") && (
+                  <input
+                    type="text"
+                    value={editedExtraReason[`${key}:extraLong`] ?? ""}
+                    onChange={(e) =>
+                      setEditedExtraReason((p) => ({
+                        ...p,
+                        [`${key}:extraLong`]: e.target.value,
+                      }))
+                    }
+                    placeholder="Reason for extra LD"
+                    aria-label={`Reason for extra long deliveries for ${s.name} on ${longDate(s.event_date)}`}
+                    className="w-36 rounded-lg border border-warning/50 bg-surface px-2 py-1 text-xs outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/30"
+                  />
+                )}
+              </>
+            )}
+
             <Button
               variant="primary"
               size="sm"
               onClick={() => doApprove(s)}
               loading={busy}
-              disabled={!(effHours(s) > 0)}
+              disabled={
+                !(effHours(s) > 0) ||
+                (s.is_driver &&
+                  (extraNeedsReason(s, "extraShort") || extraNeedsReason(s, "extraLong")))
+              }
             >
               Approve
             </Button>
@@ -688,6 +1007,21 @@ export function DailyHoursApproval({
         <span className="font-medium text-text-primary">Weekly Log</span> tab.{" "}
         <span className="font-medium text-text-primary">Cover</span> rows are cash
         only and are paid per approved day, with no weekly split.
+      </p>
+      <p className="text-xs text-text-muted">
+        For drivers, <span className="font-medium text-text-primary">sd</span> /{" "}
+        <span className="font-medium text-text-primary">ld</span> are the day’s
+        short and long deliveries (the normal round), and{" "}
+        <span className="font-medium text-text-primary">ms</span> /{" "}
+        <span className="font-medium text-text-primary">ml</span> are
+        miscellaneous — extra deliveries beyond it, paid at the same per-drop
+        rate. Correcting any of these here{" "}
+        <span className="font-medium text-text-primary">replaces</span> what the
+        driver entered — the original is kept in the audit log, and the new
+        figure flows straight to the Tuesday payout and the Rota. Raising ms or
+        ml above zero asks for a reason, same as editing them from the Rota.{" "}
+        <span className="font-medium text-text-primary">Approve all</span> signs
+        off hours at their clocked value and leaves deliveries untouched.
       </p>
     </div>
   );

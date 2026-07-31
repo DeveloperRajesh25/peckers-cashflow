@@ -734,6 +734,30 @@ export type ClockDailySummary = {
   /** Manager-confirmed hours (may differ from clocked_hours); null until approved. */
   approved_hours: number | null;
   /**
+   * Only a Driver earns a per-delivery petrol allowance, so only a driver's row
+   * shows delivery inputs. Derived from `employees.position` via hasRole.
+   */
+  is_driver: boolean;
+  /**
+   * The normal round, as entered by the driver at clock-out. A manager can
+   * correct these during approval and the corrected figure REPLACES them —
+   * there is no separate "approved deliveries" column, because payout, the
+   * Rota and Analytics all read these directly and a second precedence rule
+   * would have to be honoured identically in each.
+   */
+  short_deliveries: number;
+  long_deliveries: number;
+  /**
+   * Deliveries beyond the normal round. Read-only here: each carries a written
+   * reason, captured through the Rota's DeliveryEditModal. Shown so a manager
+   * approves against the full picture of what is being paid.
+   */
+  extra_short_deliveries: number;
+  extra_long_deliveries: number;
+  /** Required once its matching extra count is above zero; null otherwise. */
+  extra_short_reason: string | null;
+  extra_long_reason: string | null;
+  /**
    * True when the clock-out was never made and the system assumed the shift
    * end time (see lib/auto-clock-out.ts). The hours are a best estimate, so
    * the approval row flags them for the manager to check.

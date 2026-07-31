@@ -483,8 +483,17 @@ export function mapClockEventsToDaily(
     auto_clocked_out?: boolean | null;
     manual_entry?: boolean | null;
     manual_entry_reason?: string | null;
+    short_deliveries_count?: number | null;
+    long_deliveries_count?: number | null;
+    extra_short_deliveries?: number | null;
+    extra_long_deliveries?: number | null;
+    extra_short_reason?: string | null;
+    extra_long_reason?: string | null;
   }>,
-  employeeMap: Map<string, { name: string }>,
+  // `is_driver` decides whether the approval row offers delivery inputs at all.
+  // Absent (older callers) means "not a driver", which is the safe default: a
+  // non-driver row simply shows no delivery fields.
+  employeeMap: Map<string, { name: string; is_driver?: boolean }>,
   /** Shifts per clock_events.id — omit and every day renders as a single shift. */
   sessionsByEventId?: Map<
     string,
@@ -514,6 +523,13 @@ export function mapClockEventsToDaily(
   auto_clocked_out: boolean;
   manual_entry: boolean;
   manual_entry_reason: string | null;
+  is_driver: boolean;
+  short_deliveries: number;
+  long_deliveries: number;
+  extra_short_deliveries: number;
+  extra_long_deliveries: number;
+  extra_short_reason: string | null;
+  extra_long_reason: string | null;
 }> {
   const out = [];
   for (const ce of clockEvents) {
@@ -531,6 +547,13 @@ export function mapClockEventsToDaily(
       auto_clocked_out: !!ce.auto_clocked_out,
       manual_entry: !!ce.manual_entry,
       manual_entry_reason: ce.manual_entry_reason ?? null,
+      is_driver: !!employeeMap.get(ce.employee_id)?.is_driver,
+      short_deliveries: Math.max(0, Number(ce.short_deliveries_count) || 0),
+      long_deliveries: Math.max(0, Number(ce.long_deliveries_count) || 0),
+      extra_short_deliveries: Math.max(0, Number(ce.extra_short_deliveries) || 0),
+      extra_long_deliveries: Math.max(0, Number(ce.extra_long_deliveries) || 0),
+      extra_short_reason: ce.extra_short_reason ?? null,
+      extra_long_reason: ce.extra_long_reason ?? null,
     });
   }
   return out.sort(

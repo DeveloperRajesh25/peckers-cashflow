@@ -530,10 +530,53 @@ async function freshHoursResult(supabase: ServerSupabase) {
  * the clock_events row (not trusted from the client); a manager may override to
  * correct a missed clock-out.
  */
+/** Nobody does more than this in one day; guards a mistyped payout. */
+const MAX_DAILY_DELIVERIES = 200;
+
+/**
+ * A delivery count a manager corrected while approving. Bounded because these
+ * are paid per unit: a fat-fingered 500 would quietly inflate the payout.
+ * Returns undefined when the caller sent nothing (a non-driver, or no change).
+ */
+function normaliseDeliveryCount(
+  value: number | undefined,
+  label: string,
+): number | undefined {
+  if (value == null || value === ("" as unknown as number)) return undefined;
+  const n = Number(value);
+  if (isNaN(n)) throw new Error(`${label} must be a number.`);
+  if (n < 0) throw new Error(`${label} can't be negative.`);
+  if (!Number.isInteger(n)) throw new Error(`${label} must be a whole number.`);
+  if (n > MAX_DAILY_DELIVERIES) {
+    throw new Error(`${label} of ${n} looks wrong — check the count.`);
+  }
+  return n;
+}
+
 export async function approveDailyHours(input: {
   employee_id: string;
   event_date: string;
   override_hours?: number;
+  /**
+   * Manager-confirmed delivery counts for the day. These REPLACE the driver's
+   * entered counts on clock_events rather than living in a parallel "approved"
+   * column: payout, the Rota delivery column and Analytics all read
+   * short_deliveries_count / long_deliveries_count directly, so a second
+   * precedence rule would have to be honoured identically in three places.
+   * Omitted for non-drivers and when the manager changed nothing.
+   */
+  short_deliveries?: number;
+  long_deliveries?: number;
+  /**
+   * Deliveries beyond the normal round. Each requires a written reason — the
+   * same rule `setClockDeliveries` and the Rota's `DeliveryEditModal` already
+   * enforce — so approving a driver's day can never leave an extra count
+   * standing with nothing explaining it.
+   */
+  extra_short_deliveries?: number;
+  extra_short_reason?: string;
+  extra_long_deliveries?: number;
+  extra_long_reason?: string;
 }) {
   const user = await requireAllowed();
   const supabase = createServerSupabase();
@@ -542,7 +585,9 @@ export async function approveDailyHours(input: {
 
   const { data: ce, error: ceErr } = await supabase
     .from("clock_events")
-    .select("id, clock_in_at, clock_out_at, worked_hours")
+    .select(
+      "id, clock_in_at, clock_out_at, worked_hours, short_deliveries_count, long_deliveries_count, extra_short_deliveries, extra_long_deliveries",
+    )
     .eq("employee_id", input.employee_id)
     .eq("event_date", input.event_date)
     .maybeSingle();
@@ -558,6 +603,36 @@ export async function approveDailyHours(input: {
   const approvedHours = hasOverride ? Number(input.override_hours) : rawHours;
   if (approvedHours <= 0) throw new Error("Hours must be greater than 0");
 
+  const shortIn = normaliseDeliveryCount(input.short_deliveries, "Short deliveries");
+  const longIn = normaliseDeliveryCount(input.long_deliveries, "Long deliveries");
+  const extraShortIn = normaliseDeliveryCount(
+    input.extra_short_deliveries,
+    "Extra short deliveries",
+  );
+  const extraLongIn = normaliseDeliveryCount(
+    input.extra_long_deliveries,
+    "Extra long deliveries",
+  );
+  // Matches every other write path (clock-out, setClockDeliveries, the Rota's
+  // DeliveryEditModal): an extra count above zero must carry a reason, or a
+  // paid delivery has nothing on record explaining why it was extra.
+  if (extraShortIn !== undefined && extraShortIn > 0 && !input.extra_short_reason?.trim()) {
+    throw new Error("Give a reason for the extra short deliveries.");
+  }
+  if (extraLongIn !== undefined && extraLongIn > 0 && !input.extra_long_reason?.trim()) {
+    throw new Error("Give a reason for the extra long deliveries.");
+  }
+
+  const prevShort = Math.max(0, Number(ce.short_deliveries_count) || 0);
+  const prevLong = Math.max(0, Number(ce.long_deliveries_count) || 0);
+  const prevExtraShort = Math.max(0, Number(ce.extra_short_deliveries) || 0);
+  const prevExtraLong = Math.max(0, Number(ce.extra_long_deliveries) || 0);
+  const deliveriesChanged =
+    (shortIn !== undefined && shortIn !== prevShort) ||
+    (longIn !== undefined && longIn !== prevLong) ||
+    (extraShortIn !== undefined && extraShortIn !== prevExtraShort) ||
+    (extraLongIn !== undefined && extraLongIn !== prevExtraLong);
+
   const { error: upErr } = await supabase
     .from("clock_events")
     .update({
@@ -565,6 +640,24 @@ export async function approveDailyHours(input: {
       approved_hours: approvedHours,
       hours_approved_by: user.id,
       hours_approved_at: new Date().toISOString(),
+      // Only written when the manager actually supplied a figure — a plain
+      // "Approve" on a non-driver must not blank a driver-entered count.
+      ...(shortIn !== undefined ? { short_deliveries_count: shortIn } : {}),
+      ...(longIn !== undefined ? { long_deliveries_count: longIn } : {}),
+      // Reason follows the count to null exactly like every other delivery
+      // write path: an extra corrected down to zero has nothing left to explain.
+      ...(extraShortIn !== undefined
+        ? {
+            extra_short_deliveries: extraShortIn,
+            extra_short_reason: extraShortIn > 0 ? input.extra_short_reason!.trim() : null,
+          }
+        : {}),
+      ...(extraLongIn !== undefined
+        ? {
+            extra_long_deliveries: extraLongIn,
+            extra_long_reason: extraLongIn > 0 ? input.extra_long_reason!.trim() : null,
+          }
+        : {}),
     })
     .eq("id", ce.id);
   if (upErr) throw new Error(upErr.message);
@@ -581,8 +674,32 @@ export async function approveDailyHours(input: {
       employee_id: input.employee_id,
       event_date: input.event_date,
       approved_hours: approvedHours,
+      // The driver's original figures are only recoverable from here once the
+      // manager's correction has replaced them in place.
+      ...(deliveriesChanged
+        ? {
+            deliveries_corrected: {
+              short: { from: prevShort, to: shortIn ?? prevShort },
+              long: { from: prevLong, to: longIn ?? prevLong },
+              extra_short: { from: prevExtraShort, to: extraShortIn ?? prevExtraShort },
+              extra_long: { from: prevExtraLong, to: extraLongIn ?? prevExtraLong },
+            },
+          }
+        : {}),
     },
   });
+
+  // Deliveries show on the Rota and Live board as well as the payout, so a
+  // correction made here has to refresh those too — freshHoursResult only
+  // covers the employees + analytics screens.
+  if (deliveriesChanged) {
+    revalidatePath("/rota");
+    revalidatePath("/manager/rota");
+    revalidatePath("/live");
+    revalidatePath("/manager/live");
+    revalidatePath("/cash-flow/payout");
+    revalidatePath("/manager/cash-flow/payout");
+  }
 
   return freshHoursResult(supabase);
 }

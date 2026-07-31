@@ -5,6 +5,7 @@ import { withContactEmails } from "@/lib/contact-email";
 import { getAppSettings } from "@/app/actions/settings";
 import { addDays, groupClockEventsByWeek, mapClockEventsToDaily, startOfISOWeek, toISODate, todayISO } from "@/lib/utils";
 import { summariseCoverDriverDays } from "@/lib/cover-driver-hours";
+import { hasRole } from "@/lib/types";
 import type { CoverDriver, CoverDriverClockEvent, Employee } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -39,7 +40,7 @@ export default async function EmployeesPage() {
     supabase.from("stores").select("*").order("name"),
     supabase
       .from("clock_events")
-      .select("id, employee_id, store_id, event_date, clock_in_at, clock_out_at, worked_hours, hours_approved, approved_hours, auto_clocked_out, manual_entry, manual_entry_reason")
+      .select("id, employee_id, store_id, event_date, clock_in_at, clock_out_at, worked_hours, hours_approved, approved_hours, auto_clocked_out, manual_entry, manual_entry_reason, short_deliveries_count, long_deliveries_count, extra_short_deliveries, extra_long_deliveries, extra_short_reason, extra_long_reason")
       .gte("event_date", eightWeeksBack)
       .not("clock_out_at", "is", null)
       .order("event_date", { ascending: false }),
@@ -71,6 +72,9 @@ export default async function EmployeesPage() {
       name: e.name,
       hourly_ni_rate: e.hourly_ni_rate,
       hourly_rate: e.hourly_rate,
+      // Only a Driver earns the per-delivery allowance, so only their approval
+      // row offers delivery inputs.
+      is_driver: hasRole(e.position, "Driver"),
     })).map((e) => [e.id, e]),
   );
   // A failed clock query must not read as "nobody worked" on a payroll screen.
