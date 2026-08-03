@@ -448,12 +448,34 @@ function hoursByStore(days: DayWork[]): Map<string, number> {
 }
 
 /**
- * Cash hours an employee earns at ONE store for the week, applying the
- * home-store NI rule:
+ * The home-store NI rule in ONE place, expressed over a week's hour total at a
+ * single store:
  *   - at their HOME store: only hours above the weekly bank limit are cash;
  *   - at any SECONDARY store: every hour is cash (no NI record there).
  * No cash rate ⇒ no cash hours anywhere (they're paid entirely on the books).
+ *
+ * Exported so the crew analytics page can price a week the same way the payout
+ * does without restating the rule — a second copy would eventually disagree
+ * with the envelope, which is the one thing that must never happen.
  */
+export function cashHoursFromStoreTotal(
+  hoursAtStore: number,
+  storeId: string,
+  emp: {
+    store_id?: string | null;
+    hourly_cash_rate?: number | null;
+    bank_weekly_hours_limit?: number | null;
+  },
+): number {
+  if (!worksForCash(emp)) return 0;
+  const hoursHere = Math.max(0, Number(hoursAtStore) || 0);
+  if (emp.store_id === storeId) {
+    const limit = Math.max(0, Number(emp.bank_weekly_hours_limit ?? 20) || 0);
+    return Math.max(0, hoursHere - limit);
+  }
+  return hoursHere;
+}
+
 function cashHoursAtStore(
   days: DayWork[],
   storeId: string,
@@ -463,13 +485,7 @@ function cashHoursAtStore(
     bank_weekly_hours_limit?: number | null;
   },
 ): number {
-  if (!worksForCash(emp)) return 0;
-  const hoursHere = hoursByStore(days).get(storeId) ?? 0;
-  if (emp.store_id === storeId) {
-    const limit = Math.max(0, Number(emp.bank_weekly_hours_limit ?? 20) || 0);
-    return Math.max(0, hoursHere - limit);
-  }
-  return hoursHere;
+  return cashHoursFromStoreTotal(hoursByStore(days).get(storeId) ?? 0, storeId, emp);
 }
 
 /**

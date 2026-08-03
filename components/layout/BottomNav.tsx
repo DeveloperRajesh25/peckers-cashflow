@@ -67,7 +67,9 @@ export function BottomNav({ portal }: { portal: Portal }) {
                   )}
                 >
                   <Icon size={20} />
-                  <span>{item.label}</span>
+                  <span className="max-w-full truncate px-0.5">
+                    {item.shortLabel ?? item.label}
+                  </span>
                   <span
                     className={cn(
                       "h-1 w-1 rounded-full transition-colors",

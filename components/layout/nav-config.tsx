@@ -21,6 +21,8 @@ export type NavItem = {
   label: string;
   icon: React.ComponentType<{ size?: number }>;
   group?: string;
+  /** Used by the mobile bottom bar only, where a tab is a fifth of the screen. */
+  shortLabel?: string;
 };
 
 // ---- Admin portal (root URLs) ----
@@ -56,8 +58,9 @@ export const managerNav: NavItem[] = [
 
 // ---- Employee / crew portal (/employee/*) ----
 export const employeeNav: NavItem[] = [
-  { href: "/employee/attendance", label: "Clock In/Out", icon: ClockIcon },
-  { href: "/employee/shifts", label: "My Shifts", icon: CalendarIcon },
+  { href: "/employee/attendance", label: "Clock In/Out", icon: ClockIcon, shortLabel: "Clock" },
+  { href: "/employee/shifts", label: "My Shifts", icon: CalendarIcon, shortLabel: "Shifts" },
+  { href: "/employee/analytics", label: "Analytics", icon: ChartIcon },
   { href: "/employee/profile", label: "Profile", icon: UserCircleIcon },
   { href: "/employee/settings", label: "Settings", icon: SettingsIcon },
 ];
@@ -94,6 +97,13 @@ export const BOTTOM_NAV_FOR_PORTAL: Record<Portal, NavItem[]> = {
     managerNav[2], // Employees
     managerNav[3], // Alerts
   ],
-  employee: employeeNav, // only 4 pages — all fit, no "More" needed
+  // 5 pages now, so one has to give up its tab. Settings is the least-visited
+  // (theme, logout, password) and is the natural one to move into "More".
+  employee: [
+    employeeNav[0], // Clock In/Out
+    employeeNav[1], // My Shifts
+    employeeNav[2], // Analytics
+    employeeNav[3], // Profile
+  ],
   cover_driver: coverDriverNav, // only 2 pages — all fit
 };
