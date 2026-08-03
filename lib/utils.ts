@@ -212,6 +212,28 @@ export function shiftHours(start: string | null, end: string | null): number {
   return Math.max(0, (e - s) / 60);
 }
 
+/**
+ * Do two HH:MM shift windows on the same day overlap? Handles an overnight
+ * shift (end < start) the same way `shiftHours` does — by unrolling its end
+ * past midnight — so a 22:00–02:00 shift correctly overlaps a 23:00–01:00 one.
+ * A shift missing either time never overlaps (day off / not yet set).
+ */
+export function shiftRangesOverlap(
+  aStart: string | null,
+  aEnd: string | null,
+  bStart: string | null,
+  bEnd: string | null,
+): boolean {
+  if (!aStart || !aEnd || !bStart || !bEnd) return false;
+  const aS = timeToMinutes(aStart);
+  let aE = timeToMinutes(aEnd);
+  if (aE <= aS) aE += 24 * 60;
+  const bS = timeToMinutes(bStart);
+  let bE = timeToMinutes(bEnd);
+  if (bE <= bS) bE += 24 * 60;
+  return aS < bE && bS < aE;
+}
+
 /** Format start/end as "HH:MM – HH:MM" or "Day Off". */
 export function formatShiftRange(
   isDayOff: boolean,

@@ -67,24 +67,36 @@ function WeekBlock({
   schedules: EmployeeScheduleDay[];
 }) {
   const today = todayISO();
-  const byDate = new Map(shifts.map((s) => [s.shift_date, s]));
+  // A day can hold several published shifts (split days) — group, don't
+  // overwrite, or only the last one would ever be shown.
+  const byDate = new Map<string, RotaShift[]>();
+  for (const s of shifts) {
+    const arr = byDate.get(s.shift_date) ?? [];
+    arr.push(s);
+    byDate.set(s.shift_date, arr);
+  }
+  for (const arr of byDate.values()) {
+    arr.sort((a, b) => (a.start_time ?? "").localeCompare(b.start_time ?? ""));
+  }
   const tmplByWeekday = new Map(schedules.map((s) => [s.weekday, s]));
 
-  // Resolve each day: published rota row first, else the recurring template.
+  // Resolve each day: published rota rows first, else the recurring template.
   const days = Array.from({ length: 7 }, (_, i) => {
     const date = addDays(weekStart, i);
     const iso = toISODate(date);
-    const shift = byDate.get(iso);
-    if (shift) {
+    const dayShifts = byDate.get(iso) ?? [];
+    if (dayShifts.length > 0) {
+      const working = dayShifts.filter((s) => !s.is_day_off);
       return {
         iso,
         date,
         label: WEEKDAY_LONG[i],
-        kind: shift.is_day_off ? ("off" as const) : ("shift" as const),
-        start: shift.start_time,
-        end: shift.end_time,
-        reason: shift.same_day_edit_reason,
-        hours: shift.is_day_off ? 0 : shiftHours(shift.start_time, shift.end_time),
+        // A day is only "off" when EVERY published row says so — a working
+        // shift alongside a stray day-off row still means they're in.
+        kind: working.length === 0 ? ("off" as const) : ("shift" as const),
+        shifts: working,
+        reason: dayShifts.map((s) => s.same_day_edit_reason).find(Boolean) ?? null,
+        hours: working.reduce((sum, s) => sum + shiftHours(s.start_time, s.end_time), 0),
       };
     }
     const tmpl = tmplByWeekday.get(i);
@@ -142,7 +154,12 @@ function WeekBlock({
                   <span className="text-danger">Day Off</span>
                 ) : d.kind === "shift" ? (
                   <>
-                    {formatShiftRange(false, d.start, d.end)}
+                    {d.shifts.map((s, idx) => (
+                      <span key={s.id}>
+                        {idx > 0 && ", "}
+                        {formatShiftRange(false, s.start_time, s.end_time)}
+                      </span>
+                    ))}
                     {d.reason && (
                       <span className="block text-[10px] text-warning mt-0.5">
                         {d.reason}

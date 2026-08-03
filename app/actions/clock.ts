@@ -81,6 +81,42 @@ async function verifyGeofence(
   return verifyGeofenceAtStore(createServerSupabase(), storeId, lat, lng, accuracy, logCtx);
 }
 
+type ClockInShiftCandidate = { id: string; is_day_off: boolean; start_time: string | null };
+
+/**
+ * Find the rota shift a clock-in should attach to. A day can now hold several
+ * booked shifts (migration 032 dropped the one-per-day constraint), so this
+ * can no longer be a `.maybeSingle()` lookup — that throws the moment a
+ * second shift exists for the day, which would break clock-in outright for
+ * anyone with a split shift booked.
+ *
+ * Picks, in order:
+ *   1. A shift still needing conversion (day off / no start time) — the
+ *      "clocked in without a real booking yet" case `applyAutoShiftForClockIn`
+ *      exists to handle, unchanged from before.
+ *   2. Otherwise the EARLIEST booked shift by start time, so a fresh clock-in
+ *      links to the first of the day's real shifts. Which one it lands on
+ *      barely matters functionally: `stampAutoShiftWindow` only ever touches a
+ *      shift carrying AUTO_SHIFT_NOTE, so a real manager-booked shift (this
+ *      case) is never rewritten regardless of which one gets linked here.
+ */
+async function findShiftForClockIn(
+  supabase: ReturnType<typeof createServerSupabase>,
+  employeeId: string,
+  date: string,
+): Promise<ClockInShiftCandidate | null> {
+  const { data } = await supabase
+    .from("rota_shifts")
+    .select("id, is_day_off, start_time")
+    .eq("employee_id", employeeId)
+    .eq("shift_date", date)
+    .order("start_time", { ascending: true, nullsFirst: true });
+  const rows = (data ?? []) as ClockInShiftCandidate[];
+  if (rows.length === 0) return null;
+  if (rows.length === 1) return rows[0];
+  return rows.find((s) => s.is_day_off || !s.start_time) ?? rows[0];
+}
+
 /**
  * Reflect a clock-in on the rota so the employee shows as present that day.
  * Two cases need a system-managed shift:
@@ -324,12 +360,7 @@ async function performClockIn(input: {
   // staff can clock in whenever they're on-site, with or without a shift on the
   // rota (covering a colleague, picking up an extra shift, etc.). A scheduled
   // shift simply gets attached so the Live board can compare planned vs actual.
-  const { data: shift } = await supabase
-    .from("rota_shifts")
-    .select("id, is_day_off, start_time")
-    .eq("employee_id", employee.id)
-    .eq("shift_date", today)
-    .maybeSingle();
+  const shift = await findShiftForClockIn(supabase, employee.id, today);
 
   const { data: existing } = await supabase
     .from("clock_events")
@@ -926,12 +957,7 @@ async function performManualClockEntry(input: ManualClockEntryInput) {
     );
   }
 
-  const { data: shift } = await supabase
-    .from("rota_shifts")
-    .select("id, is_day_off, start_time")
-    .eq("employee_id", employee.id)
-    .eq("shift_date", input.event_date)
-    .maybeSingle();
+  const shift = await findShiftForClockIn(supabase, employee.id, input.event_date);
 
   // The rota cell starts when the day's EARLIEST shift did — by clock time, not
   // by which shift was recorded first. A manager filling in a forgotten morning

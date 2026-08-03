@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
 import { writeAudit } from "./audit";
-import { shiftHours, todayISO } from "@/lib/utils";
+import { shiftHours, shiftRangesOverlap, todayISO } from "@/lib/utils";
 import { presetTimes, DEFAULT_SETTINGS } from "@/lib/settings";
 import { hasRole, resolveActiveStoreId, type ShiftPreset } from "@/lib/types";
 
@@ -29,7 +29,16 @@ export type RotaShiftInput = {
   same_day_edit_reason?: string | null;
 };
 
-/** Upsert a shift cell. Computes scheduled hours. */
+/**
+ * Upsert a shift. A day can now hold several — `input.id` is the ONLY signal
+ * for which case this is:
+ *   - id given    -> update that exact shift (fetched by id, never by day).
+ *   - id omitted  -> always INSERT a new shift for this employee+date, even
+ *                    if the day already has one or more. This is what lets a
+ *                    manager add a second (or third) shift to an already
+ *                    booked day — the old code looked up "the" shift for the
+ *                    day and would silently overwrite it instead.
+ */
 export async function upsertShift(input: RotaShiftInput) {
   const user = await requireAllowed();
   const supabase = createServerSupabase();
@@ -96,16 +105,40 @@ export async function upsertShift(input: RotaShiftInput) {
   }
   const hours = isDayOff ? 0 : shiftHours(start, end);
 
+  // A working shift can't overlap another one already booked for this
+  // employee on this day — a day can hold several now, but back-to-back only,
+  // never coinciding (e.g. 16:00–22:00 and 17:00–21:00 booked together makes
+  // no sense and would double-count hours in the Wages/Rota totals, which sum
+  // every shift on the day).
+  if (!isDayOff) {
+    const { data: siblings } = await supabase
+      .from("rota_shifts")
+      .select("id, start_time, end_time, is_day_off")
+      .eq("employee_id", input.employee_id)
+      .eq("shift_date", input.shift_date);
+    const overlap = (siblings ?? []).find(
+      (s) =>
+        s.id !== input.id &&
+        !s.is_day_off &&
+        shiftRangesOverlap(start, end, s.start_time?.slice(0, 5) ?? null, s.end_time?.slice(0, 5) ?? null),
+    );
+    if (overlap) {
+      throw new Error(
+        `That overlaps a shift already booked ${overlap.start_time?.slice(0, 5)}–${overlap.end_time?.slice(0, 5)} this day. Times must not coincide.`,
+      );
+    }
+  }
+
   // Same-day edits require a reason.
   const isSameDay = input.shift_date === todayISO();
 
-  // Find existing first to detect mid-day changes
-  const { data: existing } = await supabase
-    .from("rota_shifts")
-    .select("*")
-    .eq("employee_id", input.employee_id)
-    .eq("shift_date", input.shift_date)
-    .maybeSingle();
+  // Fetch the exact row being edited, by id — NEVER by day, since the day can
+  // now hold several. No id means this is a brand-new shift for the day
+  // (including a second/third one), so there is nothing to compare against
+  // and no rewrite to justify.
+  const { data: existing } = input.id
+    ? await supabase.from("rota_shifts").select("*").eq("id", input.id).maybeSingle()
+    : { data: null };
 
   const changed =
     !existing ||
@@ -117,6 +150,13 @@ export async function upsertShift(input: RotaShiftInput) {
     throw new Error(
       "Same-day shift edits require a reason (e.g. 'Left early – family emergency').",
     );
+  }
+
+  // A manager may only edit a shift that actually belongs to the day/employee
+  // named in the request — guards against a stale `id` from a race (e.g. the
+  // shift was deleted in another tab) silently editing the wrong row.
+  if (existing && (existing.employee_id !== input.employee_id || existing.shift_date !== input.shift_date)) {
+    throw new Error("That shift no longer matches this employee/date. Refresh and try again.");
   }
 
   const payload = {

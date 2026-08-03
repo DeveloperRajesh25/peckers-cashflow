@@ -128,6 +128,9 @@ export function RotaView({
     date: string;
     existing: RotaShift | null;
     prefill: { start: string; end: string } | null;
+    /** Every shift already booked for this employee+date at this store — lets
+     *  the modal show them and offer "add another" alongside editing `existing`. */
+    dayShifts: RotaShift[];
   } | null>(null);
   const [editingDelivery, setEditingDelivery] = React.useState<{
     driver: Employee;
@@ -211,10 +214,19 @@ export function RotaView({
     [employees, activeStoreId, visitorIds, addedVisitorIds],
   );
 
-  // Index shifts: key = `${employee_id}:${shift_date}`
+  // Index shifts: key = `${employee_id}:${shift_date}`. A day can hold several
+  // shifts now (split days), so every date buckets to a LIST, not one cell.
   const shiftByKey = React.useMemo(() => {
-    const m = new Map<string, RotaShift>();
-    for (const s of shifts) m.set(`${s.employee_id}:${s.shift_date}`, s);
+    const m = new Map<string, RotaShift[]>();
+    for (const s of shifts) {
+      const key = `${s.employee_id}:${s.shift_date}`;
+      const arr = m.get(key) ?? [];
+      arr.push(s);
+      m.set(key, arr);
+    }
+    for (const arr of m.values()) {
+      arr.sort((a, b) => (a.start_time ?? "").localeCompare(b.start_time ?? ""));
+    }
     return m;
   }, [shifts]);
 
@@ -480,11 +492,18 @@ export function RotaView({
 
   // Hours scheduled AT THE ACTIVE STORE only (a shift can now sit at another
   // store on any given day — those belong to that store's rota, not this one).
+  // A day can hold several shifts, so every one of them counts, not just the
+  // first.
   function weekTotalHours(empId: string): number {
     return weekDays.reduce((sum, d) => {
-      const s = shiftByKey.get(`${empId}:${toISODate(d)}`);
-      if (!s || s.is_day_off || s.store_id !== activeStoreId) return sum;
-      return sum + Number(s.scheduled_hours ?? 0);
+      const dayShifts = shiftByKey.get(`${empId}:${toISODate(d)}`) ?? [];
+      return (
+        sum +
+        dayShifts.reduce((s, sh) => {
+          if (sh.is_day_off || sh.store_id !== activeStoreId) return s;
+          return s + Number(sh.scheduled_hours ?? 0);
+        }, 0)
+      );
     }, 0);
   }
 
@@ -493,10 +512,12 @@ export function RotaView({
   function hoursByWeek(empId: string): number[] {
     const byWeek = new Map<string, number>();
     for (const d of weekDays) {
-      const s = shiftByKey.get(`${empId}:${toISODate(d)}`);
-      if (!s || s.is_day_off || s.store_id !== activeStoreId) continue;
+      const dayShifts = shiftByKey.get(`${empId}:${toISODate(d)}`) ?? [];
       const wk = toISODate(startOfISOWeek(d));
-      byWeek.set(wk, (byWeek.get(wk) ?? 0) + Number(s.scheduled_hours ?? 0));
+      for (const s of dayShifts) {
+        if (s.is_day_off || s.store_id !== activeStoreId) continue;
+        byWeek.set(wk, (byWeek.get(wk) ?? 0) + Number(s.scheduled_hours ?? 0));
+      }
     }
     return Array.from(byWeek.values());
   }
@@ -977,12 +998,18 @@ export function RotaView({
                     </td>
                     {weekDays.map((d) => {
                       const dateIso = toISODate(d);
-                      const rawCell = shiftByKey.get(`${emp.id}:${dateIso}`);
+                      const dayAll = shiftByKey.get(`${emp.id}:${dateIso}`) ?? [];
+                      // A day can now hold several shifts; split them by which
+                      // store they belong to (a shift can sit at another store).
+                      const localShifts = dayAll.filter((s) => s.store_id === activeStoreId);
+                      const awayShifts = dayAll.filter((s) => s.store_id !== activeStoreId);
                       const isToday = dateIso === todayISO();
-                      // Scheduled at ANOTHER store this day — read-only here, so a
-                      // home manager can see where their staff are covering.
-                      if (rawCell && rawCell.store_id !== activeStoreId) {
-                        const awayStore = storeById.get(rawCell.store_id);
+                      // Scheduled at ANOTHER store this day (and nothing here) —
+                      // read-only, so a home manager can see where their staff are
+                      // covering. If they ALSO have a shift here, the local cell
+                      // below takes priority and the away shift is not shown.
+                      if (localShifts.length === 0 && awayShifts.length > 0) {
+                        const awayStore = storeById.get(awayShifts[0].store_id);
                         return (
                           <td
                             key={dateIso}
@@ -992,22 +1019,29 @@ export function RotaView({
                             }
                           >
                             <div
-                              className="w-full h-12 rounded-lg text-[11px] border border-dashed border-gold/40 bg-gold/5 text-gold flex flex-col items-center justify-center px-1"
+                              className="w-full min-h-12 h-auto py-1 rounded-lg text-[11px] border border-dashed border-gold/40 bg-gold/5 text-gold flex flex-col items-center justify-center px-1"
                               title={`Working at ${awayStore?.name ?? "another store"} this day`}
                             >
                               <span className="font-medium truncate max-w-full">
                                 @ {awayStore?.name?.split(" ")[0] ?? "Away"}
                               </span>
-                              {!rawCell.is_day_off && rawCell.start_time && (
-                                <span className="opacity-80 truncate max-w-full">
-                                  {formatShiftRange(false, rawCell.start_time, rawCell.end_time)}
-                                </span>
+                              {awayShifts.map(
+                                (s) =>
+                                  !s.is_day_off &&
+                                  s.start_time && (
+                                    <span key={s.id} className="opacity-80 truncate max-w-full">
+                                      {formatShiftRange(false, s.start_time, s.end_time)}
+                                    </span>
+                                  ),
                               )}
                             </div>
                           </td>
                         );
                       }
-                      const cell = rawCell;
+                      // Kept for the ghost/ prefill logic below, which only cares
+                      // about "is there at least one shift already" — the cell
+                      // itself renders every one of `localShifts`, not just this.
+                      const cell = localShifts[0] ?? null;
                       const clk = clockByKey.get(`${emp.id}:${dateIso}`);
                       // Past days are read-only — managers & admins can view but
                       // not edit yesterday or earlier; only today onwards.
@@ -1021,10 +1055,10 @@ export function RotaView({
                         !cell && tmpl && tmpl.is_working && tmpl.start_time
                           ? `${tmpl.start_time.slice(0, 5)}–${(tmpl.end_time ?? "").slice(0, 5)}`
                           : null;
-                      // Previous day's shift — used to pre-fill a new shift.
-                      const prevShift = shiftByKey.get(
-                        `${emp.id}:${toISODate(addDays(d, -1))}`,
-                      );
+                      // Previous day's FIRST shift — used to pre-fill a new shift.
+                      const prevShift = (
+                        shiftByKey.get(`${emp.id}:${toISODate(addDays(d, -1))}`) ?? []
+                      )[0];
                       const prefill =
                         !cell && prevShift && !prevShift.is_day_off && prevShift.start_time
                           ? {
@@ -1036,19 +1070,19 @@ export function RotaView({
                       const showGhost = ghost && !isPast;
                       const cellInner = (
                         <>
-                          {cell ? (
-                            <>
-                              {formatShiftRange(
-                                cell.is_day_off,
-                                cell.start_time,
-                                cell.end_time,
-                              )}
-                              {!cell.is_day_off && cell.shift_type && (
-                                <span className="block text-[9px] uppercase tracking-wide opacity-70">
-                                  {presetShort(cell.shift_type)}
-                                </span>
-                              )}
-                            </>
+                          {localShifts.length > 0 ? (
+                            <div className="flex flex-col gap-1">
+                              {localShifts.map((s) => (
+                                <div key={s.id}>
+                                  {formatShiftRange(s.is_day_off, s.start_time, s.end_time)}
+                                  {!s.is_day_off && s.shift_type && (
+                                    <span className="block text-[9px] uppercase tracking-wide opacity-70">
+                                      {presetShort(s.shift_type)}
+                                    </span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
                           ) : showGhost ? (
                             <span className="opacity-60">
                               {ghost}
@@ -1104,7 +1138,7 @@ export function RotaView({
                           {isPast ? (
                             <div
                               className={
-                                "w-full h-12 rounded-lg text-xs border flex flex-col items-center justify-center cursor-default opacity-70 " +
+                                "w-full min-h-12 h-auto py-1 rounded-lg text-xs border flex flex-col items-center justify-center cursor-default opacity-70 " +
                                 (cell?.is_day_off
                                   ? "bg-danger/5 border-danger/20 text-danger"
                                   : cell?.start_time
@@ -1127,10 +1161,11 @@ export function RotaView({
                                   date: dateIso,
                                   existing: cell ?? null,
                                   prefill,
+                                  dayShifts: localShifts,
                                 })
                               }
                               className={
-                                "w-full h-12 rounded-lg text-xs border transition-colors " +
+                                "w-full min-h-12 h-auto py-1 rounded-lg text-xs border transition-colors " +
                                 (cell?.is_day_off
                                   ? "bg-danger/10 border-danger/30 text-danger"
                                   : cell?.start_time
@@ -1142,9 +1177,11 @@ export function RotaView({
                               title={
                                 cell?.same_day_edit_reason
                                   ? `Reason: ${cell.same_day_edit_reason}`
-                                  : ghost
-                                    ? "Default from recurring schedule — click to add this shift"
-                                    : undefined
+                                  : localShifts.length > 1
+                                    ? `${localShifts.length} shifts — click to manage`
+                                    : ghost
+                                      ? "Default from recurring schedule — click to add this shift"
+                                      : undefined
                               }
                             >
                               {cellInner}
@@ -1459,6 +1496,7 @@ export function RotaView({
           storeId={activeStoreId}
           shiftDate={editingShift.date}
           existing={editingShift.existing}
+          dayShifts={editingShift.dayShifts}
           shiftTimes={activeStore?.shift_times ?? shiftTimes}
           prefill={editingShift.prefill}
           onClose={() => setEditingShift(null)}

@@ -327,9 +327,40 @@ export async function autoCloseOpenClocks(
         is_day_off: boolean;
         manager_notes: string | null;
       };
-      const rotaByKey = new Map<string, RotaRow>();
+      // A day can now hold several booked shifts (migration 032), so this must
+      // keep every row per employee+date, not just the last one seen — a plain
+      // Map.set on collision used to silently discard all but one shift, and
+      // the sweep would then resolve a split day's forgotten clock-out against
+      // whichever shift happened to survive, ignoring the one the open session
+      // actually belongs to.
+      const rotaByKey = new Map<string, RotaRow[]>();
       for (const r of (rotaRes.data ?? []) as RotaRow[]) {
-        rotaByKey.set(`${r.employee_id}:${r.shift_date}`, r);
+        const key = `${r.employee_id}:${r.shift_date}`;
+        const arr = rotaByKey.get(key) ?? [];
+        arr.push(r);
+        rotaByKey.set(key, arr);
+      }
+
+      /**
+       * Pick the booked shift a still-open SESSION belongs to: the working shift
+       * whose start is latest but not after the session's clock-in, i.e. the one
+       * that was current when the person clocked in. Falls back to the earliest
+       * shift if the clock-in landed before every booked start (e.g. they showed
+       * up early). Day-off rows are never picked here — the caller already
+       * discards a day-off `rota` via `!rota.is_day_off` at the call site, but
+       * filtering here too keeps a single-shift day's existing behaviour exact.
+       */
+      function pickRotaForSession(rows: RotaRow[], clockInAt: string): RotaRow | undefined {
+        const working = rows.filter((r) => !r.is_day_off && r.start_time);
+        if (working.length <= 1) return working[0];
+        const clockInParts = londonParts(new Date(clockInAt));
+        const clockInMin = clockInParts.hour * 60 + clockInParts.minute;
+        const startMin = (r: RotaRow) => timeToMinutes(r.start_time);
+        const notAfter = working
+          .filter((r) => startMin(r) <= clockInMin)
+          .sort((a, b) => startMin(b) - startMin(a));
+        if (notAfter.length) return notAfter[0];
+        return [...working].sort((a, b) => startMin(a) - startMin(b))[0];
       }
       const tmplByKey = new Map<string, { start_time: string | null; end_time: string | null }>();
       for (const s of (schedRes.data ?? []) as Array<{
@@ -353,7 +384,10 @@ export async function autoCloseOpenClocks(
           (await adoptHeaderIntoSession(admin, row));
         if (!session || session.clock_event_id !== row.id) continue;
 
-        const rota = rotaByKey.get(`${row.employee_id}:${row.event_date}`);
+        const rota = pickRotaForSession(
+          rotaByKey.get(`${row.employee_id}:${row.event_date}`) ?? [],
+          session.clock_in_at,
+        );
         const tmpl = tmplByKey.get(
           `${row.employee_id}:${weekdayIndex(parseISODate(row.event_date))}`,
         );

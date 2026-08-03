@@ -172,24 +172,28 @@ export function CrewClockApp({
     )
     .join(", ");
 
-  // Effective shift for a date: published rota row first, else the employee's
-  // recurring schedule template for that weekday.
+  // Effective shift(s) for a date: published rota rows first (a day can hold
+  // several — split shifts), else the employee's recurring schedule template
+  // for that weekday.
   function effFor(dateIso: string, weekdayIdx: number) {
-    const real = weekShifts.find((s) => s.shift_date === dateIso);
-    if (real)
+    const real = weekShifts.filter((s) => s.shift_date === dateIso);
+    if (real.length > 0) {
+      const working = real.filter((s) => !s.is_day_off);
       return {
-        is_day_off: real.is_day_off,
-        start: real.start_time,
-        end: real.end_time,
-        reason: real.same_day_edit_reason,
+        is_day_off: working.length === 0,
+        // "09:00–13:00, 17:00–21:00" when the day has more than one shift.
+        label: working
+          .map((s) => formatShiftRange(false, s.start_time, s.end_time))
+          .join(", "),
+        reason: real.map((s) => s.same_day_edit_reason).find(Boolean) ?? null,
         fromTemplate: false,
       };
+    }
     const tmpl = scheduleByWeekday.get(weekdayIdx);
     if (tmpl && tmpl.is_working && tmpl.start_time)
       return {
         is_day_off: false,
-        start: tmpl.start_time,
-        end: tmpl.end_time,
+        label: formatShiftRange(false, tmpl.start_time, tmpl.end_time),
         reason: null,
         fromTemplate: true,
       };
@@ -408,7 +412,7 @@ export function CrewClockApp({
               {todayEff
                 ? todayEff.is_day_off
                   ? "Marked as Day Off — clock in only if you're covering."
-                  : `Scheduled ${formatShiftRange(false, todayEff.start, todayEff.end)}${todayEff.fromTemplate ? " (your default schedule)" : ""}`
+                  : `Scheduled ${todayEff.label}${todayEff.fromTemplate ? " (your default schedule)" : ""}`
                 : "No shift scheduled today. You can still clock in if you're working."}
             </CardDescription>
           </div>
@@ -712,7 +716,7 @@ export function CrewClockApp({
                     ? eff.is_day_off
                       ? <span className="text-danger">Day Off</span>
                       : <>
-                          {formatShiftRange(false, eff.start, eff.end)}
+                          {eff.label}
                           {eff.reason && (
                             <span className="block text-[10px] text-warning mt-0.5">
                               {eff.reason}
