@@ -207,6 +207,21 @@ function PanelHeader({
   );
 }
 
+/**
+ * A week's drops, spelled out. The miscellaneous drops are listed separately
+ * rather than folded into the short/long counts — they are a different thing to
+ * the driver (an extra drop beyond the round) even though they pay the same
+ * per-type rate, and the totals below break them out the same way.
+ */
+function dropBreakdown(t: Totals) {
+  const parts: string[] = [];
+  if (t.sd > 0) parts.push(`${t.sd} short`);
+  if (t.ld > 0) parts.push(`${t.ld} long`);
+  if (t.sm > 0) parts.push(`${t.sm} misc short`);
+  if (t.lm > 0) parts.push(`${t.lm} misc long`);
+  return parts.join(" · ");
+}
+
 /** A period's detail line: hours, and drops for a driver. Kept short — it sits
  *  under a value in a half-width card on a phone. */
 function periodSummary(t: Totals, isDriver: boolean) {
@@ -428,11 +443,7 @@ export function EmployeeAnalyticsView({
               <Row
                 key={w.key}
                 label={`Week of ${w.label}`}
-                sub={
-                  w.deliveries > 0
-                    ? `${w.sd + w.sm} short · ${w.ld + w.lm} long`
-                    : "No deliveries"
-                }
+                sub={w.deliveries > 0 ? dropBreakdown(w) : "No deliveries"}
                 value={showMoney ? formatGBP(w.deliveryPay) : `${w.deliveries} drops`}
                 strong={w.isCurrent}
               />
@@ -442,6 +453,10 @@ export function EmployeeAnalyticsView({
             <p className="text-[11px] uppercase tracking-[0.12em] text-text-muted mb-1">
               Totals for {data.deliveryRange.label}
             </p>
+            {/* All four types are listed even at zero. A driver checking a
+                quiet week needs to see that misc drops were counted and came to
+                nothing — a missing row reads as "not counted", which is exactly
+                the doubt this panel exists to remove. */}
             <Row
               label="Short deliveries"
               sub={`${data.deliveryTotal.sd} at ${formatGBP(rates.shortRate)} each`}
@@ -452,23 +467,19 @@ export function EmployeeAnalyticsView({
               sub={`${data.deliveryTotal.ld} at ${formatGBP(rates.longRate)} each`}
               value={formatGBP(data.deliveryTotal.ld * rates.longRate)}
             />
-            {data.deliveryTotal.sm > 0 && (
-              <Row
-                label="Extra short drops"
-                sub={`${data.deliveryTotal.sm} at ${formatGBP(rates.shortRate)} each`}
-                value={formatGBP(data.deliveryTotal.sm * rates.shortRate)}
-              />
-            )}
-            {data.deliveryTotal.lm > 0 && (
-              <Row
-                label="Extra long drops"
-                sub={`${data.deliveryTotal.lm} at ${formatGBP(rates.longRate)} each`}
-                value={formatGBP(data.deliveryTotal.lm * rates.longRate)}
-              />
-            )}
+            <Row
+              label="Miscellaneous short"
+              sub={`${data.deliveryTotal.sm} at ${formatGBP(rates.shortRate)} each`}
+              value={formatGBP(data.deliveryTotal.sm * rates.shortRate)}
+            />
+            <Row
+              label="Miscellaneous long"
+              sub={`${data.deliveryTotal.lm} at ${formatGBP(rates.longRate)} each`}
+              value={formatGBP(data.deliveryTotal.lm * rates.longRate)}
+            />
             <Row
               label="Delivery pay"
-              sub={`${data.deliveryTotal.deliveries} drop${data.deliveryTotal.deliveries === 1 ? "" : "s"}`}
+              sub={dropBreakdown(data.deliveryTotal) || "No deliveries"}
               value={formatGBP(data.deliveryTotal.deliveryPay)}
               strong
             />
