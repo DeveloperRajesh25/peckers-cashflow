@@ -8,6 +8,7 @@ import {
   WEEKDAY_LONG,
   addDays,
   formatDDMMYYYY,
+  formatHoursMins,
   formatShiftRange,
   parseISODate,
   shiftHours,
@@ -130,7 +131,7 @@ function WeekBlock({
     <Card className="p-0 overflow-hidden">
       <CardHeader className="px-5 pt-5 flex-row items-center justify-between">
         <CardTitle>{weekLabel(weekStart)}</CardTitle>
-        <Badge variant="gold">{total.toFixed(1)}h</Badge>
+        <Badge variant="gold">{formatHoursMins(total)}h</Badge>
       </CardHeader>
       <div className="border-t border-border">
         {days.map((d) => {

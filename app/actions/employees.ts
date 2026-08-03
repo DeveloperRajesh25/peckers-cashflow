@@ -8,6 +8,7 @@ import { writeAudit } from "./audit";
 import {
   addDays,
   dayWorkedHours,
+  formatHoursMins,
   parseISODate,
   startOfISOWeek,
   toISODate,
@@ -449,7 +450,7 @@ export async function approveClockedHours(input: {
     total_hours_worked: totalHours,
     hourly_rate_snapshot: rate,
     notes: wasAdjusted
-      ? `Adjusted from clocked ${clockedTotal.toFixed(2)}h by manager`
+      ? `Adjusted from clocked ${formatHoursMins(clockedTotal)}h by manager`
       : null,
     logged_by: user.id,
     source: "clocked" as const,

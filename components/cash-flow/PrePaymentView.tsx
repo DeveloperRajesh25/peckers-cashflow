@@ -18,6 +18,7 @@ import {
 import {
   formatGBP,
   formatDDMMYYYY,
+  formatHoursMins,
   weekLabel,
   parseISODate,
   formatTimeOnly,
@@ -376,7 +377,7 @@ export function PrePaymentView({
                         )}
                       </td>
                       <td className="px-4 py-3 text-text-muted">{l.role ?? "—"}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">{l.cash_hours.toFixed(2)}h</td>
+                      <td className="px-4 py-3 text-right tabular-nums">{formatHoursMins(l.cash_hours)}h</td>
                       <td className="px-4 py-3 text-right tabular-nums">{formatGBP(l.cash_rate)}</td>
                       <td className="px-4 py-3 text-right tabular-nums">
                         <DeliveryCell line={l} />

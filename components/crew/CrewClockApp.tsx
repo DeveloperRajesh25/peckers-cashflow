@@ -13,6 +13,7 @@ import {
   addDays,
   clockedHours,
   formatDDMMYYYY,
+  formatHoursMins,
   formatShiftRange,
   formatTimeOnly,
   haversineMeters,
@@ -480,11 +481,11 @@ export function CrewClockApp({
                       : "Shift complete for today"}
                   </span>
                   <span className="text-base font-semibold tabular-nums">
-                    {todayWorkedHours.toFixed(2)}h
+                    {formatHoursMins(todayWorkedHours)}h
                   </span>
                 </div>
                 <p className="text-xs mt-1 text-success/80">
-                  You worked {todayWorkedHours.toFixed(2)}h
+                  You worked {formatHoursMins(todayWorkedHours)}h
                   {clockedStore ? ` at ${clockedStore.name}` : ""} —{" "}
                   {todayShiftLabel ||
                     `clocked in ${formatTimeOnly(todayClock?.clock_in_at)} · clocked out ${formatTimeOnly(todayClock?.clock_out_at)}`}
@@ -675,7 +676,7 @@ export function CrewClockApp({
                 Worked this week
               </div>
               <div className="text-lg font-semibold text-gold tabular-nums">
-                {weekWorkedHours.toFixed(2)}h
+                {formatHoursMins(weekWorkedHours)}h
               </div>
             </div>
           }
@@ -745,7 +746,7 @@ export function CrewClockApp({
                           : `${formatTimeOnly(clk.clock_in_at)}–${clk.clock_out_at ? formatTimeOnly(clk.clock_out_at) : "now"}`}
                       </span>{" "}
                       {worked > 0 && (
-                        <span className="text-success font-medium">{worked.toFixed(2)}h</span>
+                        <span className="text-success font-medium">{formatHoursMins(worked)}h</span>
                       )}
                       {daySessions.length > 1 && (
                         <span className="text-text-muted"> · {daySessions.length} shifts</span>

@@ -10,7 +10,7 @@ import { Input, Select } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { DownloadIcon, PlusIcon, TrashIcon } from "@/components/ui/icons";
 import { addManualNiRecord, deleteManualNiRecord } from "@/app/actions/ni";
-import { downloadCSV, formatGBP, formatGBPPlain, toCSV } from "@/lib/utils";
+import { downloadCSV, formatGBP, formatGBPPlain, formatHoursMins, toCSV } from "@/lib/utils";
 
 export type NiRow = {
   /** Present only for persisted manual rows (the manual_ni_records id). */
@@ -256,7 +256,7 @@ export function NiMonthlyView({
                           )}
                         </td>
                         <td className="px-4 py-2.5 text-right tabular-nums">
-                          {e.ni_hours.toFixed(1)}h
+                          {formatHoursMins(e.ni_hours)}h
                         </td>
                         <td className="px-4 py-2.5 text-right tabular-nums">
                           {formatGBP(e.ni_wages)}
@@ -281,7 +281,7 @@ export function NiMonthlyView({
                     <tr className="border-t-2 border-border bg-bg/60 font-semibold">
                       <td className="px-4 py-2.5">Total</td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
-                        {hoursTotal.toFixed(1)}h
+                        {formatHoursMins(hoursTotal)}h
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums text-gold">
                         {formatGBP(niTotal)}

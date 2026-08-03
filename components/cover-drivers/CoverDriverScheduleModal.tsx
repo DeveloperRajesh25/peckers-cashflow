@@ -10,7 +10,7 @@ import {
   saveCoverDriverSchedule,
   type CoverDriverScheduleInput,
 } from "@/app/actions/cover-driver-schedule";
-import { WEEKDAY_LONG, shiftHours } from "@/lib/utils";
+import { WEEKDAY_LONG, formatHoursMins, shiftHours } from "@/lib/utils";
 import type { CoverDriver } from "@/lib/types";
 
 type DayState = { is_working: boolean; start_time: string; end_time: string };
@@ -158,7 +158,7 @@ export function CoverDriverScheduleModal({
           <p className="text-xs text-text-muted mt-1">
             Total available:{" "}
             <span className="text-text-primary font-medium">
-              {totalHours.toFixed(1)}h/week
+              {formatHoursMins(totalHours)}h/week
             </span>
           </p>
         </div>

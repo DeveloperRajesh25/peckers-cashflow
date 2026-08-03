@@ -11,6 +11,7 @@ import { managerClockIn, managerClockOut } from "@/app/actions/manager-clock";
 import { switchStore } from "@/app/actions/store-switch";
 import { getBestPosition, isPermissionDenied } from "@/lib/geolocation";
 import {
+  formatHoursMins,
   formatTimeOnly,
   haversineMeters,
   isWithinGeofence,
@@ -274,7 +275,7 @@ export function ManagerClockCard({
                     : "Shift logged for today"}
                 </span>
                 <span className="text-base font-semibold tabular-nums">
-                  {workedToday.toFixed(2)}h
+                  {formatHoursMins(workedToday)}h
                 </span>
               </div>
               {sessions.length > 0 ? (

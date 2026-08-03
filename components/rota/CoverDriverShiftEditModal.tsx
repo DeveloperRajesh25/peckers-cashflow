@@ -9,7 +9,7 @@ import {
   upsertCoverDriverShift,
   deleteCoverDriverShift,
 } from "@/app/actions/cover-driver-rota";
-import { formatDDMMYYYY, formatGBP, shiftHours } from "@/lib/utils";
+import { formatDDMMYYYY, formatGBP, formatHoursMins, shiftHours } from "@/lib/utils";
 import type { CoverDriver, CoverDriverShift } from "@/lib/types";
 
 type Props = {
@@ -166,7 +166,7 @@ export function CoverDriverShiftEditModal({
         {calculated > 0 && (
           <p className="text-xs text-text-muted">
             Scheduled hours:{" "}
-            <span className="text-text-primary font-medium">{calculated.toFixed(2)}h</span>
+            <span className="text-text-primary font-medium">{formatHoursMins(calculated)}h</span>
             {" · "}approx{" "}
             <span className="text-text-primary font-medium">
               {formatGBP(calculated * Number(driver.hourly_cash_rate ?? 0))}

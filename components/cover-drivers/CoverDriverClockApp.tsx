@@ -20,6 +20,7 @@ import {
   clockedHours,
   formatDDMMYYYY,
   formatGBP,
+  formatHoursMins,
   formatTimeOnly,
   haversineMeters,
   isWithinGeofence,
@@ -367,11 +368,11 @@ export function CoverDriverClockApp({
                     <ClockIcon size={16} /> Shift complete for today
                   </span>
                   <span className="text-base font-semibold tabular-nums">
-                    {todayWorkedHours.toFixed(2)}h
+                    {formatHoursMins(todayWorkedHours)}h
                   </span>
                 </div>
                 <p className="text-xs mt-1 text-success/80">
-                  You worked {todayWorkedHours.toFixed(2)}h
+                  You worked {formatHoursMins(todayWorkedHours)}h
                   {clockedStore ? ` at ${clockedStore.name}` : ""} — clocked in{" "}
                   {formatTimeOnly(todayClock?.clock_in_at)} · clocked out{" "}
                   {formatTimeOnly(todayClock?.clock_out_at)}
@@ -577,7 +578,7 @@ export function CoverDriverClockApp({
                           Worked {formatTimeOnly(clk.clock_in_at)}–
                           {formatTimeOnly(clk.clock_out_at)}
                         </span>{" "}
-                        <span className="text-success font-medium">{worked.toFixed(2)}h</span>
+                        <span className="text-success font-medium">{formatHoursMins(worked)}h</span>
                       </span>
                     ) : (
                       <span className="text-[11px] text-success">

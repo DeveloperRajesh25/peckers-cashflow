@@ -13,7 +13,7 @@ import {
   ChevronRightIcon,
   ClockIcon,
 } from "@/components/ui/icons";
-import { addDays, cn, parseISODate, toISODate } from "@/lib/utils";
+import { addDays, cn, formatHoursMins, parseHoursMinsInput, parseISODate, toISODate } from "@/lib/utils";
 import { ManualClockEntryModal } from "@/components/clock/ManualClockEntryModal";
 import type {
   ClockDailySummary,
@@ -256,13 +256,24 @@ export function DailyHoursApproval({
   }, [stores]);
 
   // Manager-confirmed hours for a row: the edited value if valid, else the value
-  // approved earlier, else the raw clocked total.
+  // approved earlier, else the raw clocked total. The box is typed as H.MM
+  // (minutes, not a decimal fraction — "4.32" means 4h 32m), so it's parsed
+  // with parseHoursMinsInput, not a plain float; the real decimal hours this
+  // resolves to is what still goes to the (unchanged) approval action.
   function effHours(s: ApprovalRow): number {
     const raw = edited[rowKey(s)];
-    const parsed = raw !== undefined ? parseFloat(raw) : NaN;
-    if (raw !== undefined && !isNaN(parsed) && parsed > 0) return parsed;
+    const parsed = raw !== undefined ? parseHoursMinsInput(raw) : null;
+    if (raw !== undefined && parsed !== null && parsed > 0) return parsed;
     if (s.approved_hours != null) return s.approved_hours;
     return s.clocked_hours;
+  }
+
+  /** True when the manager has typed something in the hours box that isn't a
+   *  valid H.MM value (e.g. minutes above 59) — used to flag the box rather
+   *  than silently falling back to the clocked hours with no explanation. */
+  function invalidHoursEdit(s: ApprovalRow): boolean {
+    const raw = edited[rowKey(s)];
+    return raw !== undefined && raw.trim() !== "" && parseHoursMinsInput(raw) === null;
   }
 
   type DeliveryField = "short" | "long" | "extraShort" | "extraLong";
@@ -455,8 +466,8 @@ export function DailyHoursApproval({
       }
       toast.success(
         deliveries
-          ? `Approved ${s.name} — ${eff.toFixed(2)}h, ${short + long + extraShort + extraLong} deliveries`
-          : `Approved ${s.name} — ${eff.toFixed(2)}h`,
+          ? `Approved ${s.name} — ${formatHoursMins(eff)}h, ${short + long + extraShort + extraLong} deliveries`
+          : `Approved ${s.name} — ${formatHoursMins(eff)}h`,
       );
       setEdited((p) => {
         const n = { ...p };
@@ -588,7 +599,7 @@ export function DailyHoursApproval({
             )}
           </p>
           <p className="text-xs text-text-muted">
-            {s.auto_clocked_out ? "Assumed" : "Clocked"} {s.clocked_hours.toFixed(2)}h
+            {s.auto_clocked_out ? "Assumed" : "Clocked"} {formatHoursMins(s.clocked_hours)}h
             {store && <> · {store}</>}
             {s.kind === "cover" && <> · cash</>}
           </p>
@@ -603,7 +614,7 @@ export function DailyHoursApproval({
           <div className="flex items-center gap-2">
             <Badge variant="success">
               <CheckIcon size={12} />
-              {(s.approved_hours ?? s.clocked_hours).toFixed(2)}h approved
+              {formatHoursMins(s.approved_hours ?? s.clocked_hours)}h approved
             </Badge>
             {s.is_driver && (
               <span
@@ -622,7 +633,7 @@ export function DailyHoursApproval({
             {adjusted && (
               <span
                 className="text-[11px] text-warning"
-                title={`Adjusted from clocked ${s.clocked_hours.toFixed(2)}h`}
+                title={`Adjusted from clocked ${formatHoursMins(s.clocked_hours)}h`}
               >
                 adj
               </span>
@@ -639,19 +650,29 @@ export function DailyHoursApproval({
           </div>
         ) : (
           <div className="flex items-center gap-2 flex-wrap justify-end">
-            <div className="flex items-center gap-1">
-              <input
-                type="number"
-                step="0.01"
-                min="0"
-                value={edited[key] ?? s.clocked_hours.toFixed(2)}
-                onChange={(e) =>
-                  setEdited((p) => ({ ...p, [key]: e.target.value }))
-                }
-                aria-label={`Hours for ${s.name} on ${longDate(s.event_date)}`}
-                className="w-16 rounded-lg border border-border bg-surface px-2 py-1 text-right text-sm tabular-nums outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/30"
-              />
-              <span className="text-xs text-text-muted">h</span>
+            <div className="flex flex-col items-end gap-0.5">
+              <div className="flex items-center gap-1">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={edited[key] ?? formatHoursMins(s.clocked_hours)}
+                  onChange={(e) =>
+                    setEdited((p) => ({ ...p, [key]: e.target.value }))
+                  }
+                  aria-label={`Hours for ${s.name} on ${longDate(s.event_date)} — enter as hours.minutes, e.g. 4.32 for 4h 32m`}
+                  title="Hours.minutes — e.g. 4.32 means 4h 32m, not 4.32 decimal hours"
+                  className={cn(
+                    "w-16 rounded-lg border bg-surface px-2 py-1 text-right text-sm tabular-nums outline-none focus:ring-2",
+                    invalidHoursEdit(s)
+                      ? "border-danger focus:border-danger focus:ring-danger/30"
+                      : "border-border focus:border-gold/60 focus:ring-gold/30",
+                  )}
+                />
+                <span className="text-xs text-text-muted">h</span>
+              </div>
+              {invalidHoursEdit(s) && (
+                <span className="text-[10px] text-danger">Invalid — use h.mm, e.g. 4.32</span>
+              )}
             </div>
 
             {/* Drivers only — everyone else is paid on hours alone, and empty

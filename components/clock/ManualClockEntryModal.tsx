@@ -10,6 +10,7 @@ import { upsertManualCoverDriverClockEntry } from "@/app/actions/cover-driver-cl
 import {
   addDays,
   formatDDMMYYYY,
+  formatHoursMins,
   londonHHMM,
   londonISODate,
   parseISODate,
@@ -227,7 +228,7 @@ export function ManualClockEntryModal({
 
             {workedHours != null && (
               <p className="text-xs text-text-muted -mt-1">
-                {workedHours.toFixed(2)}h
+                {formatHoursMins(workedHours)}h
                 {overnight
                   ? ` — overnight, finishing ${outTime} on ${formatDDMMYYYY(endDate)}.`
                   : "."}

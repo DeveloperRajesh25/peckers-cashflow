@@ -12,7 +12,7 @@ import {
   approveCoverDriverDay,
   deleteCoverDriverHours,
 } from "@/app/actions/cover-drivers";
-import { formatDDMMYYYY, formatGBP } from "@/lib/utils";
+import { formatDDMMYYYY, formatGBP, formatHoursMins } from "@/lib/utils";
 import { ManualClockEntryModal } from "@/components/clock/ManualClockEntryModal";
 import type {
   CoverDriver,
@@ -241,10 +241,10 @@ export function CoverDriverHoursTable({
                       {formatDDMMYYYY(r.work_date)}
                     </td>
                     <td className="px-3 py-3 text-right tabular-nums">
-                      {r.clocked_hours.toFixed(2)}
+                      {formatHoursMins(r.clocked_hours)}
                     </td>
                     <td className="px-3 py-3 text-right tabular-nums">
-                      {payHours.toFixed(2)}
+                      {formatHoursMins(payHours)}
                     </td>
                     <td className="px-3 py-3 text-right tabular-nums">
                       {r.approved ? (
@@ -269,7 +269,7 @@ export function CoverDriverHoursTable({
                           onClick={() => handleApprove(r)}
                           loading={approvingKey === r.key}
                         >
-                          Approve {r.clocked_hours.toFixed(1)}h
+                          Approve {formatHoursMins(r.clocked_hours)}h
                         </Button>
                       )}
                     </td>

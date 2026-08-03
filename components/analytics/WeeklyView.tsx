@@ -14,6 +14,7 @@ import {
   eachDay,
   endOfISOWeek,
   formatDDMMYYYY,
+  formatHoursMins,
   formatINR,
   isSameDay,
   startOfISOWeek,
@@ -287,10 +288,10 @@ export function WeeklyView({
                     >
                       <td className="px-3 py-3">{p.employee_name}</td>
                       <td className="px-3 py-3 text-right tabular-nums">
-                        {Number(p.total_hours_worked).toFixed(2)}
+                        {formatHoursMins(Number(p.total_hours_worked))}
                       </td>
                       <td className="px-3 py-3 text-right tabular-nums">
-                        {Number(p.cash_hours).toFixed(2)}
+                        {formatHoursMins(Number(p.cash_hours))}
                       </td>
                       <td className="px-3 py-3 text-right tabular-nums font-medium text-gold">
                         {formatINR(Number(p.cash_amount_due))}

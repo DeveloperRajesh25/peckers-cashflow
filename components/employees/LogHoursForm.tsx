@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import { logEmployeeHours } from "@/app/actions/employees";
 import type { Employee, EmployeeHoursComputed } from "@/lib/types";
-import { formatINR, formatGBP, startOfISOWeek, toISODate } from "@/lib/utils";
+import { formatHoursMins, formatINR, formatGBP, parseHoursMinsInput, startOfISOWeek, toISODate } from "@/lib/utils";
 
 const BANK_LIMIT = 20;
 
@@ -37,7 +37,11 @@ export function LogHoursForm({
   }
 
   const employee = employees.find((e) => e.id === empId);
-  const totalHours = parseFloat(hours) || 0;
+  // Typed as H.MM (minutes, not a decimal fraction) — "28.30" means 28h 30m,
+  // matching how it's shown everywhere else. An invalid value (e.g. minutes
+  // above 59) reads as 0 here, same as an unparseable number did before; the
+  // submit-time check below is what actually blocks saving it.
+  const totalHours = parseHoursMinsInput(hours) ?? 0;
   const bankHours = Math.min(totalHours, BANK_LIMIT);
   const cashHours = Math.max(totalHours - BANK_LIMIT, 0);
   const rate = employee ? Number(employee.hourly_ni_rate ?? employee.hourly_rate ?? 0) : 0;
@@ -48,12 +52,14 @@ export function LogHoursForm({
     const errs: typeof errors = {};
     if (!empId) errs.emp = "Pick an employee";
     if (!weekStart) errs.week = "Select a week";
-    // Require a positive number — empty field or 0 is not valid
-    const parsed = parseFloat(hours);
-    if (!hours.trim() || isNaN(parsed) || parsed <= 0)
-      errs.hours = "Enter a positive number of hours";
+    // Require a valid, positive H.MM value — empty, unparseable, an
+    // out-of-range minute count, or 0 are all rejected.
+    const parsed = parseHoursMinsInput(hours);
+    if (!hours.trim() || parsed === null || parsed <= 0)
+      errs.hours = "Enter hours.minutes, e.g. 28.30 for 28h 30m";
     setErrors(errs);
     if (Object.keys(errs).length > 0) return;
+    if (parsed === null) return; // narrows for TS; errs already caught this case
 
     setBusy(true);
     try {
@@ -109,12 +115,10 @@ export function LogHoursForm({
       />
 
       <Input
-        type="number"
+        type="text"
         inputMode="decimal"
-        step="0.25"
-        min="0.25"
-        label="Total Hours This Week"
-        placeholder="e.g. 28.5"
+        label="Total Hours This Week (hours.minutes)"
+        placeholder="e.g. 28.30 for 28h 30m"
         value={hours}
         onChange={(e) => setHours(e.target.value)}
         error={errors.hours}
@@ -132,13 +136,13 @@ export function LogHoursForm({
         <div className="rounded-xl bg-bg border border-border px-4 py-3 flex items-center justify-between">
           <span className="text-xs uppercase tracking-wide text-text-muted">Bank hours</span>
           <span className="text-sm font-semibold">
-            {totalHours > 0 ? bankHours.toFixed(2) : "—"} hrs
+            {totalHours > 0 ? formatHoursMins(bankHours) : "—"} hrs
           </span>
         </div>
         <div className="rounded-xl bg-bg border border-border px-4 py-3 flex items-center justify-between">
           <span className="text-xs uppercase tracking-wide text-text-muted">Cash hours</span>
           <span className="text-sm font-semibold">
-            {totalHours > 0 ? cashHours.toFixed(2) : "—"} hrs
+            {totalHours > 0 ? formatHoursMins(cashHours) : "—"} hrs
           </span>
         </div>
         <div className="rounded-xl bg-gold/10 border border-gold/30 px-4 py-3 flex items-center justify-between">

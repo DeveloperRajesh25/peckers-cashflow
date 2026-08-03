@@ -30,6 +30,7 @@ import {
   WEEKDAY_LONG,
   addDays,
   formatDDMMYYYY,
+  formatHoursMins,
   formatTimeOnly,
   parseISODate,
   resolvedDayHours,
@@ -151,7 +152,7 @@ export function PastWeekHours({
               Total worked
             </div>
             <div className="text-lg font-semibold text-gold tabular-nums">
-              {totalHours.toFixed(2)}h
+              {formatHoursMins(totalHours)}h
             </div>
           </div>
         }
@@ -273,7 +274,7 @@ export function PastWeekHours({
                   <div className="text-sm text-right shrink-0 tabular-nums">
                     {worked ? (
                       <span className="font-semibold text-success">
-                        {d.hours.toFixed(2)}h
+                        {formatHoursMins(d.hours)}h
                       </span>
                     ) : (
                       <span className="text-text-muted">—</span>
@@ -286,7 +287,7 @@ export function PastWeekHours({
 
           <div className="px-5 py-3 border-t border-border bg-surface-hover/50 flex items-center justify-between">
             <span className="text-sm font-medium">Week total</span>
-            <Badge variant="gold">{totalHours.toFixed(2)}h</Badge>
+            <Badge variant="gold">{formatHoursMins(totalHours)}h</Badge>
           </div>
 
           {totalHours === 0 && (

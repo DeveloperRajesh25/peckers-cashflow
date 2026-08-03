@@ -203,6 +203,48 @@ export function minutesToTime(mins: number): string {
   return `${pad(h)}:${pad(m)}`;
 }
 
+/**
+ * Format decimal hours the way a manager reads a clock, not as a fraction:
+ * "H.MM" where MM is the ACTUAL minutes (00–59), always two digits — e.g. a
+ * true 4.5333h (4h 32m) displays as "4.32", never "4.53". This is a display
+ * convention ONLY: every caller still holds and calculates with the real
+ * decimal value; nothing reads this string back into a calculation. Rounds to
+ * the nearest whole minute and carries into the hour (4.999h -> "5.00", never
+ * the invalid "4.60") so it can never render an out-of-range minute count.
+ * Pairs with `parseHoursMinsInput`, the inverse for the few boxes a manager
+ * types an override into.
+ */
+export function formatHoursMins(hours: number | null | undefined): string {
+  const totalMinutes = Math.round((Number(hours) || 0) * 60);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return `${h}.${pad(m)}`;
+}
+
+/**
+ * Inverse of `formatHoursMins`, for the manager-typed hours-override boxes
+ * (Daily Approval, Weekly Log, manual Log Hours). What's typed is read as
+ * H.MM — the digits after the dot are MINUTES, not a decimal fraction, so
+ * "4.32" means 4h 32m, not 4.32 decimal hours. A single trailing digit is
+ * treated as tens of minutes ("4.3" -> 4h 30m), matching how the value is
+ * always shown with two digits. Returns null — never a fallback number — for
+ * anything unparseable or an out-of-range minute count (60–99), since a
+ * silent wrong value would misprice a wage line. The caller still sends a
+ * real decimal hours number to the existing (unchanged) approval/log actions.
+ */
+export function parseHoursMinsInput(text: string): number | null {
+  const trimmed = String(text ?? "").trim();
+  if (!trimmed) return null;
+  const m = /^(\d{1,3})(?:\.(\d{1,2}))?$/.exec(trimmed);
+  if (!m) return null;
+  const hours = Number(m[1]);
+  let minsPart = m[2] ?? "0";
+  if (minsPart.length === 1) minsPart = minsPart + "0";
+  const mins = Number(minsPart);
+  if (mins > 59) return null;
+  return hours + mins / 60;
+}
+
 /** Hours between start & end HH:MM strings (handles overnight). */
 export function shiftHours(start: string | null, end: string | null): number {
   if (!start || !end) return 0;

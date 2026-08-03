@@ -6,7 +6,7 @@ import { Input, Textarea } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import { upsertShift, deleteShift } from "@/app/actions/rota";
-import { formatDDMMYYYY, formatShiftRange, shiftHours, shiftRangesOverlap, todayISO } from "@/lib/utils";
+import { formatDDMMYYYY, formatHoursMins, formatShiftRange, shiftHours, shiftRangesOverlap, todayISO } from "@/lib/utils";
 import { presetTimes, type ShiftTimeSettings } from "@/lib/settings";
 import { hasRole, type Employee, type RotaShift, type ShiftPreset } from "@/lib/types";
 
@@ -327,7 +327,7 @@ function ShiftForm({
       {calculated > 0 && (
         <p className="text-xs text-text-muted">
           Scheduled hours:{" "}
-          <span className="text-text-primary font-medium">{calculated.toFixed(2)}h</span>
+          <span className="text-text-primary font-medium">{formatHoursMins(calculated)}h</span>
         </p>
       )}
 
