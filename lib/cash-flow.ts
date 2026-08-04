@@ -397,7 +397,16 @@ export type StoreClockRow = {
   worked_hours?: number | string | null;
   /** Manager approval override — see resolvedDayHours(). */
   hours_approved?: boolean | null;
+  /**
+   * The APPROVED figures (migration 035) — the only ones this file pays from.
+   * Each is the sum across the day's signed-off shifts, so a day whose morning
+   * is approved and whose evening isn't pays the morning alone.
+   */
   approved_hours?: number | string | null;
+  approved_short_deliveries_count?: number | null;
+  approved_long_deliveries_count?: number | null;
+  approved_extra_short_deliveries?: number | null;
+  approved_extra_long_deliveries?: number | null;
 };
 
 /** A scheduled shift row carrying which store + day it belongs to. */
@@ -421,15 +430,25 @@ type DayWork = { date: string; store_id: string; hours: number };
  */
 function resolveWorkingDays(clocks: StoreClockRow[], shifts: StoreShiftRow[]): DayWork[] {
   const clockedDays: DayWork[] = [];
+  // Only APPROVED hours are payable (migration 035). A day that was clocked but
+  // never signed off contributes nothing, and a split day contributes only the
+  // shifts a manager has confirmed. Note this is deliberately not
+  // resolvedDayHours(), which answers a different question — "what did this
+  // person actually work" — and is what the Rota, the Live board and the
+  // employee's own screens must keep showing.
   for (const c of clocks) {
-    if (c.clock_in_at && c.clock_out_at) {
-      const hours = resolvedDayHours(c);
-      if (hours > 0) {
-        clockedDays.push({ date: c.event_date, store_id: c.store_id, hours });
-      }
+    if (!c.clock_in_at) continue;
+    const hours = Number(c.approved_hours) || 0;
+    if (hours > 0) {
+      clockedDays.push({ date: c.event_date, store_id: c.store_id, hours });
     }
   }
   if (clockedDays.length > 0) return clockedDays;
+
+  // The rota fallback is for an employee with NO completed clock all week, and
+  // it stays gated the same way: scheduled hours nobody has approved are not
+  // payable either, so this only fires when there is genuinely nothing clocked.
+  if (clocks.some((c) => c.clock_in_at && c.clock_out_at)) return [];
 
   const scheduledDays: DayWork[] = [];
   for (const s of shifts) {
@@ -523,7 +542,9 @@ export function buildWageLinesForStore(
     const days = resolveWorkingDays(empClocks, empShifts);
     const cashHours = round2(cashHoursAtStore(days, storeId, emp));
 
-    // Deliveries always come from the actual clock rows AT this store.
+    // Deliveries come from the APPROVED columns on the clock rows AT this store
+    // (migration 035) — drops a driver logged but nobody has signed off are on
+    // record and visible everywhere else, they simply aren't payable yet.
     const isDriver = hasRole(emp.position, "Driver");
     // Normal-round drops and the extra ("miscellaneous") drops are counted
     // separately so the payout sheet can show SD / LD / SM / LM, but both are
@@ -535,10 +556,10 @@ export function buildWageLinesForStore(
     if (isDriver) {
       for (const c of empClocks) {
         if (c.store_id !== storeId) continue;
-        shortDeliveries += Number(c.short_deliveries_count) || 0;
-        longDeliveries += Number(c.long_deliveries_count) || 0;
-        shortMisc += Number(c.extra_short_deliveries) || 0;
-        longMisc += Number(c.extra_long_deliveries) || 0;
+        shortDeliveries += Number(c.approved_short_deliveries_count) || 0;
+        longDeliveries += Number(c.approved_long_deliveries_count) || 0;
+        shortMisc += Number(c.approved_extra_short_deliveries) || 0;
+        longMisc += Number(c.approved_extra_long_deliveries) || 0;
       }
     }
     shortDeliveries = Math.max(0, Math.round(shortDeliveries));
@@ -582,6 +603,108 @@ export function buildWageLinesForStore(
     });
   }
   return lines.sort((a, b) => b.total_payment - a.total_payment);
+}
+
+// ---------------- managers ----------------
+
+/** One manager's clocked day, as the payout reads it (migration 034). */
+export type ManagerPayRow = {
+  manager_id: string;
+  store_id: string | null;
+  event_date: string;
+  /** Approved drops only (migration 035) — unsigned-off drops aren't payable. */
+  approved_short_deliveries_count?: number | null;
+  approved_long_deliveries_count?: number | null;
+  approved_extra_short_deliveries?: number | null;
+  approved_extra_long_deliveries?: number | null;
+};
+
+/** The manager accounts a payout may need to price and name. */
+export type ManagerPayee = {
+  id: string;
+  name: string | null;
+  short_delivery_rate?: number | null;
+  long_delivery_rate?: number | null;
+};
+
+/**
+ * Wage lines for managers who covered deliveries at one store during the pay
+ * week.
+ *
+ * DELIVERIES ONLY. A manager is on a fixed daily wage that this application
+ * never pays — clocking in has always been monitoring for them, and that is
+ * unchanged. What IS owed is the per-drop allowance for rounds they covered on
+ * a busy night, which until now had nowhere to go and simply went unpaid.
+ *
+ * Approval IS a condition (migration 035): only shifts signed off on Daily
+ * Approval are payable, and withdrawing a shift's approval takes it back off
+ * this sheet. Employees, cover drivers and managers now all work this way.
+ */
+export function buildManagerWageLines(
+  storeId: string,
+  managers: ManagerPayee[],
+  days: ManagerPayRow[],
+): WageLine[] {
+  const byManager = new Map(managers.map((m) => [m.id, m]));
+  const totals = new Map<string, { short: number; long: number; miscS: number; miscL: number }>();
+
+  for (const d of days) {
+    if (d.store_id !== storeId) continue;
+    if (!byManager.has(d.manager_id)) continue;
+    const acc = totals.get(d.manager_id) ?? { short: 0, long: 0, miscS: 0, miscL: 0 };
+    acc.short += Number(d.approved_short_deliveries_count) || 0;
+    acc.long += Number(d.approved_long_deliveries_count) || 0;
+    acc.miscS += Number(d.approved_extra_short_deliveries) || 0;
+    acc.miscL += Number(d.approved_extra_long_deliveries) || 0;
+    totals.set(d.manager_id, acc);
+  }
+
+  const lines: WageLine[] = [];
+  for (const [managerId, acc] of totals) {
+    const manager = byManager.get(managerId)!;
+    const shortDeliveries = Math.max(0, Math.round(acc.short));
+    const longDeliveries = Math.max(0, Math.round(acc.long));
+    const shortMisc = Math.max(0, Math.round(acc.miscS));
+    const longMisc = Math.max(0, Math.round(acc.miscL));
+
+    // Same fallback employees use — an unset rate is the standard petrol rate,
+    // not zero, so a manager can never end up doing drops for nothing because
+    // an admin hadn't filled a field in.
+    const shortRate =
+      manager.short_delivery_rate != null
+        ? Number(manager.short_delivery_rate)
+        : DELIVERY_PETROL_RATE;
+    const longRate =
+      manager.long_delivery_rate != null
+        ? Number(manager.long_delivery_rate)
+        : DELIVERY_PETROL_RATE;
+
+    const deliveryWages = round2(
+      (shortDeliveries + shortMisc) * shortRate + (longDeliveries + longMisc) * longRate,
+    );
+    if (deliveryWages <= 0) continue;
+
+    lines.push({
+      employee_id: "",
+      manager_id: managerId,
+      is_manager: true,
+      employee_name: manager.name ?? "Manager",
+      role: "Manager",
+      // Zero, and it stays zero: their hours are salaried elsewhere.
+      cash_hours: 0,
+      cash_rate: 0,
+      cash_wage: 0,
+      short_deliveries_count: shortDeliveries,
+      long_deliveries_count: longDeliveries,
+      short_misc_count: shortMisc,
+      long_misc_count: longMisc,
+      short_delivery_rate: shortRate,
+      long_delivery_rate: longRate,
+      delivery_wages: deliveryWages,
+      total_payment: deliveryWages,
+    });
+  }
+  return lines;
 }
 
 // ---------------- cover drivers ----------------

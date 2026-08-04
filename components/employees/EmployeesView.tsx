@@ -11,7 +11,7 @@ import { EditEmployeeModal } from "./EditEmployeeModal";
 import { ScheduleEditModal } from "./ScheduleEditModal";
 import { LogHoursForm } from "./LogHoursForm";
 import { HoursTable } from "./HoursTable";
-import { DailyHoursApproval } from "./DailyHoursApproval";
+import { DailyHoursApproval, type DeliveryEdit } from "./DailyHoursApproval";
 import { CoverDriversCard } from "@/components/cover-drivers/CoverDriversCard";
 import { CoverDriverHoursTable } from "@/components/cover-drivers/CoverDriverHoursTable";
 import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
@@ -22,6 +22,7 @@ import { Select } from "@/components/ui/Input";
 import {
   approveDailyHours,
   approveDailyHoursForDate,
+  setShiftApproval,
   unapproveDailyHours,
 } from "@/app/actions/employees";
 import {
@@ -29,7 +30,12 @@ import {
   approveCoverDriverDaysForDate,
   deleteCoverDriverHours,
 } from "@/app/actions/cover-drivers";
+import {
+  approveManagerDeliveries,
+  unapproveManagerDeliveries,
+} from "@/app/actions/manager-clock";
 import { mergeCoverDailyApproval } from "@/lib/cover-driver-hours";
+import { hasRole } from "@/lib/types";
 import type {
   ClockDailySummary,
   ClockWeeklySummary,
@@ -38,9 +44,26 @@ import type {
   CoverDriverHoursComputed,
   Employee,
   EmployeeHoursComputed,
+  ManagerDailyApprovalRow,
   Store,
 } from "@/lib/types";
 import type { MinWageBands } from "@/lib/settings";
+
+/**
+ * The approval screen's edit shape → the server actions' delivery shape. Cover
+ * driver and manager corrections are whole-day totals, so every field is sent;
+ * a missing one would be read as zero and erase a count nobody touched.
+ */
+function toDeliveryInput(d: DeliveryEdit) {
+  return {
+    short_deliveries_count: d.short ?? 0,
+    long_deliveries_count: d.long ?? 0,
+    extra_short_deliveries: d.extraShort ?? 0,
+    extra_long_deliveries: d.extraLong ?? 0,
+    extra_short_reason: d.extraShortReason ?? null,
+    extra_long_reason: d.extraLongReason ?? null,
+  };
+}
 
 type Props = {
   initialEmployees: Employee[];
@@ -51,6 +74,12 @@ type Props = {
   coverDriverHours?: CoverDriverHoursComputed[];
   clockSummaries?: ClockWeeklySummary[];
   clockDailySummaries?: ClockDailySummary[];
+  /**
+   * Manager days carrying deliveries. Managers are not employees and none of
+   * their salary flows through here — only the drops they covered, which are
+   * paid per drop like anyone else's.
+   */
+  managerDaily?: ManagerDailyApprovalRow[];
   /** Server's "today" as YYYY-MM-DD (avoids client/server timezone drift). */
   todayISO: string;
   stores: Store[];
@@ -89,6 +118,7 @@ export function EmployeesView({
   coverDriverHours = [],
   clockSummaries = [],
   clockDailySummaries = [],
+  managerDaily = [],
   loadError = null,
   todayISO,
   stores,
@@ -257,13 +287,44 @@ export function EmployeesView({
     cover_driver_id: string,
     work_date: string,
     override_hours?: number,
+    deliveries?: DeliveryEdit,
   ) {
     const res = await approveCoverDriverDay({
       cover_driver_id,
       work_date,
       override_hours,
+      deliveries: deliveries ? toDeliveryInput(deliveries) : undefined,
     });
     setCoverHours(res.hours);
+    router.refresh();
+  }
+
+  async function handleShiftApproval(session_id: string, approved: boolean) {
+    const res = await setShiftApproval({ session_id, approved });
+    setHours(res.hours);
+    // The day's own row is re-derived server-side from its shifts, so unlike the
+    // day-level handlers there is nothing sensible to patch locally — refresh
+    // and take the recomputed header.
+    router.refresh();
+  }
+
+  async function handleManagerApprove(
+    manager_id: string,
+    event_date: string,
+    deliveries?: DeliveryEdit,
+  ) {
+    const res = await approveManagerDeliveries({
+      manager_id,
+      event_date,
+      deliveries: deliveries ? toDeliveryInput(deliveries) : undefined,
+    });
+    if (!res.ok) throw new Error(res.error);
+    router.refresh();
+  }
+
+  async function handleManagerUnapprove(manager_id: string, event_date: string) {
+    const res = await unapproveManagerDeliveries({ manager_id, event_date });
+    if (!res.ok) throw new Error(res.error);
     router.refresh();
   }
 
@@ -294,13 +355,27 @@ export function EmployeesView({
   const visibleDaily = daily.filter(
     (d) => storeFilter === "all" || d.store_id === storeFilter,
   );
+  // A pre-034 manager day has a null store_id; keep it visible rather than
+  // silently dropping a day someone still has to sign off.
+  const visibleManagerDaily = managerDaily.filter(
+    (m) => storeFilter === "all" || !m.store_id || m.store_id === storeFilter,
+  );
   const coverDaily = React.useMemo(
     () => mergeCoverDailyApproval(visibleCoverDays, visibleCoverHours),
     [visibleCoverDays, visibleCoverHours],
   );
   const dailyPending =
     visibleDaily.filter((d) => !d.hours_approved && d.clocked_hours > 0).length +
-    coverDaily.filter((d) => !d.approved && d.clocked_hours > 0).length;
+    coverDaily.filter((d) => !d.approved && d.clocked_hours > 0).length +
+    // Manager rows are drop sign-offs, and only exist where drops were logged —
+    // the tab badge must match what the screen actually lists, or the count
+    // reads as stale the moment a manager covers a round.
+    visibleManagerDaily.filter(
+      (m) =>
+        !m.approved &&
+        m.short_deliveries + m.long_deliveries + m.extra_short_deliveries + m.extra_long_deliveries >
+          0,
+    ).length;
   const showStore =
     !lockToStore && storeFilter === "all" && stores.length > 1;
 
@@ -361,7 +436,13 @@ export function EmployeesView({
                 e.employment_status === "active" &&
                 (storeFilter === "all" || e.store_id === storeFilter),
             )
-            .map((e) => ({ id: e.id, name: e.name }))}
+            // is_driver decides whether the missed-entry card offers the
+            // delivery boxes — a kitchen shift has no drops to record.
+            .map((e) => ({
+              id: e.id,
+              name: e.name,
+              is_driver: hasRole(e.position, "Driver"),
+            }))}
           coverDrivers={visibleCoverDrivers
             .filter((d) => d.is_active)
             .map((d) => ({ id: d.id, name: d.name }))}
@@ -372,6 +453,10 @@ export function EmployeesView({
           onCoverApprove={handleCoverApproveDay}
           onCoverApproveDate={handleCoverApproveDate}
           onCoverUnapprove={handleCoverUnapprove}
+          managerSummaries={visibleManagerDaily}
+          onManagerApprove={handleManagerApprove}
+          onManagerUnapprove={handleManagerUnapprove}
+          onShiftApproval={handleShiftApproval}
         />
       )}
 

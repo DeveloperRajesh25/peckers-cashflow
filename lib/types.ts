@@ -57,6 +57,14 @@ export type AllowedUser = {
   /** A manager's FIXED daily wage (£). Monitoring/display only — never
    *  drives any pay calculation. Null for admins/employees or if unset. */
   fixed_daily_wage: number | null;
+  /**
+   * Per-drop rates for a manager who covers deliveries on a busy night
+   * (migration 034). Unlike fixed_daily_wage these DO drive pay: the drops are
+   * settled in cash on the Tuesday sheet. Null falls back to
+   * DELIVERY_PETROL_RATE, exactly as an employee with no rate on file does.
+   */
+  short_delivery_rate: number | null;
+  long_delivery_rate: number | null;
   created_at: string;
 };
 
@@ -339,8 +347,17 @@ export type CoverDriverDaySummary = {
   store_id: string;
   work_date: string;
   total_hours: number;
+  /** Base + extra, as paid. Split out below for editing. */
   short_deliveries: number;
   long_deliveries: number;
+  /** The normal round on its own, as recorded on the clock event. */
+  short_base: number;
+  long_base: number;
+  /** Beyond the round; each requires a written reason above zero. */
+  extra_short_deliveries: number;
+  extra_long_deliveries: number;
+  extra_short_reason: string | null;
+  extra_long_reason: string | null;
   hourly_cash_rate: number;
   short_delivery_rate: number | null;
   long_delivery_rate: number | null;
@@ -369,6 +386,17 @@ export type CoverDailyApprovalRow = {
   auto_clocked_out: boolean;
   manual_entry: boolean;
   manual_entry_reason: string | null;
+  /**
+   * The day's drops, editable on the approval row. Correcting them here
+   * REWRITES the clock event before the approval snapshots the rates — the
+   * only manager path to fix a cover driver's counts after clock-out.
+   */
+  short_deliveries: number;
+  long_deliveries: number;
+  extra_short_deliveries: number;
+  extra_long_deliveries: number;
+  extra_short_reason: string | null;
+  extra_long_reason: string | null;
 };
 
 /**
@@ -493,16 +521,48 @@ export type ClockSession = {
   auto_clocked_out: boolean;
   auto_clock_out_source?: string | null;
   auto_clock_out_at?: string | null;
+  /**
+   * Drops for THIS shift (migration 033). The day's totals on clock_events are
+   * the SUM of these, written only by recomputeDayHeader — before 033 the
+   * counts lived on the day header alone and a second clock-out overwrote the
+   * first shift's drops.
+   */
+  short_deliveries_count?: number | null;
+  long_deliveries_count?: number | null;
+  extra_short_deliveries?: number | null;
+  extra_long_deliveries?: number | null;
+  extra_short_reason?: string | null;
+  extra_long_reason?: string | null;
+  /**
+   * Per-shift sign-off (migration 035). NOTHING on an unapproved shift is paid
+   * — not its hours, not its drops. `approved_hours` is the manager's
+   * correction for this shift; null means the clocked duration stood.
+   */
+  hours_approved?: boolean | null;
+  approved_hours?: number | string | null;
+  hours_approved_by?: string | null;
+  hours_approved_at?: string | null;
   created_at: string;
 };
 
 /** The part of a session the UI needs to render a day's shifts. */
 export type ClockSessionSpan = {
+  /** Needed to approve or withdraw THIS shift on its own (migration 035). */
+  id?: string;
   seq: number;
   clock_in_at: string;
   clock_out_at: string | null;
   auto_clocked_out?: boolean | null;
   manual_entry?: boolean | null;
+  /** Signed off, and so payable, on its own. */
+  hours_approved?: boolean | null;
+  /** The manager's correction for this shift; null means the clocked time stood. */
+  approved_hours?: number | string | null;
+  /** This shift's drops — shown so a manager signs off against real figures. */
+  short_deliveries_count?: number | null;
+  long_deliveries_count?: number | null;
+  extra_short_deliveries?: number | null;
+  extra_long_deliveries?: number | null;
 };
 
 /**
@@ -534,6 +594,25 @@ export type ManagerClockEvent = {
   worked_hours?: number | string | null;
   /** How many shifts the day holds. 0 or 1 reads exactly as it always did. */
   session_count?: number | null;
+  /**
+   * The day's delivery totals — the SUM across its sessions (migration 034),
+   * written only by recomputeManagerDayHeader. Null short/long means the day
+   * recorded nothing, which is different from a manager answering zero.
+   */
+  short_deliveries_count?: number | null;
+  long_deliveries_count?: number | null;
+  extra_short_deliveries?: number | null;
+  extra_long_deliveries?: number | null;
+  extra_short_reason?: string | null;
+  extra_long_reason?: string | null;
+  /**
+   * A manager has confirmed the day's drop counts on Daily Approval — their own
+   * day or a peer's. Unlike a cover driver's approval this does NOT gate pay;
+   * the drops reach the Tuesday sheet either way, as an employee's do.
+   */
+  deliveries_approved?: boolean | null;
+  deliveries_approved_by?: string | null;
+  deliveries_approved_at?: string | null;
 };
 
 /**
@@ -558,7 +637,45 @@ export type ManagerClockSession = {
   auto_clocked_out: boolean;
   auto_clock_out_source?: string | null;
   auto_clock_out_at?: string | null;
+  /** Drops the manager covered during THIS shift (migration 034). */
+  short_deliveries_count?: number | null;
+  long_deliveries_count?: number | null;
+  extra_short_deliveries?: number | null;
+  extra_long_deliveries?: number | null;
+  extra_short_reason?: string | null;
+  extra_long_reason?: string | null;
+  /**
+   * Per-shift sign-off (migration 035). Unapproved drops are not paid, and a
+   * new shift on an already-approved day arrives unapproved rather than being
+   * carried along by the day's flag.
+   */
+  deliveries_approved?: boolean | null;
+  deliveries_approved_by?: string | null;
+  deliveries_approved_at?: string | null;
   created_at: string;
+};
+
+/**
+ * One manager's day on the Daily Approval screen. Managers are settled on
+ * DELIVERIES only — their hours drive no pay — so unlike an employee row there
+ * is no hours box to correct here.
+ */
+export type ManagerDailyApprovalRow = {
+  manager_id: string;
+  manager_name: string;
+  store_id: string | null;
+  event_date: string;
+  /** Monitoring only; shown so the drops can be read against the shift. */
+  worked_hours: number;
+  short_deliveries: number;
+  long_deliveries: number;
+  extra_short_deliveries: number;
+  extra_long_deliveries: number;
+  extra_short_reason: string | null;
+  extra_long_reason: string | null;
+  approved: boolean;
+  auto_clocked_out: boolean;
+  session_count: number;
 };
 
 /**
@@ -841,10 +958,13 @@ export type CashPayout = {
 export type CashPayoutLine = {
   id: string;
   payout_id: string;
-  /** Null on a cover driver line — see cover_driver_id. */
+  /** Null on a cover driver or manager line — see the two ids below. */
   employee_id: string | null;
   /** Set instead of employee_id when this line pays a cover driver (migration 027). */
   cover_driver_id?: string | null;
+  /** Set instead of the other two when this line pays a manager for deliveries
+   *  they covered (migration 034). Deliveries only — never their salary. */
+  manager_id?: string | null;
   employee_name: string;
   role: string | null;
   cash_hours: number;
@@ -887,8 +1007,16 @@ export type WageLine = {
   employee_id: string;
   /** Set instead of employee_id when this line pays a cover driver. */
   cover_driver_id?: string | null;
+  /**
+   * Set instead of the other two when this line pays a MANAGER for deliveries
+   * they covered (migration 034). Deliveries only: cash_hours and cash_wage are
+   * always zero, because a manager's fixed daily wage never flows through here.
+   */
+  manager_id?: string | null;
   /** True for a cover driver line — drives the "Cover" badge on the sheet. */
   is_cover_driver?: boolean;
+  /** True for a manager line — drives the "Manager" badge on the sheet. */
+  is_manager?: boolean;
   employee_name: string;
   role: string | null;
   cash_hours: number;

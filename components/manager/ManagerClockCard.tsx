@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { Modal } from "@/components/ui/Modal";
+import { Input } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { ClockIcon } from "@/components/ui/icons";
 import { managerClockIn, managerClockOut } from "@/app/actions/manager-clock";
@@ -52,6 +54,15 @@ export function ManagerClockCard({
   const [geo, setGeo] = React.useState<GeoState>({ status: "idle" });
   const [busy, setBusy] = React.useState(false);
   const [switching, setSwitching] = React.useState(false);
+  // Clock-out asks about drops first. Null = not asking; "ask" = the yes/no
+  // question; "enter" = the counts. A manager who did none never sees a form.
+  const [dropStep, setDropStep] = React.useState<null | "ask" | "enter">(null);
+  const [shortDrops, setShortDrops] = React.useState("");
+  const [longDrops, setLongDrops] = React.useState("");
+  const [extraShort, setExtraShort] = React.useState("");
+  const [extraLong, setExtraLong] = React.useState("");
+  const [extraShortReason, setExtraShortReason] = React.useState("");
+  const [extraLongReason, setExtraLongReason] = React.useState("");
 
   const storeConfigured = store?.latitude != null && store?.longitude != null;
 
@@ -161,7 +172,49 @@ export function ManagerClockCard({
     ? liveDayWorkedHours(todayClock, sessions)
     : 0;
 
-  async function act() {
+  // Drops already logged against the OTHER shifts of today, so the manager
+  // counts only this one — the day's total is the sum of its shifts.
+  const earlierDropsToday = React.useMemo(() => {
+    let short = 0;
+    let long = 0;
+    for (const s of sessions) {
+      if (!s.clock_out_at) continue; // the shift being closed now
+      short += (Number(s.short_deliveries_count) || 0) + (Number(s.extra_short_deliveries) || 0);
+      long += (Number(s.long_deliveries_count) || 0) + (Number(s.extra_long_deliveries) || 0);
+    }
+    return { short, long, any: short > 0 || long > 0 };
+  }, [sessions]);
+
+  function resetDropForm() {
+    setShortDrops("");
+    setLongDrops("");
+    setExtraShort("");
+    setExtraLong("");
+    setExtraShortReason("");
+    setExtraLongReason("");
+  }
+
+  /** The button. Clocking IN goes straight through; clocking OUT asks first. */
+  function act() {
+    if (geo.status !== "ok") {
+      toast.error("Capture your location first.");
+      return;
+    }
+    if (phase === "out") {
+      setDropStep("ask");
+      return;
+    }
+    void submit(null);
+  }
+
+  async function submit(deliveries: {
+    short_deliveries_count: number;
+    long_deliveries_count: number;
+    extra_short_deliveries: number;
+    extra_long_deliveries: number;
+    extra_short_reason: string | null;
+    extra_long_reason: string | null;
+  } | null) {
     if (geo.status !== "ok") {
       toast.error("Capture your location first.");
       return;
@@ -170,18 +223,59 @@ export function ManagerClockCard({
     try {
       const payload = { latitude: geo.lat, longitude: geo.lng, accuracy: geo.accuracy };
       const res =
-        phase === "out" ? await managerClockOut(payload) : await managerClockIn(payload);
+        phase === "out"
+          ? await managerClockOut({ ...payload, deliveries })
+          : await managerClockIn(payload);
       if (!res.ok) {
         toast.error(res.error);
         return;
       }
-      toast.success(phase === "out" ? "Clocked out. Thanks!" : "Clocked in. Have a good shift!");
+      setDropStep(null);
+      resetDropForm();
+      toast.success(
+        phase === "out"
+          ? deliveries
+            ? "Clocked out — deliveries recorded."
+            : "Clocked out. Thanks!"
+          : "Clocked in. Have a good shift!",
+      );
       router.refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
     } finally {
       setBusy(false);
     }
+  }
+
+  const extraShortNeedsReason = (Number(extraShort) || 0) > 0 && !extraShortReason.trim();
+  const extraLongNeedsReason = (Number(extraLong) || 0) > 0 && !extraLongReason.trim();
+  const dropTotal =
+    (Number(shortDrops) || 0) +
+    (Number(longDrops) || 0) +
+    (Number(extraShort) || 0) +
+    (Number(extraLong) || 0);
+
+  function submitDrops() {
+    if (extraShortNeedsReason) {
+      toast.error("Give a reason for the extra short deliveries.");
+      return;
+    }
+    if (extraLongNeedsReason) {
+      toast.error("Give a reason for the extra long deliveries.");
+      return;
+    }
+    if (dropTotal <= 0) {
+      toast.error("Enter at least one delivery, or go back and answer No.");
+      return;
+    }
+    void submit({
+      short_deliveries_count: Number(shortDrops) || 0,
+      long_deliveries_count: Number(longDrops) || 0,
+      extra_short_deliveries: Number(extraShort) || 0,
+      extra_long_deliveries: Number(extraLong) || 0,
+      extra_short_reason: extraShortReason.trim() || null,
+      extra_long_reason: extraLongReason.trim() || null,
+    });
   }
 
   return (
@@ -339,6 +433,140 @@ export function ManagerClockCard({
             )}
           </div>
         </div>
+      )}
+
+      {/* Step 1 — the question. Asked on every clock-out because a busy night
+          is exactly the night it's forgotten, and an unrecorded drop is money
+          the manager never gets back. */}
+      {dropStep === "ask" && (
+        <Modal
+          open
+          onClose={() => setDropStep(null)}
+          title="Did you do any deliveries this shift?"
+          description="Drops you covered are paid per delivery on the Tuesday sheet, on top of your salary."
+          size="sm"
+          footer={
+            <>
+              <Button
+                variant="secondary"
+                onClick={() => void submit(null)}
+                loading={busy}
+                disabled={busy}
+              >
+                No deliveries
+              </Button>
+              <Button onClick={() => setDropStep("enter")} disabled={busy}>
+                Yes, I did
+              </Button>
+            </>
+          }
+        >
+          <p className="text-sm text-text-muted">
+            Answering <span className="text-text-primary">No</span> clocks you out straight
+            away and records nothing. You can still have a manager add the drops on the
+            Daily Approval screen if you remember later.
+          </p>
+        </Modal>
+      )}
+
+      {/* Step 2 — the counts, laid out exactly like the driver clock-out form
+          so a manager filling one in recognises the other. */}
+      {dropStep === "enter" && (
+        <Modal
+          open
+          onClose={() => setDropStep(null)}
+          title="Deliveries this shift"
+          description="Count only the shift you're clocking out of — today's shifts add up."
+          size="md"
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setDropStep("ask")} disabled={busy}>
+                Back
+              </Button>
+              <Button
+                onClick={submitDrops}
+                loading={busy}
+                disabled={busy || dropTotal <= 0 || extraShortNeedsReason || extraLongNeedsReason}
+              >
+                Clock out
+              </Button>
+            </>
+          }
+        >
+          <div className="flex flex-col gap-3">
+            {earlierDropsToday.any && (
+              <p className="text-xs text-text-muted rounded-xl border border-border bg-bg px-3 py-2">
+                Earlier today you already logged {earlierDropsToday.short} short ·{" "}
+                {earlierDropsToday.long} long. Those are saved — enter only this shift below.
+              </p>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <Input
+                type="number"
+                min="0"
+                step="1"
+                label="Short deliveries (SD)"
+                value={shortDrops}
+                onChange={(e) => setShortDrops(e.target.value)}
+              />
+              <Input
+                type="number"
+                min="0"
+                step="1"
+                label="Long deliveries (LD)"
+                value={longDrops}
+                onChange={(e) => setLongDrops(e.target.value)}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Input
+                type="number"
+                min="0"
+                step="1"
+                label="Extra short (MS)"
+                value={extraShort}
+                onChange={(e) => setExtraShort(e.target.value)}
+              />
+              <Input
+                type="number"
+                min="0"
+                step="1"
+                label="Extra long (ML)"
+                value={extraLong}
+                onChange={(e) => setExtraLong(e.target.value)}
+              />
+            </div>
+
+            {/* Two boxes, not one: each extra can be raised for a different
+                reason, and a single shared box could only ever explain one. */}
+            {(Number(extraShort) || 0) > 0 && (
+              <Input
+                label="Reason for extra short deliveries *"
+                placeholder="Why were these beyond the round?"
+                value={extraShortReason}
+                onChange={(e) => setExtraShortReason(e.target.value)}
+                maxLength={200}
+              />
+            )}
+            {(Number(extraLong) || 0) > 0 && (
+              <Input
+                label="Reason for extra long deliveries *"
+                placeholder="Why were these beyond the round?"
+                value={extraLongReason}
+                onChange={(e) => setExtraLongReason(e.target.value)}
+                maxLength={200}
+              />
+            )}
+
+            <p className="text-xs text-text-muted">
+              MS / ML are miscellaneous drops beyond the normal round — paid at the same
+              per-drop rate, but they carry a written reason. These counts appear on Daily
+              Approval for sign-off and on the Tuesday payout sheet.
+            </p>
+          </div>
+        </Modal>
       )}
     </Card>
   );

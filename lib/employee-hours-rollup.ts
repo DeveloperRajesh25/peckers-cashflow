@@ -42,11 +42,16 @@ export async function rollupApprovedWeek(
   userId: string | null,
 ) {
   const weekEnd = toISODate(addDays(parseISODate(week_start_date), 6));
+  // Keyed on approved_hours being present, NOT on hours_approved. Since
+  // migration 035 a day can be PARTLY approved — one shift of two signed off —
+  // and hours_approved only reads true once every shift is. Those partial hours
+  // are payable, so the weekly rollup has to include them or it disagrees with
+  // the Tuesday sheet.
   const { data: days } = await supabase
     .from("clock_events")
     .select("approved_hours")
     .eq("employee_id", employee_id)
-    .eq("hours_approved", true)
+    .not("approved_hours", "is", null)
     .gte("event_date", week_start_date)
     .lte("event_date", weekEnd);
 

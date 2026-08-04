@@ -47,6 +47,10 @@ export function ManagersView({
   const [actingId, setActingId] = React.useState<string | null>(null);
   const [wageEditing, setWageEditing] = React.useState<AllowedUser | null>(null);
   const [wageValue, setWageValue] = React.useState("");
+  // Delivery rates live in the same modal as the wage: they're all "what this
+  // manager is paid", and the wage one is the row people already click.
+  const [shortRateValue, setShortRateValue] = React.useState("");
+  const [longRateValue, setLongRateValue] = React.useState("");
   const [wageSaving, setWageSaving] = React.useState(false);
   const [emailEditing, setEmailEditing] = React.useState<AllowedUser | null>(null);
   const [emailValue, setEmailValue] = React.useState("");
@@ -140,6 +144,8 @@ export function ManagersView({
   function openWage(m: AllowedUser) {
     setWageEditing(m);
     setWageValue(m.fixed_daily_wage != null ? String(m.fixed_daily_wage) : "");
+    setShortRateValue(m.short_delivery_rate != null ? String(m.short_delivery_rate) : "");
+    setLongRateValue(m.long_delivery_rate != null ? String(m.long_delivery_rate) : "");
   }
 
   async function saveWage() {
@@ -149,8 +155,10 @@ export function ManagersView({
       await updateManagerWage({
         allowed_user_id: wageEditing.id,
         fixed_daily_wage: wageValue.trim() ? Number(wageValue) : null,
+        short_delivery_rate: shortRateValue.trim() ? Number(shortRateValue) : null,
+        long_delivery_rate: longRateValue.trim() ? Number(longRateValue) : null,
       });
-      toast.success("Daily wage updated");
+      toast.success("Pay settings updated");
       setWageEditing(null);
       router.refresh();
     } catch (err) {
@@ -243,7 +251,7 @@ export function ManagersView({
                       <button
                         onClick={() => openWage(m)}
                         className="tabular-nums text-text-primary hover:text-gold underline-offset-2 hover:underline"
-                        title="Set fixed daily wage (monitoring only)"
+                        title="Set the fixed daily wage (monitoring only) and the per-drop delivery rates (these do pay)"
                       >
                         {m.fixed_daily_wage != null ? (
                           <>
@@ -251,7 +259,13 @@ export function ManagersView({
                             <span className="text-text-muted"> /day</span>
                           </>
                         ) : (
-                          <span className="text-text-muted">Set wage</span>
+                          <span className="text-text-muted">Set pay</span>
+                        )}
+                        {(m.short_delivery_rate != null || m.long_delivery_rate != null) && (
+                          <span className="block text-[11px] text-text-muted">
+                            {formatGBP(m.short_delivery_rate ?? 0)} SD ·{" "}
+                            {formatGBP(m.long_delivery_rate ?? 0)} LD
+                          </span>
                         )}
                       </button>
                     </td>
@@ -346,9 +360,9 @@ export function ManagersView({
         <Modal
           open
           onClose={() => setWageEditing(null)}
-          title={`Daily wage — ${wageEditing.name || wageEditing.username}`}
-          description="Fixed salary shown on the live dashboard for monitoring. It never feeds a pay calculation. Leave blank to clear."
-          size="sm"
+          title={`Pay — ${wageEditing.name || wageEditing.username}`}
+          description="The daily wage is monitoring only. The delivery rates DO pay: they price any drops this manager covers on the Tuesday sheet."
+          size="md"
           footer={
             <>
               <Button variant="secondary" onClick={() => setWageEditing(null)}>
@@ -360,17 +374,48 @@ export function ManagersView({
             </>
           }
         >
-          <Input
-            type="number"
-            min="0"
-            step="0.01"
-            label="Daily wage (£)"
-            prefix="£"
-            value={wageValue}
-            onChange={(e) => setWageValue(e.target.value)}
-            placeholder="e.g. 2400"
-            autoFocus
-          />
+          <div className="flex flex-col gap-4">
+            <Input
+              type="number"
+              min="0"
+              step="0.01"
+              label="Daily wage (£)"
+              prefix="£"
+              value={wageValue}
+              onChange={(e) => setWageValue(e.target.value)}
+              placeholder="e.g. 2400"
+              autoFocus
+            />
+
+            <div className="grid grid-cols-2 gap-3">
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                label="Short delivery rate (£)"
+                prefix="£"
+                value={shortRateValue}
+                onChange={(e) => setShortRateValue(e.target.value)}
+                placeholder="default"
+              />
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                label="Long delivery rate (£)"
+                prefix="£"
+                value={longRateValue}
+                onChange={(e) => setLongRateValue(e.target.value)}
+                placeholder="default"
+              />
+            </div>
+
+            <p className="text-xs text-text-muted">
+              Leave a rate blank to use the standard petrol rate. Drops a manager records
+              at clock-out are confirmed on Daily Approval and paid in cash on the Tuesday
+              sheet, on top of their salary.
+            </p>
+          </div>
         </Modal>
       )}
 

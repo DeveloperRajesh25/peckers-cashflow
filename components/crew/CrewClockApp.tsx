@@ -78,23 +78,32 @@ export function CrewClockApp({
   const toast = useToast();
   const [geo, setGeo] = React.useState<GeoState>({ status: "idle" });
   const [busy, setBusy] = React.useState(false);
+  // Delivery counts belong to the shift being worked, not the day (migration
+  // 033), so these seed from the OPEN SESSION — never from the day header,
+  // which is the sum of every shift. Seeding from the header is exactly what
+  // made a driver's second clock-out overwrite their morning's drops.
+  const openSessionForSeed = weekSessions.find((s) => !s.clock_out_at) ?? null;
   const [shortDeliveries, setShortDeliveries] = React.useState<string>(
-    todayClock?.short_deliveries_count?.toString() ?? "",
+    openSessionForSeed?.short_deliveries_count?.toString() ?? "",
   );
   const [longDeliveries, setLongDeliveries] = React.useState<string>(
-    todayClock?.long_deliveries_count?.toString() ?? "",
+    openSessionForSeed?.long_deliveries_count?.toString() ?? "",
   );
   const [extraShort, setExtraShort] = React.useState<string>(
-    todayClock?.extra_short_deliveries ? String(todayClock.extra_short_deliveries) : "",
+    openSessionForSeed?.extra_short_deliveries
+      ? String(openSessionForSeed.extra_short_deliveries)
+      : "",
   );
   const [extraLong, setExtraLong] = React.useState<string>(
-    todayClock?.extra_long_deliveries ? String(todayClock.extra_long_deliveries) : "",
+    openSessionForSeed?.extra_long_deliveries
+      ? String(openSessionForSeed.extra_long_deliveries)
+      : "",
   );
   const [extraShortReason, setExtraShortReason] = React.useState<string>(
-    todayClock?.extra_short_reason ?? "",
+    openSessionForSeed?.extra_short_reason ?? "",
   );
   const [extraLongReason, setExtraLongReason] = React.useState<string>(
-    todayClock?.extra_long_reason ?? "",
+    openSessionForSeed?.extra_long_reason ?? "",
   );
 
   const today = todayISO();
@@ -153,6 +162,21 @@ export function CrewClockApp({
       ? Number(todayClock.approved_hours)
       : liveDayWorkedHours(todayClock, todaySessions)
     : 0;
+
+  // Drops already banked on EARLIER shifts today. Shown next to the entry boxes
+  // so a driver on their second shift can see the morning's round is safe and
+  // enters only what they've just done — the ambiguity that used to cost them
+  // the earlier count.
+  const earlierDropsToday = React.useMemo(() => {
+    let short = 0;
+    let long = 0;
+    for (const s of todaySessions) {
+      if (openSession && s.id === openSession.id) continue;
+      short += (Number(s.short_deliveries_count) || 0) + (Number(s.extra_short_deliveries) || 0);
+      long += (Number(s.long_deliveries_count) || 0) + (Number(s.extra_long_deliveries) || 0);
+    }
+    return { short, long, any: short > 0 || long > 0 };
+  }, [todaySessions, openSession]);
 
   const completedTodayCount = todaySessions.filter((s) => s.clock_out_at).length;
   const lastClockOutAt = todaySessions
@@ -502,11 +526,18 @@ export function CrewClockApp({
                 {/* Drivers enter short + long deliveries before clocking out */}
                 {currentPhase === "out" && isDriver && (
                   <>
+                    {earlierDropsToday.any && (
+                      <p className="text-[11px] text-gold">
+                        Earlier today you already logged {earlierDropsToday.short} short ·{" "}
+                        {earlierDropsToday.long} long. Those are saved — enter only
+                        what you did on THIS shift.
+                      </p>
+                    )}
                     <div className="grid grid-cols-2 gap-2">
                       <Input
                         type="number"
                         min="0"
-                        label="Short deliveries *"
+                        label="Short deliveries this shift *"
                         value={shortDeliveries}
                         onChange={(e) => setShortDeliveries(e.target.value)}
                         placeholder="0"
@@ -514,7 +545,7 @@ export function CrewClockApp({
                       <Input
                         type="number"
                         min="0"
-                        label="Long deliveries *"
+                        label="Long deliveries this shift *"
                         value={longDeliveries}
                         onChange={(e) => setLongDeliveries(e.target.value)}
                         placeholder="0"
@@ -600,18 +631,24 @@ export function CrewClockApp({
                   Update during your shift &mdash; cross-checked against Vita Mojo by your
                   manager.
                 </p>
+                {earlierDropsToday.any && (
+                  <p className="text-[11px] text-gold mt-1">
+                    Earlier today: {earlierDropsToday.short} short · {earlierDropsToday.long}{" "}
+                    long, already saved. Count only this shift below.
+                  </p>
+                )}
                 <div className="mt-3 grid grid-cols-2 gap-2">
                   <Input
                     type="number"
                     min="0"
-                    label="Short so far"
+                    label="Short this shift"
                     value={shortDeliveries}
                     onChange={(e) => setShortDeliveries(e.target.value)}
                   />
                   <Input
                     type="number"
                     min="0"
-                    label="Long so far"
+                    label="Long this shift"
                     value={longDeliveries}
                     onChange={(e) => setLongDeliveries(e.target.value)}
                   />

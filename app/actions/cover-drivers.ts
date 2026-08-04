@@ -9,6 +9,10 @@ import { generatePassword, uniqueUsername } from "@/lib/provisioning";
 import { clockedHours } from "@/lib/utils";
 import { totalDeliveries } from "@/lib/cover-driver-hours";
 import {
+  normaliseDeliveryInput,
+  type DeliveryInput,
+} from "@/lib/clock-sessions";
+import {
   resolveActiveStoreId,
   type CoverDriver,
   type CoverDriverHoursComputed,
@@ -278,6 +282,13 @@ export async function approveCoverDriverDay(input: {
   work_date: string;
   /** Manager-corrected hours. Omit to sign off the clocked total unchanged. */
   override_hours?: number;
+  /**
+   * Manager-corrected drop counts. Omit to snapshot what the driver recorded.
+   * Applied to the CLOCK EVENT before the snapshot is taken, so the clock row
+   * and the approved row can't disagree about what the day held — this is the
+   * only path a cover driver's counts can be fixed after clock-out.
+   */
+  deliveries?: DeliveryInput | null;
 }): Promise<{ ok: true; hours: CoverDriverHoursComputed[] }> {
   const user = await requireStaff();
   const supabase = createServerSupabase();
@@ -318,20 +329,40 @@ export async function approveCoverDriverDay(input: {
   }
   const hours = override !== undefined ? Math.round(override * 100) / 100 : clocked;
 
+  // A corrected count REPLACES what the driver recorded, on the clock event
+  // itself — same rule as employee approval, so the clock row, the approved row
+  // and the payout can never tell three different stories about the same day.
+  const corrected = normaliseDeliveryInput(input.deliveries);
+  if (corrected) {
+    const { error } = await supabase
+      .from("cover_driver_clock_events")
+      .update({
+        short_deliveries_count: corrected.short,
+        long_deliveries_count: corrected.long,
+        extra_short_deliveries: corrected.extraShort,
+        extra_long_deliveries: corrected.extraLong,
+        extra_short_reason: corrected.extraShort > 0 ? corrected.extraShortReason : null,
+        extra_long_reason: corrected.extraLong > 0 ? corrected.extraLongReason : null,
+      })
+      .eq("id", event.id);
+    if (error) throw new Error(error.message);
+  }
+
+  const shortTotal = corrected
+    ? (corrected.short ?? 0) + corrected.extraShort
+    : totalDeliveries(event.short_deliveries_count, event.extra_short_deliveries);
+  const longTotal = corrected
+    ? (corrected.long ?? 0) + corrected.extraLong
+    : totalDeliveries(event.long_deliveries_count, event.extra_long_deliveries);
+
   const payload = {
     cover_driver_id: input.cover_driver_id,
     store_id: event.store_id,
     work_date: input.work_date,
     total_hours_worked: hours,
     hourly_rate_snapshot: Number(driver.hourly_cash_rate),
-    short_deliveries: totalDeliveries(
-      event.short_deliveries_count,
-      event.extra_short_deliveries,
-    ),
-    long_deliveries: totalDeliveries(
-      event.long_deliveries_count,
-      event.extra_long_deliveries,
-    ),
+    short_deliveries: shortTotal,
+    long_deliveries: longTotal,
     short_rate_snapshot: driver.short_delivery_rate,
     long_rate_snapshot: driver.long_delivery_rate,
     source: "clocked" as const,

@@ -10,10 +10,13 @@ import { addDays, parseISODate, startOfISOWeek, toISODate } from "@/lib/utils";
 import { mergeSettings } from "@/lib/settings";
 import {
   buildCoverDriverWageLines,
+  buildManagerWageLines,
   buildPrePaymentSummary,
   buildWageLinesForStore,
   payWeekOf,
   type CoverDriverPayRow,
+  type ManagerPayee,
+  type ManagerPayRow,
 } from "@/lib/cash-flow";
 import type {
   CashPayoutWithLines,
@@ -112,8 +115,16 @@ async function computeSummary(
   // The week being PAID: the previous Monday–Sunday.
   const payWeek = payWeekOf(weekStartISO);
 
-  const [entriesRes, employeesRes, clocksRes, shiftsRes, settingsRes, coverRes] =
-    await Promise.all([
+  const [
+    entriesRes,
+    employeesRes,
+    clocksRes,
+    shiftsRes,
+    settingsRes,
+    coverRes,
+    managersRes,
+    managerClocksRes,
+  ] = await Promise.all([
     supabase
       .from("daily_cash_entries")
       .select("*")
@@ -131,7 +142,9 @@ async function computeSummary(
     // attribute cash hours to the store where they were worked.
     supabase
       .from("clock_events")
-      .select("employee_id, store_id, event_date, clock_in_at, clock_out_at, worked_hours, short_deliveries_count, long_deliveries_count, extra_short_deliveries, extra_long_deliveries, hours_approved, approved_hours")
+      .select(
+        "employee_id, store_id, event_date, clock_in_at, clock_out_at, worked_hours, short_deliveries_count, long_deliveries_count, extra_short_deliveries, extra_long_deliveries, hours_approved, approved_hours, approved_short_deliveries_count, approved_long_deliveries_count, approved_extra_short_deliveries, approved_extra_long_deliveries",
+      )
       .gte("event_date", payWeek.start)
       .lte("event_date", payWeek.end),
     supabase
@@ -152,6 +165,21 @@ async function computeSummary(
       .eq("approved", true)
       .gte("work_date", payWeek.start)
       .lte("work_date", payWeek.end),
+    // Managers who covered deliveries (migration 034). Only the drops are paid
+    // — their salary never comes through this sheet. Scoped to this store: a
+    // manager's day carries the store they clocked in at.
+    supabase
+      .from("allowed_users")
+      .select("id, name, short_delivery_rate, long_delivery_rate")
+      .eq("role", "manager"),
+    supabase
+      .from("manager_clock_events")
+      .select(
+        "manager_id, store_id, event_date, approved_short_deliveries_count, approved_long_deliveries_count, approved_extra_short_deliveries, approved_extra_long_deliveries",
+      )
+      .eq("store_id", storeId)
+      .gte("event_date", payWeek.start)
+      .lte("event_date", payWeek.end),
   ]);
 
   const settings = mergeSettings(settingsRes.data ?? []);
@@ -167,6 +195,11 @@ async function computeSummary(
     ...buildCoverDriverWageLines(
       storeId,
       (coverRes.data ?? []) as CoverDriverPayRow[],
+    ),
+    ...buildManagerWageLines(
+      storeId,
+      (managersRes.data ?? []) as ManagerPayee[],
+      (managerClocksRes.data ?? []) as ManagerPayRow[],
     ),
   ].sort((a, b) => b.total_payment - a.total_payment);
   const opening = await loadOpeningBalance(
@@ -264,14 +297,22 @@ export async function generatePayout(input: {
   // Preserve existing paid flags across regeneration.
   const { data: priorLines } = await supabase
     .from("cash_payout_lines")
-    .select("id, employee_id, cover_driver_id, is_paid, paid_at, paid_by_name")
+    .select("id, employee_id, cover_driver_id, manager_id, is_paid, paid_at, paid_by_name")
     .eq("payout_id", payoutId);
 
-  // A line is keyed by whichever payee it carries — employees and cover drivers
-  // live in different tables, so one map keyed on employee_id alone would lose
-  // every cover driver's "paid" tick on regeneration.
-  const lineKey = (l: { employee_id?: string | null; cover_driver_id?: string | null }) =>
-    l.cover_driver_id ? `cd:${l.cover_driver_id}` : `emp:${l.employee_id}`;
+  // A line is keyed by whichever payee it carries — employees, cover drivers
+  // and managers live in three different tables, so one map keyed on
+  // employee_id alone would lose the others' "paid" tick on regeneration.
+  const lineKey = (l: {
+    employee_id?: string | null;
+    cover_driver_id?: string | null;
+    manager_id?: string | null;
+  }) =>
+    l.cover_driver_id
+      ? `cd:${l.cover_driver_id}`
+      : l.manager_id
+        ? `mgr:${l.manager_id}`
+        : `emp:${l.employee_id}`;
 
   const priorByKey = new Map((priorLines ?? []).map((l) => [lineKey(l), l]));
   const keepKeys = new Set(summary.lines.map(lineKey));
@@ -280,10 +321,13 @@ export async function generatePayout(input: {
   for (const line of summary.lines) {
     const prior = priorByKey.get(lineKey(line));
     const isCover = !!line.cover_driver_id;
+    const isManager = !!line.manager_id;
     const payload = {
       payout_id: payoutId,
-      employee_id: isCover ? null : line.employee_id,
+      // Exactly one of the three, enforced by cash_payout_lines_one_payee.
+      employee_id: isCover || isManager ? null : line.employee_id,
       cover_driver_id: isCover ? line.cover_driver_id : null,
+      manager_id: isManager ? line.manager_id : null,
       employee_name: line.employee_name,
       role: line.role,
       cash_hours: line.cash_hours,
@@ -392,7 +436,7 @@ export async function confirmPayout(input: { payout_id: string }): Promise<{ ok:
 
   const { data: lines } = await supabase
     .from("cash_payout_lines")
-    .select("id, is_paid, employee_id, cover_driver_id, total_payment")
+    .select("id, is_paid, employee_id, cover_driver_id, manager_id, total_payment")
     .eq("payout_id", input.payout_id);
   if (!lines || lines.length === 0) throw new Error("No wage lines to confirm.");
   const unpaid = lines.filter((l) => !l.is_paid).length;
@@ -407,11 +451,19 @@ export async function confirmPayout(input: { payout_id: string }): Promise<{ ok:
   // If pay-week data changed after the sheet was generated (hours approved,
   // deliveries edited), force a regenerate (which preserves paid flags) so the
   // snapshot and the carried-forward surplus reflect what was really paid out.
-  // Keyed by payee, not employee_id: cover driver lines have a null
+  // Keyed by payee, not employee_id: cover driver and manager lines have a null
   // employee_id, so keying on it alone would collapse them all onto one map
   // entry and the drift check would silently pass on wrong numbers.
-  const payeeKey = (l: { employee_id?: string | null; cover_driver_id?: string | null }) =>
-    l.cover_driver_id ? `cd:${l.cover_driver_id}` : `emp:${l.employee_id}`;
+  const payeeKey = (l: {
+    employee_id?: string | null;
+    cover_driver_id?: string | null;
+    manager_id?: string | null;
+  }) =>
+    l.cover_driver_id
+      ? `cd:${l.cover_driver_id}`
+      : l.manager_id
+        ? `mgr:${l.manager_id}`
+        : `emp:${l.employee_id}`;
   const storedByPayee = new Map(lines.map((l) => [payeeKey(l), Number(l.total_payment)]));
   const drift =
     summary.lines.length !== storedByPayee.size ||

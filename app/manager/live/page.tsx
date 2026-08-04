@@ -72,16 +72,22 @@ export default async function ManagerLivePage() {
           .eq("entry_date", today)
           .maybeSingle()
       : Promise.resolve({ data: null }),
-    // The manager's own clock row for today (RLS returns only their own).
+    // The manager's OWN clock row for today. Filtered on manager_id explicitly:
+    // migration 034 widened these policies to the whole store so peers can be
+    // approved, so RLS alone no longer narrows this to one person — and without
+    // the filter maybeSingle() would break the moment two managers worked the
+    // same day.
     supabase
       .from("manager_clock_events")
       .select("*")
+      .eq("manager_id", user.allowed!.id)
       .eq("event_date", today)
       .maybeSingle(),
     // Their day's individual shifts — the clock row above is only its header.
     supabase
       .from("manager_clock_sessions")
       .select("*")
+      .eq("manager_id", user.allowed!.id)
       .eq("event_date", today)
       .order("clock_in_at", { ascending: true }),
     // Cover drivers are scoped to this store — unlike employees they aren't

@@ -32,6 +32,8 @@ type DisplayLine = {
   employee_name: string;
   /** Set on a cover driver line — they're paid from the same sheet, badged. */
   cover_driver_id?: string | null;
+  /** Set on a manager line — deliveries they covered, badged the same way. */
+  manager_id?: string | null;
   role: string | null;
   cash_hours: number;
   cash_rate: number;
@@ -373,6 +375,14 @@ export function PrePaymentView({
                             title="Cover driver — paid cash from this sheet, no NI"
                           >
                             Cover
+                          </span>
+                        )}
+                        {l.manager_id && (
+                          <span
+                            className="ml-2 align-middle text-[9px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-gold/40 bg-gold/10 text-gold font-medium"
+                            title="Manager — deliveries they covered, paid per drop. Their salary is not on this sheet."
+                          >
+                            Manager
                           </span>
                         )}
                       </td>

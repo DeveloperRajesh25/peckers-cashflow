@@ -538,6 +538,13 @@ export function LiveDashboard({
                         const mgrShiftCount = mgrSessions?.length ?? 0;
                         // "09:00–13:00, 17:00–now" — hover detail so a second
                         // shift is never mistaken for one long unbroken day.
+                        // The day's drop total, base + extras, straight off the
+                        // header — which is the SUM of the day's shifts.
+                        const mgrDrops =
+                          (Number(mc?.short_deliveries_count) || 0) +
+                          (Number(mc?.long_deliveries_count) || 0) +
+                          (Number(mc?.extra_short_deliveries) || 0) +
+                          (Number(mc?.extra_long_deliveries) || 0);
                         const mgrShiftsLabel = (mgrSessions ?? [])
                           .map(
                             (s) =>
@@ -594,6 +601,17 @@ export function LiveDashboard({
                                       ×{mgrShiftCount}
                                     </span>
                                   )}
+                                </div>
+                              )}
+                              {/* Drops a manager covered are real money, so
+                                  they show here the moment they're logged —
+                                  the board is where a shortfall gets spotted. */}
+                              {mgrDrops > 0 && (
+                                <div
+                                  className="text-[11px] text-gold mt-0.5 tabular-nums"
+                                  title="Deliveries this manager covered today — paid per drop on the Tuesday sheet."
+                                >
+                                  {mgrDrops} deliver{mgrDrops === 1 ? "y" : "ies"}
                                 </div>
                               )}
                             </div>

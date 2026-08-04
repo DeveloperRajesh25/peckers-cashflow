@@ -216,6 +216,13 @@ type OpenClock = {
   manual_entry_by: string | null;
   manual_entry_at: string | null;
   manual_entry_reason: string | null;
+  /** Carried so a pre-029 row adopted into a session keeps its drops (033). */
+  short_deliveries_count: number | null;
+  long_deliveries_count: number | null;
+  extra_short_deliveries: number | null;
+  extra_long_deliveries: number | null;
+  extra_short_reason: string | null;
+  extra_long_reason: string | null;
 };
 
 type OpenManagerClock = {
@@ -258,8 +265,12 @@ export async function autoCloseOpenClocks(
         // either a session is running, or the row pre-dates migration 029 and
         // has no session at all. One query still finds both.
         .from("clock_events")
+        // The delivery columns ride along because a pre-029 row adopted into a
+        // session below must carry its drops with it — that session becomes the
+        // only thing the header is summed from, so leaving them behind would
+        // have recomputeDayHeader wipe the day's counts (migration 033).
         .select(
-          "id, employee_id, store_id, event_date, clock_in_at, clock_out_at, clock_in_lat, clock_in_lng, shift_id, manual_entry, manual_entry_by, manual_entry_at, manual_entry_reason",
+          "id, employee_id, store_id, event_date, clock_in_at, clock_out_at, clock_in_lat, clock_in_lng, shift_id, manual_entry, manual_entry_by, manual_entry_at, manual_entry_reason, short_deliveries_count, long_deliveries_count, extra_short_deliveries, extra_long_deliveries, extra_short_reason, extra_long_reason",
         )
         .not("clock_in_at", "is", null)
         .is("clock_out_at", null)

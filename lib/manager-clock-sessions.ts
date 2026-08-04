@@ -25,8 +25,50 @@
 // =============================================================
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { deriveDayHeader, type DerivedDayHeader } from "@/lib/clock-sessions";
-import type { ManagerClockSession } from "@/lib/types";
+import {
+  deriveDayHeader,
+  sumSessionDeliveries,
+  type DeliveryCounts,
+  type DerivedDayHeader,
+} from "@/lib/clock-sessions";
+import type {
+  ManagerClockEvent,
+  ManagerClockSession,
+  ManagerDailyApprovalRow,
+} from "@/lib/types";
+import { dayWorkedHours } from "@/lib/utils";
+
+/**
+ * Manager days as the Daily Approval screen sees them. Kept pure and shared so
+ * the admin and manager pages can't drift on which days are listed or on how a
+ * split day's hours are totalled.
+ *
+ * Days with NO drops are returned too — the screen decides what to show — but
+ * a day still open is included as well: a manager can log drops mid-shift and
+ * a peer may sign them off before the shift ends.
+ */
+export function mapManagerDaysToApproval(
+  days: ManagerClockEvent[],
+  names: Map<string, string>,
+): ManagerDailyApprovalRow[] {
+  return days.map((d) => ({
+    manager_id: d.manager_id,
+    manager_name: names.get(d.manager_id) ?? "Manager",
+    store_id: d.store_id,
+    event_date: d.event_date,
+    // Never last-out minus first-in: that spans the gap between two shifts.
+    worked_hours: dayWorkedHours(d),
+    short_deliveries: Number(d.short_deliveries_count) || 0,
+    long_deliveries: Number(d.long_deliveries_count) || 0,
+    extra_short_deliveries: Number(d.extra_short_deliveries) || 0,
+    extra_long_deliveries: Number(d.extra_long_deliveries) || 0,
+    extra_short_reason: d.extra_short_reason ?? null,
+    extra_long_reason: d.extra_long_reason ?? null,
+    approved: Boolean(d.deliveries_approved),
+    auto_clocked_out: Boolean(d.auto_clocked_out),
+    session_count: Number(d.session_count) || 0,
+  }));
+}
 
 /**
  * The manager's currently open session, if any — across ALL dates, not just
@@ -79,7 +121,13 @@ export async function recomputeManagerDayHeader(
   // sum, and writing the nulls would erase a day recorded by an older build.
   if (sessions.length === 0) return deriveDayHeader(sessions);
 
-  const derived = deriveDayHeader(sessions);
+  // deriveDayHeader is shared with employees and reads `hours_approved`. A
+  // manager's shift only ever has its DELIVERIES signed off — their hours are
+  // salaried and pay nothing — so the flag is mapped across rather than the
+  // shared function learning a second field name for the same idea.
+  const derived = deriveDayHeader(
+    sessions.map((s) => ({ ...s, hours_approved: s.deliveries_approved })),
+  );
 
   const { error } = await supabase
     .from("manager_clock_events")
@@ -88,11 +136,166 @@ export async function recomputeManagerDayHeader(
       clock_out_at: derived.lastOut,
       worked_hours: derived.completedCount > 0 ? derived.workedHours : null,
       session_count: derived.sessionCount,
+      // The day's drop totals are a SUM of its shifts (migration 034), and this
+      // is their ONLY writer — the same rule recomputeDayHeader follows for
+      // employees, so a manager who did drops on two separate shifts has both
+      // counted rather than the later one overwriting the earlier.
+      short_deliveries_count: derived.deliveries.short,
+      long_deliveries_count: derived.deliveries.long,
+      extra_short_deliveries: derived.deliveries.extraShort,
+      extra_long_deliveries: derived.deliveries.extraLong,
+      extra_short_reason: derived.deliveries.extraShortReason,
+      extra_long_reason: derived.deliveries.extraLongReason,
+      // The approved half (migration 035): only signed-off drops are paid.
+      approved_short_deliveries_count: derived.approvedDeliveries.short,
+      approved_long_deliveries_count: derived.approvedDeliveries.long,
+      approved_extra_short_deliveries: derived.approvedDeliveries.extraShort,
+      approved_extra_long_deliveries: derived.approvedDeliveries.extraLong,
+      approved_session_count: derived.approvedSessionCount,
+      deliveries_approved: derived.allApproved,
     })
     .eq("id", clockEventId);
   if (error) throw new Error(error.message);
 
   return derived;
+}
+
+/** Sign off (or withdraw) one manager shift's deliveries. */
+export async function setManagerSessionApproval(
+  supabase: SupabaseClient,
+  sessionId: string,
+  approval: { approved: boolean; by: string },
+): Promise<void> {
+  const { error } = await supabase
+    .from("manager_clock_sessions")
+    .update(
+      approval.approved
+        ? {
+            deliveries_approved: true,
+            deliveries_approved_by: approval.by,
+            deliveries_approved_at: new Date().toISOString(),
+          }
+        : {
+            deliveries_approved: false,
+            deliveries_approved_by: null,
+            deliveries_approved_at: null,
+          },
+    )
+    .eq("id", sessionId);
+  if (error) throw new Error(error.message);
+}
+
+/** Approve every completed manager shift of a day. Returns how many changed. */
+export async function approveManagerDaySessions(
+  supabase: SupabaseClient,
+  clockEventId: string,
+  by: string,
+): Promise<number> {
+  const sessions = await managerSessionsForEvent(supabase, clockEventId);
+  const pending = sessions.filter((s) => s.clock_out_at && !s.deliveries_approved);
+  for (const s of pending) {
+    await setManagerSessionApproval(supabase, s.id, { approved: true, by });
+  }
+  return pending.length;
+}
+
+/** Withdraw approval on every manager shift of a day. Returns how many changed. */
+export async function unapproveManagerDaySessions(
+  supabase: SupabaseClient,
+  clockEventId: string,
+  by: string,
+): Promise<number> {
+  const sessions = await managerSessionsForEvent(supabase, clockEventId);
+  const approved = sessions.filter((s) => s.deliveries_approved);
+  for (const s of approved) {
+    await setManagerSessionApproval(supabase, s.id, { approved: false, by });
+  }
+  return approved.length;
+}
+
+/**
+ * Write one manager shift's delivery counts. The caller recomputes the day
+ * header afterwards — this never touches manager_clock_events itself, so
+ * recomputeManagerDayHeader stays the single writer of the day's totals.
+ */
+export async function setManagerSessionDeliveries(
+  supabase: SupabaseClient,
+  sessionId: string,
+  deliveries: DeliveryCounts,
+): Promise<void> {
+  const { error } = await supabase
+    .from("manager_clock_sessions")
+    .update({
+      short_deliveries_count: deliveries.short,
+      long_deliveries_count: deliveries.long,
+      extra_short_deliveries: deliveries.extraShort,
+      extra_long_deliveries: deliveries.extraLong,
+      extra_short_reason: deliveries.extraShort > 0 ? deliveries.extraShortReason : null,
+      extra_long_reason: deliveries.extraLong > 0 ? deliveries.extraLongReason : null,
+    })
+    .eq("id", sessionId);
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Apply a DAY-level drop total a manager typed on Daily Approval onto a day
+ * that may hold several shifts. Identical reasoning to applyDayDeliveryTotal
+ * for employees: the approver is correcting the day, not a shift, so the
+ * difference is settled on the day's LAST shift and the earlier ones keep what
+ * was recorded at the time.
+ *
+ * Returns false when the day has no sessions at all (a pre-031 row); the caller
+ * falls back to writing the header directly.
+ */
+export async function applyManagerDayDeliveryTotal(
+  supabase: SupabaseClient,
+  clockEventId: string,
+  total: DeliveryCounts,
+): Promise<boolean> {
+  const sessions = await managerSessionsForEvent(supabase, clockEventId);
+  if (sessions.length === 0) return false;
+
+  const last = sessions[sessions.length - 1];
+  const rest = sumSessionDeliveries(sessions.slice(0, -1));
+
+  // Never let the remainder go negative — lowering a day total below what the
+  // earlier shifts already hold would credit a negative drop against the day.
+  const remainder: DeliveryCounts = {
+    short: total.short == null ? null : Math.max(0, total.short - (rest.short ?? 0)),
+    long: total.long == null ? null : Math.max(0, total.long - (rest.long ?? 0)),
+    extraShort: Math.max(0, total.extraShort - rest.extraShort),
+    extraLong: Math.max(0, total.extraLong - rest.extraLong),
+    extraShortReason: total.extraShortReason,
+    extraLongReason: total.extraLongReason,
+  };
+
+  await setManagerSessionDeliveries(supabase, last.id, remainder);
+  return true;
+}
+
+/** Manager sessions for many days at once, keyed by manager_clock_events.id. */
+export async function managerSessionsByEventId(
+  supabase: SupabaseClient,
+  clockEventIds: string[],
+): Promise<Map<string, ManagerClockSession[]>> {
+  const byEvent = new Map<string, ManagerClockSession[]>();
+  const ids = Array.from(new Set(clockEventIds.filter(Boolean)));
+  if (ids.length === 0) return byEvent;
+
+  const { data, error } = await supabase
+    .from("manager_clock_sessions")
+    .select("*")
+    .in("clock_event_id", ids)
+    .order("clock_in_at", { ascending: true })
+    .order("seq", { ascending: true });
+  if (error) throw new Error(error.message);
+
+  for (const s of (data ?? []) as ManagerClockSession[]) {
+    const arr = byEvent.get(s.clock_event_id) ?? [];
+    arr.push(s);
+    byEvent.set(s.clock_event_id, arr);
+  }
+  return byEvent;
 }
 
 /**
@@ -152,6 +355,8 @@ export async function closeManagerSession(
     lat?: number | null;
     lng?: number | null;
     auto?: { source: string; at: string } | null;
+    /** Drops this shift covered. Omitted leaves the session's counts alone. */
+    deliveries?: DeliveryCounts | null;
   },
 ): Promise<boolean> {
   const payload: Record<string, unknown> = {
@@ -159,6 +364,16 @@ export async function closeManagerSession(
     clock_out_lat: input.lat ?? null,
     clock_out_lng: input.lng ?? null,
   };
+  if (input.deliveries) {
+    payload.short_deliveries_count = input.deliveries.short;
+    payload.long_deliveries_count = input.deliveries.long;
+    payload.extra_short_deliveries = input.deliveries.extraShort;
+    payload.extra_long_deliveries = input.deliveries.extraLong;
+    payload.extra_short_reason =
+      input.deliveries.extraShort > 0 ? input.deliveries.extraShortReason : null;
+    payload.extra_long_reason =
+      input.deliveries.extraLong > 0 ? input.deliveries.extraLongReason : null;
+  }
   if (input.auto) {
     payload.auto_clocked_out = true;
     payload.auto_clock_out_source = input.auto.source;
@@ -201,6 +416,12 @@ export async function adoptManagerHeaderIntoSession(
     auto_clocked_out?: boolean | null;
     auto_clock_out_source?: string | null;
     auto_clock_out_at?: string | null;
+    short_deliveries_count?: number | null;
+    long_deliveries_count?: number | null;
+    extra_short_deliveries?: number | null;
+    extra_long_deliveries?: number | null;
+    extra_short_reason?: string | null;
+    extra_long_reason?: string | null;
   },
 ): Promise<ManagerClockSession | null> {
   if (!header.clock_in_at) return null;
@@ -225,6 +446,15 @@ export async function adoptManagerHeaderIntoSession(
       auto_clocked_out: !!header.auto_clocked_out,
       auto_clock_out_source: header.auto_clock_out_source ?? null,
       auto_clock_out_at: header.auto_clock_out_at ?? null,
+      // The day's drops come with it. This session becomes the only thing the
+      // header is summed from, so leaving them behind would have the very next
+      // recomputeManagerDayHeader wipe the day's counts to zero.
+      short_deliveries_count: header.short_deliveries_count ?? null,
+      long_deliveries_count: header.long_deliveries_count ?? null,
+      extra_short_deliveries: header.extra_short_deliveries ?? 0,
+      extra_long_deliveries: header.extra_long_deliveries ?? 0,
+      extra_short_reason: header.extra_short_reason ?? null,
+      extra_long_reason: header.extra_long_reason ?? null,
     })
     .select("*")
     .maybeSingle();

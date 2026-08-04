@@ -370,6 +370,26 @@ export function RotaView({
     return { live, extra };
   }, [coverDriverClocks, weekDays]);
 
+  // Drops a manager covered in the shown range, at THIS store. Managers aren't
+  // hourly, so the manager rota has no wage column — but these are paid per
+  // drop, so the count belongs on the row that shows what they worked.
+  const managerDeliveriesByMgr = React.useMemo(() => {
+    const weekSet = new Set(weekDays.map((d) => toISODate(d)));
+    const live = new Map<string, number>();
+    const extra = new Map<string, number>();
+    for (const c of managerClocks) {
+      if (!weekSet.has(c.event_date)) continue;
+      if (c.store_id && c.store_id !== activeStoreId) continue;
+      const base =
+        (Number(c.short_deliveries_count) || 0) + (Number(c.long_deliveries_count) || 0);
+      if (base) live.set(c.manager_id, (live.get(c.manager_id) ?? 0) + base);
+      const ex =
+        (Number(c.extra_short_deliveries) || 0) + (Number(c.extra_long_deliveries) || 0);
+      if (ex) extra.set(c.manager_id, (extra.get(c.manager_id) ?? 0) + ex);
+    }
+    return { live, extra };
+  }, [managerClocks, weekDays, activeStoreId]);
+
   // Hours scheduled AT THE ACTIVE STORE only — a manager can be covering another
   // store on a given day, and those hours belong to that store's rota.
   function weekManagerTotalHours(managerId: string): number {
@@ -682,6 +702,12 @@ export function RotaView({
                       </div>
                     </th>
                   ))}
+                  <th
+                    className="text-center px-2 py-2"
+                    title="Deliveries this manager covered, paid per drop on the Tuesday sheet"
+                  >
+                    Deliveries
+                  </th>
                   <th className="text-right px-3 py-2">Total hrs</th>
                 </tr>
               </thead>
@@ -689,7 +715,7 @@ export function RotaView({
                 {activeManagers.length === 0 && (
                   <tr>
                     <td
-                      colSpan={weekDays.length + 2}
+                      colSpan={weekDays.length + 3}
                       className="px-4 py-8 text-center text-text-muted"
                     >
                       No managers assigned to this store yet. Add one on the Managers page.
@@ -858,6 +884,30 @@ export function RotaView({
                           </td>
                         );
                       })}
+                      <td className="px-2 py-2 text-center tabular-nums">
+                        {(() => {
+                          const live = managerDeliveriesByMgr.live.get(mgr.id) ?? 0;
+                          const extra = managerDeliveriesByMgr.extra.get(mgr.id) ?? 0;
+                          if (live + extra === 0) {
+                            return <span className="text-text-subtle">—</span>;
+                          }
+                          return (
+                            <span
+                              className="text-gold font-medium"
+                              title={
+                                extra > 0
+                                  ? `${live} on the round + ${extra} extra, paid at the same per-drop rate`
+                                  : "Drops covered on the normal round"
+                              }
+                            >
+                              {live + extra}
+                              {extra > 0 && (
+                                <span className="text-[10px] text-text-muted"> (+{extra})</span>
+                              )}
+                            </span>
+                          );
+                        })()}
+                      </td>
                       <td className="px-3 py-2 text-right font-medium">{formatHoursMins(total)}h</td>
                     </tr>
                   );

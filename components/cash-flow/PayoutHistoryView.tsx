@@ -200,6 +200,14 @@ export function PayoutHistoryView({
                                     Cover
                                   </span>
                                 )}
+                                {l.manager_id && (
+                                  <span
+                                    className="ml-2 align-middle text-[9px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-gold/40 bg-gold/10 text-gold font-medium"
+                                    title="Manager — deliveries only, paid per drop"
+                                  >
+                                    Manager
+                                  </span>
+                                )}
                               </td>
                               <td className="px-4 py-2.5 text-text-muted">{l.role ?? "—"}</td>
                               <td className="px-4 py-2.5 text-right tabular-nums">{formatHoursMins(l.cash_hours)}h</td>

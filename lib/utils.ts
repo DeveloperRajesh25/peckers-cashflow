@@ -2,6 +2,8 @@
 // Utility helpers: dates, currency, week handling, classnames
 // =============================================================
 
+import type { ClockSessionSpan } from "@/lib/types";
+
 export function cn(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(" ");
 }
@@ -559,29 +561,14 @@ export function mapClockEventsToDaily(
   // non-driver row simply shows no delivery fields.
   employeeMap: Map<string, { name: string; is_driver?: boolean }>,
   /** Shifts per clock_events.id — omit and every day renders as a single shift. */
-  sessionsByEventId?: Map<
-    string,
-    Array<{
-      seq: number;
-      clock_in_at: string;
-      clock_out_at: string | null;
-      auto_clocked_out?: boolean | null;
-      manual_entry?: boolean | null;
-    }>
-  >,
+  sessionsByEventId?: Map<string, ClockSessionSpan[]>,
 ): Array<{
   employee_id: string;
   employee_name: string;
   event_date: string;
   store_id: string | null;
   clocked_hours: number;
-  sessions: Array<{
-    seq: number;
-    clock_in_at: string;
-    clock_out_at: string | null;
-    auto_clocked_out?: boolean | null;
-    manual_entry?: boolean | null;
-  }>;
+  sessions: ClockSessionSpan[];
   hours_approved: boolean;
   approved_hours: number | null;
   auto_clocked_out: boolean;

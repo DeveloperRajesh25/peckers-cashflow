@@ -18,6 +18,7 @@ import { ManualClockEntryModal } from "@/components/clock/ManualClockEntryModal"
 import type {
   ClockDailySummary,
   CoverDailyApprovalRow,
+  ManagerDailyApprovalRow,
   Store,
 } from "@/lib/types";
 
@@ -63,18 +64,25 @@ function relLabel(iso: string, todayISO: string): string | null {
  * the two are different tables with different pay rules underneath.
  */
 type ApprovalRow = {
-  kind: "employee" | "cover";
+  kind: "employee" | "cover" | "manager";
   person_id: string;
   name: string;
   store_id: string | null;
   event_date: string;
   clocked_hours: number;
   /**
-   * The day's individual shifts. Approval stays per DAY on the total — this is
-   * shown so a manager can see WHY a day totals what it does before signing it
-   * off. Empty for cover drivers and for days with no session detail.
+   * The day's individual shifts. Approval lives on the SHIFT (migration 035),
+   * so on a split day these are what actually get signed off — the row's own
+   * Approve button is a shortcut for "all of them". Empty for cover drivers and
+   * for days with no session detail.
    */
   shifts: string[];
+  /**
+   * The same shifts with the detail needed to approve one on its own. Only
+   * populated where a day holds more than one — a single-shift day has nothing
+   * to choose between, so its row stays exactly as it was.
+   */
+  shiftRows: ShiftRow[];
   approved: boolean;
   approved_hours: number | null;
   /** cover_driver_hours row id — cover rows only, needed to undo. */
@@ -97,15 +105,60 @@ type ApprovalRow = {
   extra_long_reason: string | null;
 };
 
+/** One shift, as the expandable breakdown renders and approves it. */
+type ShiftRow = {
+  id: string;
+  label: string;
+  hours: number;
+  approved: boolean;
+  approvedHours: number | null;
+  open: boolean;
+  deliveries: number;
+};
+
 /** "09:00–13:00" for one shift; an unfinished one reads "17:00–…". */
 function shiftLabels(
   sessions: ClockDailySummary["sessions"] | undefined,
 ): string[] {
   if (!sessions || sessions.length < 2) return []; // a single shift adds nothing
-  return sessions.map(
-    (s) =>
-      `${hhmm(s.clock_in_at)}–${s.clock_out_at ? hhmm(s.clock_out_at) : "…"}`,
-  );
+  return sessions.map((s) => shiftLabel(s));
+}
+
+function shiftLabel(s: { clock_in_at: string; clock_out_at: string | null }): string {
+  return `${hhmm(s.clock_in_at)}–${s.clock_out_at ? hhmm(s.clock_out_at) : "…"}`;
+}
+
+/**
+ * The per-shift rows for a day, or [] when there is only one shift. A day with
+ * a single shift is approved by its own row's button — showing a breakdown of
+ * one would be noise, and every existing day looks unchanged.
+ */
+function shiftRowsOf(sessions: ClockDailySummary["sessions"] | undefined): ShiftRow[] {
+  if (!sessions || sessions.length < 2) return [];
+  return sessions
+    .filter((s) => s.id)
+    .map((s) => {
+      const hours = s.clock_out_at
+        ? Math.max(
+            0,
+            (new Date(s.clock_out_at).getTime() - new Date(s.clock_in_at).getTime()) /
+              3_600_000,
+          )
+        : 0;
+      return {
+        id: s.id!,
+        label: shiftLabel(s),
+        hours: Math.round(hours * 100) / 100,
+        approved: Boolean(s.hours_approved),
+        approvedHours: s.approved_hours != null ? Number(s.approved_hours) : null,
+        open: !s.clock_out_at,
+        deliveries:
+          (Number(s.short_deliveries_count) || 0) +
+          (Number(s.long_deliveries_count) || 0) +
+          (Number(s.extra_short_deliveries) || 0) +
+          (Number(s.extra_long_deliveries) || 0),
+      };
+    });
 }
 
 function hhmm(iso: string): string {
@@ -125,6 +178,7 @@ function fromEmployee(s: ClockDailySummary): ApprovalRow {
     event_date: s.event_date,
     clocked_hours: s.clocked_hours,
     shifts: shiftLabels(s.sessions),
+    shiftRows: shiftRowsOf(s.sessions),
     approved: s.hours_approved,
     approved_hours: s.approved_hours,
     approved_row_id: null,
@@ -151,37 +205,72 @@ function fromCover(c: CoverDailyApprovalRow): ApprovalRow {
     clocked_hours: c.clocked_hours,
     // Cover drivers are single-shift: multi-shift days are an employee feature.
     shifts: [],
+    shiftRows: [],
     approved: c.approved,
     approved_hours: c.approved_hours,
     approved_row_id: c.approved_row_id,
     auto_clocked_out: c.auto_clocked_out,
     manual_entry: c.manual_entry,
     manual_entry_reason: c.manual_entry_reason,
-    // Cover drivers' deliveries are settled by their own per-day approval
-    // (approveCoverDriverDay snapshots the rates), so they are not edited here.
-    is_driver: false,
-    short_deliveries: 0,
-    long_deliveries: 0,
-    extra_short_deliveries: 0,
-    extra_long_deliveries: 0,
-    extra_short_reason: null,
-    extra_long_reason: null,
+    // Every cover driver drives, and this is the ONLY place their counts can be
+    // corrected after clock-out — the correction is written to the clock event
+    // and then snapshotted by the approval, so nothing can disagree afterwards.
+    is_driver: true,
+    short_deliveries: c.short_deliveries,
+    long_deliveries: c.long_deliveries,
+    extra_short_deliveries: c.extra_short_deliveries,
+    extra_long_deliveries: c.extra_long_deliveries,
+    extra_short_reason: c.extra_short_reason,
+    extra_long_reason: c.extra_long_reason,
   };
 }
+
+function fromManager(m: ManagerDailyApprovalRow): ApprovalRow {
+  return {
+    kind: "manager",
+    person_id: m.manager_id,
+    name: m.manager_name,
+    store_id: m.store_id,
+    event_date: m.event_date,
+    clocked_hours: m.worked_hours,
+    shifts: [],
+    // Per-shift sign-off exists for managers in the database, but their row is
+    // approved on the day's drop total, so there is nothing to break out here.
+    shiftRows: [],
+    approved: m.approved,
+    // A manager's hours are monitoring only — the badge shows what they worked,
+    // never a figure anyone can edit, because none of it is paid from here.
+    approved_hours: null,
+    approved_row_id: null,
+    auto_clocked_out: m.auto_clocked_out,
+    manual_entry: false,
+    manual_entry_reason: null,
+    is_driver: true,
+    short_deliveries: m.short_deliveries,
+    long_deliveries: m.long_deliveries,
+    extra_short_deliveries: m.extra_short_deliveries,
+    extra_long_deliveries: m.extra_long_deliveries,
+    extra_short_reason: m.extra_short_reason,
+    extra_long_reason: m.extra_long_reason,
+  };
+}
+
+/** The delivery corrections an approval carries. Only changed fields are sent. */
+export type DeliveryEdit = {
+  short?: number;
+  long?: number;
+  extraShort?: number;
+  extraShortReason?: string;
+  extraLong?: number;
+  extraLongReason?: string;
+};
 
 type Handlers = {
   onApprove: (
     employee_id: string,
     event_date: string,
     override_hours?: number,
-    deliveries?: {
-      short?: number;
-      long?: number;
-      extraShort?: number;
-      extraShortReason?: string;
-      extraLong?: number;
-      extraLongReason?: string;
-    },
+    deliveries?: DeliveryEdit,
   ) => Promise<void>;
   onApproveDate: (event_date: string, employee_ids: string[]) => Promise<void>;
   onUnapprove: (employee_id: string, event_date: string) => Promise<void>;
@@ -189,7 +278,21 @@ type Handlers = {
     cover_driver_id: string,
     work_date: string,
     override_hours?: number,
+    deliveries?: DeliveryEdit,
   ) => Promise<void>;
+  /**
+   * Approve or withdraw ONE shift of a split day. This is what lets a day
+   * accumulate: approving a second shift adds to what is already approved
+   * rather than replacing it, and undoing one leaves the rest of the day paid.
+   */
+  onShiftApproval?: (session_id: string, approved: boolean) => Promise<void>;
+  /** Managers are settled on deliveries alone — no hours override. */
+  onManagerApprove?: (
+    manager_id: string,
+    event_date: string,
+    deliveries?: DeliveryEdit,
+  ) => Promise<void>;
+  onManagerUnapprove?: (manager_id: string, event_date: string) => Promise<void>;
   onCoverApproveDate?: (
     work_date: string,
     cover_driver_ids: string[],
@@ -200,6 +303,7 @@ type Handlers = {
 export function DailyHoursApproval({
   summaries,
   coverSummaries = [],
+  managerSummaries = [],
   stores,
   todayISO,
   showStore,
@@ -212,6 +316,9 @@ export function DailyHoursApproval({
   onCoverApprove,
   onCoverApproveDate,
   onCoverUnapprove,
+  onManagerApprove,
+  onManagerUnapprove,
+  onShiftApproval,
 }: {
   summaries: ClockDailySummary[];
   /** Cover driver days, shown alongside employees on the same date. */
@@ -220,8 +327,10 @@ export function DailyHoursApproval({
   todayISO: string;
   showStore: boolean;
   /** Active roster, for the "someone forgot to clock in" picker. */
-  employees?: Array<{ id: string; name: string }>;
+  employees?: Array<{ id: string; name: string; is_driver?: boolean }>;
   coverDrivers?: Array<{ id: string; name: string }>;
+  /** Managers who clocked in on a listed day, for delivery sign-off. */
+  managerSummaries?: ManagerDailyApprovalRow[];
   onManualSaved?: () => void;
 } & Handlers) {
   const toast = useToast();
@@ -243,11 +352,52 @@ export function DailyHoursApproval({
   const [busyKey, setBusyKey] = React.useState<string | null>(null);
   const [busyDate, setBusyDate] = React.useState<string | null>(null);
   const [hideApproved, setHideApproved] = React.useState(false);
+  /** Rows whose per-shift breakdown is open, by rowKey. */
+  const [openShifts, setOpenShifts] = React.useState<string[]>([]);
+  const [busyShift, setBusyShift] = React.useState<string | null>(null);
 
-  // Employees first, then cover drivers, matching the Live board's ordering.
+  function toggleShifts(key: string) {
+    setOpenShifts((prev) =>
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
+    );
+  }
+
+  async function doShift(row: ApprovalRow, shift: ShiftRow, approve: boolean) {
+    if (!onShiftApproval) return;
+    setBusyShift(shift.id);
+    try {
+      await onShiftApproval(shift.id, approve);
+      toast.success(
+        approve
+          ? `Approved ${row.name}'s ${shift.label} shift`
+          : `Took ${row.name}'s ${shift.label} shift off the payout`,
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setBusyShift(null);
+    }
+  }
+
+  // Managers, then employees, then cover drivers — the Live board's ordering.
+  // Manager rows only appear once there are drops to sign off: a manager who
+  // did none has nothing on this screen to approve, and listing every clocked
+  // manager day would bury the rows that need attention.
   const allRows = React.useMemo<ApprovalRow[]>(
-    () => [...summaries.map(fromEmployee), ...coverSummaries.map(fromCover)],
-    [summaries, coverSummaries],
+    () => [
+      ...managerSummaries
+        .filter(
+          (m) =>
+            m.short_deliveries > 0 ||
+            m.long_deliveries > 0 ||
+            m.extra_short_deliveries > 0 ||
+            m.extra_long_deliveries > 0,
+        )
+        .map(fromManager),
+      ...summaries.map(fromEmployee),
+      ...coverSummaries.map(fromCover),
+    ],
+    [managerSummaries, summaries, coverSummaries],
   );
 
   const storeName = React.useMemo(() => {
@@ -336,10 +486,21 @@ export function DailyHoursApproval({
     );
   }
 
+  /**
+   * A row that can be signed off. Employees and cover drivers are approved on
+   * their HOURS, so a day with none has nothing to confirm. A manager is
+   * approved on DELIVERIES alone — their hours pay nothing — so a manager row
+   * that reached this list (it only does when drops exist) is always approvable,
+   * including one still on shift whose worked hours read zero.
+   */
+  function isApprovable(s: ApprovalRow): boolean {
+    return s.kind === "manager" ? true : s.clocked_hours > 0;
+  }
+
   const selectedRows = allRows.filter((s) => s.event_date === selectedDate);
   const approvedCount = selectedRows.filter((s) => s.approved).length;
   const pendingCount = selectedRows.filter(
-    (s) => !s.approved && s.clocked_hours > 0,
+    (s) => !s.approved && isApprovable(s),
   ).length;
   const visibleSelected = hideApproved
     ? selectedRows.filter((s) => !s.approved)
@@ -350,7 +511,7 @@ export function DailyHoursApproval({
     const map = new Map<string, ApprovalRow[]>();
     for (const s of allRows) {
       if (s.event_date === selectedDate) continue;
-      if (s.approved || s.clocked_hours <= 0) continue;
+      if (s.approved || !isApprovable(s)) continue;
       const arr = map.get(s.event_date) ?? [];
       arr.push(s);
       map.set(s.event_date, arr);
@@ -381,6 +542,7 @@ export function DailyHoursApproval({
       .map((e) => ({
         id: e.id,
         name: e.name,
+        is_driver: e.is_driver,
         existing_shifts: shiftsThatDay.get(e.id) ?? 0,
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -407,8 +569,11 @@ export function DailyHoursApproval({
   async function doApprove(s: ApprovalRow) {
     const key = rowKey(s);
     const eff = effHours(s);
-    if (!(eff > 0)) return;
-    const override = Math.abs(eff - s.clocked_hours) > 0.01 ? eff : undefined;
+    if (!isApprovable(s)) return;
+    // A manager's hours are never sent — nothing pays from them, and there is
+    // no hours box on their row to have changed.
+    const override =
+      s.kind !== "manager" && Math.abs(eff - s.clocked_hours) > 0.01 ? eff : undefined;
 
     // An extra raised above zero with nothing explaining it is refused before
     // the request is even sent — the server enforces the same rule, but there
@@ -456,18 +621,39 @@ export function DailyHoursApproval({
           }
         : undefined;
 
+    // Cover driver and manager corrections are settled as a WHOLE-DAY total
+    // (the server rewrites the row from what it's given), so a partial patch
+    // would read an unsent field as zero and wipe it. Employee approval merges
+    // field by field, so there only the changed ones go.
+    const fullDeliveries: DeliveryEdit | undefined = anyDeliveryChanged
+      ? {
+          short,
+          long,
+          extraShort,
+          extraShortReason: effExtraReason(s, "extraShort").trim(),
+          extraLong,
+          extraLongReason: effExtraReason(s, "extraLong").trim(),
+        }
+      : undefined;
+
     setBusyKey(key);
     try {
-      if (s.kind === "cover") {
+      if (s.kind === "manager") {
+        if (!onManagerApprove) return;
+        await onManagerApprove(s.person_id, s.event_date, fullDeliveries);
+      } else if (s.kind === "cover") {
         if (!onCoverApprove) return;
-        await onCoverApprove(s.person_id, s.event_date, override);
+        await onCoverApprove(s.person_id, s.event_date, override, fullDeliveries);
       } else {
         await onApprove(s.person_id, s.event_date, override, deliveries);
       }
+      const drops = short + long + extraShort + extraLong;
       toast.success(
-        deliveries
-          ? `Approved ${s.name} — ${formatHoursMins(eff)}h, ${short + long + extraShort + extraLong} deliveries`
-          : `Approved ${s.name} — ${formatHoursMins(eff)}h`,
+        s.kind === "manager"
+          ? `Approved ${s.name} — ${drops} deliveries`
+          : deliveries
+            ? `Approved ${s.name} — ${formatHoursMins(eff)}h, ${drops} deliveries`
+            : `Approved ${s.name} — ${formatHoursMins(eff)}h`,
       );
       setEdited((p) => {
         const n = { ...p };
@@ -499,7 +685,10 @@ export function DailyHoursApproval({
     const key = rowKey(s);
     setBusyKey(key);
     try {
-      if (s.kind === "cover") {
+      if (s.kind === "manager") {
+        if (!onManagerUnapprove) return;
+        await onManagerUnapprove(s.person_id, s.event_date);
+      } else if (s.kind === "cover") {
         if (!onCoverUnapprove || !s.approved_row_id) return;
         await onCoverUnapprove(s.approved_row_id);
       } else {
@@ -514,10 +703,11 @@ export function DailyHoursApproval({
   }
 
   async function doApproveDate(date: string, rows: ApprovalRow[]) {
-    const pending = rows.filter((r) => !r.approved && r.clocked_hours > 0);
+    const pending = rows.filter((r) => !r.approved && isApprovable(r));
     const empIds = pending.filter((r) => r.kind === "employee").map((r) => r.person_id);
     const covIds = pending.filter((r) => r.kind === "cover").map((r) => r.person_id);
-    if (empIds.length === 0 && covIds.length === 0) return;
+    const mgrIds = pending.filter((r) => r.kind === "manager").map((r) => r.person_id);
+    if (empIds.length === 0 && covIds.length === 0 && mgrIds.length === 0) return;
     setBusyDate(date);
     try {
       // Sequential, not parallel: two writes to the same day's rollup.
@@ -525,7 +715,12 @@ export function DailyHoursApproval({
       if (covIds.length > 0 && onCoverApproveDate) {
         await onCoverApproveDate(date, covIds);
       }
-      const n = empIds.length + covIds.length;
+      // No bulk manager action: there are at most a couple a day, and each is a
+      // separate row write with no shared rollup to batch.
+      if (onManagerApprove) {
+        for (const id of mgrIds) await onManagerApprove(id, date);
+      }
+      const n = empIds.length + covIds.length + (onManagerApprove ? mgrIds.length : 0);
       toast.success(`Approved ${n} ${n === 1 ? "person" : "people"}`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
@@ -542,6 +737,10 @@ export function DailyHoursApproval({
       s.approved &&
       s.approved_hours != null &&
       Math.abs(s.approved_hours - s.clocked_hours) > 0.01;
+    const expanded = openShifts.includes(key);
+    // Only finished shifts can be signed off — one still running isn't
+    // outstanding work, it's work happening.
+    const pendingShifts = s.shiftRows.filter((r) => !r.approved && !r.open).length;
 
     return (
       <div
@@ -559,6 +758,14 @@ export function DailyHoursApproval({
                 title="Cover driver — paid cash only, with no NI or bank split."
               >
                 Cover
+              </span>
+            )}
+            {s.kind === "manager" && (
+              <span
+                className="ml-2 align-middle text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-gold/40 bg-gold/10 text-gold font-medium"
+                title="Manager — only the deliveries they covered are settled here. Their salary is unaffected."
+              >
+                Manager
               </span>
             )}
             {s.auto_clocked_out && (
@@ -582,12 +789,18 @@ export function DailyHoursApproval({
               </span>
             )}
             {s.shifts.length > 1 && (
-              <span
-                className="ml-2 align-middle text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-border bg-surface-hover text-text-subtle font-medium"
-                title={`Worked in ${s.shifts.length} separate shifts — ${s.shifts.join(", ")}`}
+              <button
+                type="button"
+                onClick={() => toggleShifts(key)}
+                className="ml-2 align-middle text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-border bg-surface-hover text-text-subtle font-medium hover:text-text-primary hover:border-gold/40"
+                title={`Worked in ${s.shifts.length} separate shifts — ${s.shifts.join(", ")}. Each is approved on its own.`}
               >
                 {s.shifts.length} shifts
-              </span>
+                {pendingShifts > 0 && (
+                  <span className="text-warning"> · {pendingShifts} to approve</span>
+                )}
+                <span className="ml-1">{expanded ? "▾" : "▸"}</span>
+              </button>
             )}
             {missingDeliveries(s) && (
               <span
@@ -602,11 +815,78 @@ export function DailyHoursApproval({
             {s.auto_clocked_out ? "Assumed" : "Clocked"} {formatHoursMins(s.clocked_hours)}h
             {store && <> · {store}</>}
             {s.kind === "cover" && <> · cash</>}
+            {s.kind === "manager" && <> · deliveries only</>}
           </p>
           {/* The total above is the SUM of these, never last-out minus
               first-in — the gap between shifts isn't worked time. */}
-          {s.shifts.length > 1 && (
+          {s.shifts.length > 1 && !expanded && (
             <p className="text-[11px] text-text-subtle">{s.shifts.join(" · ")}</p>
+          )}
+
+          {/* Per-shift sign-off. This is what makes a day accumulate: approving
+              the evening shift adds its hours and drops to the morning's rather
+              than replacing them, and withdrawing it leaves the morning paid. */}
+          {expanded && s.shiftRows.length > 0 && (
+            <div className="mt-2 rounded-lg border border-border bg-bg/40 divide-y divide-border/60">
+              {s.shiftRows.map((sh) => (
+                <div key={sh.id} className="flex items-center gap-2 px-3 py-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-text-primary tabular-nums">
+                      {sh.label}
+                      <span className="text-text-muted">
+                        {" "}
+                        · {formatHoursMins(sh.approvedHours ?? sh.hours)}h
+                      </span>
+                      {sh.approvedHours != null &&
+                        Math.abs(sh.approvedHours - sh.hours) > 0.01 && (
+                          <span
+                            className="text-warning"
+                            title={`Corrected from the clocked ${formatHoursMins(sh.hours)}h`}
+                          >
+                            {" "}
+                            (adjusted)
+                          </span>
+                        )}
+                      {sh.deliveries > 0 && (
+                        <span className="text-text-muted"> · {sh.deliveries} drops</span>
+                      )}
+                    </p>
+                  </div>
+                  {sh.open ? (
+                    <span className="text-[11px] text-text-subtle">On shift</span>
+                  ) : sh.approved ? (
+                    <>
+                      <Badge variant="success">
+                        <CheckIcon size={11} />
+                        Paid
+                      </Badge>
+                      <button
+                        onClick={() => doShift(s, sh, false)}
+                        disabled={busyShift === sh.id}
+                        className="text-[11px] text-text-muted hover:text-danger underline-offset-2 hover:underline disabled:opacity-50"
+                        title="Take this shift back off the Tuesday payout. The rest of the day stays approved."
+                      >
+                        {busyShift === sh.id ? "…" : "Undo"}
+                      </button>
+                    </>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      loading={busyShift === sh.id}
+                      onClick={() => doShift(s, sh, true)}
+                      title="Approve this shift on its own — it is added to whatever is already approved for the day."
+                    >
+                      Approve shift
+                    </Button>
+                  )}
+                </div>
+              ))}
+              <p className="px-3 py-2 text-[11px] text-text-subtle">
+                Each shift is paid only once approved. Approving the whole day above
+                signs off every outstanding shift at once.
+              </p>
+            </div>
           )}
         </div>
 
@@ -614,7 +894,9 @@ export function DailyHoursApproval({
           <div className="flex items-center gap-2">
             <Badge variant="success">
               <CheckIcon size={12} />
-              {formatHoursMins(s.approved_hours ?? s.clocked_hours)}h approved
+              {s.kind === "manager"
+                ? "Deliveries approved"
+                : `${formatHoursMins(s.approved_hours ?? s.clocked_hours)}h approved`}
             </Badge>
             {s.is_driver && (
               <span
@@ -650,6 +932,10 @@ export function DailyHoursApproval({
           </div>
         ) : (
           <div className="flex items-center gap-2 flex-wrap justify-end">
+            {/* No hours box on a manager row: their pay is a fixed daily wage
+                that this app never touches, so an editable figure here would
+                imply a correction that changes nothing. */}
+            {s.kind !== "manager" && (
             <div className="flex flex-col items-end gap-0.5">
               <div className="flex items-center gap-1">
                 <input
@@ -674,6 +960,7 @@ export function DailyHoursApproval({
                 <span className="text-[10px] text-danger">Invalid — use h.mm, e.g. 4.32</span>
               )}
             </div>
+            )}
 
             {/* Drivers only — everyone else is paid on hours alone, and empty
                 delivery boxes on a kitchen shift are just noise. */}
@@ -801,7 +1088,8 @@ export function DailyHoursApproval({
               onClick={() => doApprove(s)}
               loading={busy}
               disabled={
-                !(effHours(s) > 0) ||
+                !isApprovable(s) ||
+                (s.kind !== "manager" && !(effHours(s) > 0)) ||
                 (s.is_driver &&
                   (extraNeedsReason(s, "extraShort") || extraNeedsReason(s, "extraLong")))
               }
@@ -1027,7 +1315,10 @@ export function DailyHoursApproval({
         split is worked out per week (first 20h = bank) — see the{" "}
         <span className="font-medium text-text-primary">Weekly Log</span> tab.{" "}
         <span className="font-medium text-text-primary">Cover</span> rows are cash
-        only and are paid per approved day, with no weekly split.
+        only and are paid per approved day, with no weekly split.{" "}
+        <span className="font-medium text-text-primary">Manager</span> rows appear
+        only when a manager covered deliveries — their salary is untouched, so
+        only the drop counts are confirmed here.
       </p>
       <p className="text-xs text-text-muted">
         For drivers, <span className="font-medium text-text-primary">sd</span> /{" "}

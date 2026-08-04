@@ -112,6 +112,10 @@ export function summariseCoverDriverDays(
     .map((e) => {
       const driver = byId.get(e.cover_driver_id);
       const hours = clockedHours(e.clock_in_at, e.clock_out_at);
+      const shortBase = Number(e.short_deliveries_count) || 0;
+      const longBase = Number(e.long_deliveries_count) || 0;
+      const extraShort = Number(e.extra_short_deliveries) || 0;
+      const extraLong = Number(e.extra_long_deliveries) || 0;
       const short = totalDeliveries(e.short_deliveries_count, e.extra_short_deliveries);
       const long = totalDeliveries(e.long_deliveries_count, e.extra_long_deliveries);
       const hourlyRate = Number(driver?.hourly_cash_rate ?? 0);
@@ -126,6 +130,12 @@ export function summariseCoverDriverDays(
         total_hours: hours,
         short_deliveries: short,
         long_deliveries: long,
+        short_base: shortBase,
+        long_base: longBase,
+        extra_short_deliveries: extraShort,
+        extra_long_deliveries: extraLong,
+        extra_short_reason: e.extra_short_reason ?? null,
+        extra_long_reason: e.extra_long_reason ?? null,
         hourly_cash_rate: hourlyRate,
         short_delivery_rate: shortRate,
         long_delivery_rate: longRate,
@@ -174,6 +184,12 @@ export function mergeCoverDailyApproval(
       auto_clocked_out: d.auto_clocked_out,
       manual_entry: d.manual_entry,
       manual_entry_reason: d.manual_entry_reason,
+      short_deliveries: d.short_base,
+      long_deliveries: d.long_base,
+      extra_short_deliveries: d.extra_short_deliveries,
+      extra_long_deliveries: d.extra_long_deliveries,
+      extra_short_reason: d.extra_short_reason,
+      extra_long_reason: d.extra_long_reason,
     });
   }
 
@@ -186,6 +202,12 @@ export function mergeCoverDailyApproval(
       row.approved = true;
       row.approved_hours = hours;
       row.approved_row_id = a.id;
+      // Show what was SNAPSHOTTED, not what the clock event says — those are
+      // the counts the payout will actually pay.
+      row.short_deliveries = Number(a.short_deliveries) || 0;
+      row.long_deliveries = Number(a.long_deliveries) || 0;
+      row.extra_short_deliveries = 0;
+      row.extra_long_deliveries = 0;
     } else {
       map.set(key, {
         cover_driver_id: a.cover_driver_id,
@@ -199,6 +221,12 @@ export function mergeCoverDailyApproval(
         auto_clocked_out: false,
         manual_entry: false,
         manual_entry_reason: null,
+        short_deliveries: Number(a.short_deliveries) || 0,
+        long_deliveries: Number(a.long_deliveries) || 0,
+        extra_short_deliveries: 0,
+        extra_long_deliveries: 0,
+        extra_short_reason: null,
+        extra_long_reason: null,
       });
     }
   }

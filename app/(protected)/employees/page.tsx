@@ -5,8 +5,14 @@ import { withContactEmails } from "@/lib/contact-email";
 import { getAppSettings } from "@/app/actions/settings";
 import { addDays, groupClockEventsByWeek, mapClockEventsToDaily, startOfISOWeek, toISODate, todayISO } from "@/lib/utils";
 import { summariseCoverDriverDays } from "@/lib/cover-driver-hours";
+import { mapManagerDaysToApproval } from "@/lib/manager-clock-sessions";
 import { hasRole } from "@/lib/types";
-import type { CoverDriver, CoverDriverClockEvent, Employee } from "@/lib/types";
+import type {
+  CoverDriver,
+  CoverDriverClockEvent,
+  Employee,
+  ManagerClockEvent,
+} from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +32,8 @@ export default async function EmployeesPage() {
     coverDriversRes,
     coverClocksRes,
     coverHoursRes,
+    managersRes,
+    managerClocksRes,
   ] = await Promise.all([
     supabase
       .from("employees")
@@ -48,7 +56,9 @@ export default async function EmployeesPage() {
     // approval row lists them under the total it is signing off.
     supabase
       .from("clock_sessions")
-      .select("clock_event_id, seq, clock_in_at, clock_out_at, auto_clocked_out, manual_entry")
+      .select(
+        "id, clock_event_id, seq, clock_in_at, clock_out_at, auto_clocked_out, manual_entry, hours_approved, approved_hours, short_deliveries_count, long_deliveries_count, extra_short_deliveries, extra_long_deliveries",
+      )
       .gte("event_date", eightWeeksBack)
       .order("clock_in_at", { ascending: true }),
     supabase.from("cover_drivers").select("*").order("name"),
@@ -63,6 +73,14 @@ export default async function EmployeesPage() {
       .select("*")
       .order("work_date", { ascending: false })
       .limit(500),
+    // Managers can cover deliveries on a busy night (migration 034). Those
+    // drops are paid, so they need signing off here like anyone else's.
+    supabase.from("allowed_users").select("id, name").eq("role", "manager"),
+    supabase
+      .from("manager_clock_events")
+      .select("*")
+      .gte("event_date", eightWeeksBack)
+      .order("event_date", { ascending: false }),
   ]);
 
   const employees = await withContactEmails(supabase, (empRes.data ?? []) as Employee[]);
@@ -104,6 +122,14 @@ export default async function EmployeesPage() {
     coverDrivers,
   );
 
+  const managerNames = new Map(
+    (managersRes.data ?? []).map((m) => [m.id as string, (m.name as string) ?? "Manager"]),
+  );
+  const managerDaily = mapManagerDaysToApproval(
+    (managerClocksRes.data ?? []) as ManagerClockEvent[],
+    managerNames,
+  );
+
   return (
     <>
       <PageHeader
@@ -118,6 +144,7 @@ export default async function EmployeesPage() {
         coverDriverHours={(coverHoursRes.data ?? []) as any[]}
         clockSummaries={clockSummaries}
         clockDailySummaries={clockDailySummaries}
+        managerDaily={managerDaily}
         loadError={clocksRes.error?.message ?? null}
         todayISO={todayISO()}
         stores={storesRes.data ?? []}

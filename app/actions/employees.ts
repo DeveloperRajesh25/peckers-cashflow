@@ -14,6 +14,13 @@ import {
   toISODate,
 } from "@/lib/utils";
 import { employeeNiRate, rollupApprovedWeek } from "@/lib/employee-hours-rollup";
+import {
+  applyDayDeliveryTotal,
+  approveDaySessions,
+  recomputeDayHeader,
+  setSessionApproval,
+  unapproveDaySessions,
+} from "@/lib/clock-sessions";
 import type {
   EmployeeHoursComputed,
   EmployeePosition,
@@ -587,7 +594,7 @@ export async function approveDailyHours(input: {
   const { data: ce, error: ceErr } = await supabase
     .from("clock_events")
     .select(
-      "id, clock_in_at, clock_out_at, worked_hours, short_deliveries_count, long_deliveries_count, extra_short_deliveries, extra_long_deliveries",
+      "id, clock_in_at, clock_out_at, worked_hours, short_deliveries_count, long_deliveries_count, extra_short_deliveries, extra_long_deliveries, extra_short_reason, extra_long_reason",
     )
     .eq("employee_id", input.employee_id)
     .eq("event_date", input.event_date)
@@ -634,34 +641,92 @@ export async function approveDailyHours(input: {
     (extraShortIn !== undefined && extraShortIn !== prevExtraShort) ||
     (extraLongIn !== undefined && extraLongIn !== prevExtraLong);
 
-  const { error: upErr } = await supabase
+  // Delivery fields, only when the manager actually supplied a figure — a plain
+  // "Approve" on a non-driver must not blank a driver-entered count. Reason
+  // follows the count to null exactly like every other delivery write path: an
+  // extra corrected down to zero has nothing left to explain.
+  const deliveryFields = {
+    ...(shortIn !== undefined ? { short_deliveries_count: shortIn } : {}),
+    ...(longIn !== undefined ? { long_deliveries_count: longIn } : {}),
+    ...(extraShortIn !== undefined
+      ? {
+          extra_short_deliveries: extraShortIn,
+          extra_short_reason: extraShortIn > 0 ? input.extra_short_reason!.trim() : null,
+        }
+      : {}),
+    ...(extraLongIn !== undefined
+      ? {
+          extra_long_deliveries: extraLongIn,
+          extra_long_reason: extraLongIn > 0 ? input.extra_long_reason!.trim() : null,
+        }
+      : {}),
+  };
+
+  // A corrected count is a DAY total the manager typed, and the day may hold
+  // several shifts (migration 033). Settle it across the sessions and let
+  // recomputeDayHeader write the header's delivery columns, so it stays their
+  // single writer. Only fall back to writing them here when the day has no
+  // sessions at all (a pre-029 row).
+  let deliveriesAppliedToSessions = false;
+  if (deliveriesChanged) {
+    deliveriesAppliedToSessions = await applyDayDeliveryTotal(supabase, ce.id, {
+      short: shortIn ?? prevShort,
+      long: longIn ?? prevLong,
+      extraShort: extraShortIn ?? prevExtraShort,
+      extraLong: extraLongIn ?? prevExtraLong,
+      extraShortReason:
+        (extraShortIn ?? prevExtraShort) > 0
+          ? input.extra_short_reason?.trim() ?? ce.extra_short_reason ?? null
+          : null,
+      extraLongReason:
+        (extraLongIn ?? prevExtraLong) > 0
+          ? input.extra_long_reason?.trim() ?? ce.extra_long_reason ?? null
+          : null,
+    });
+  }
+
+  // Approval lives on the SHIFT now (migration 035), because nothing is paid
+  // until it is signed off and a day can gain another shift after part of it
+  // has been. Approving here means "sign off everything still outstanding on
+  // this day"; the header's hours_approved / approved_hours are then derived
+  // from the shifts by recomputeDayHeader, which owns them.
+  const approvedShifts = await approveDaySessions(supabase, ce.id, {
+    by: user.id,
+    dayHours: hasOverride ? approvedHours : null,
+  });
+
+  if (approvedShifts > 0 || deliveriesAppliedToSessions) {
+    await recomputeDayHeader(supabase, ce.id);
+  }
+
+  // A pre-029 day has no shifts to carry the approval, so its header still is
+  // the record. Everything else has just been derived and must not be
+  // hand-written over the top.
+  if (approvedShifts === 0 && !deliveriesAppliedToSessions) {
+    const { error: upErr } = await supabase
+      .from("clock_events")
+      .update({
+        hours_approved: true,
+        approved_hours: approvedHours,
+        approved_short_deliveries_count: shortIn ?? prevShort,
+        approved_long_deliveries_count: longIn ?? prevLong,
+        approved_extra_short_deliveries: extraShortIn ?? prevExtraShort,
+        approved_extra_long_deliveries: extraLongIn ?? prevExtraLong,
+        approved_session_count: 1,
+        ...deliveryFields,
+      })
+      .eq("id", ce.id);
+    if (upErr) throw new Error(upErr.message);
+  }
+
+  const { error: stampErr } = await supabase
     .from("clock_events")
     .update({
-      hours_approved: true,
-      approved_hours: approvedHours,
       hours_approved_by: user.id,
       hours_approved_at: new Date().toISOString(),
-      // Only written when the manager actually supplied a figure — a plain
-      // "Approve" on a non-driver must not blank a driver-entered count.
-      ...(shortIn !== undefined ? { short_deliveries_count: shortIn } : {}),
-      ...(longIn !== undefined ? { long_deliveries_count: longIn } : {}),
-      // Reason follows the count to null exactly like every other delivery
-      // write path: an extra corrected down to zero has nothing left to explain.
-      ...(extraShortIn !== undefined
-        ? {
-            extra_short_deliveries: extraShortIn,
-            extra_short_reason: extraShortIn > 0 ? input.extra_short_reason!.trim() : null,
-          }
-        : {}),
-      ...(extraLongIn !== undefined
-        ? {
-            extra_long_deliveries: extraLongIn,
-            extra_long_reason: extraLongIn > 0 ? input.extra_long_reason!.trim() : null,
-          }
-        : {}),
     })
     .eq("id", ce.id);
-  if (upErr) throw new Error(upErr.message);
+  if (stampErr) throw new Error(stampErr.message);
 
   const rate = await employeeNiRate(supabase, input.employee_id);
   const weekStart = toISODate(startOfISOWeek(parseISODate(input.event_date)));
@@ -690,19 +755,29 @@ export async function approveDailyHours(input: {
     },
   });
 
-  // Deliveries show on the Rota and Live board as well as the payout, so a
-  // correction made here has to refresh those too — freshHoursResult only
-  // covers the employees + analytics screens.
-  if (deliveriesChanged) {
-    revalidatePath("/rota");
-    revalidatePath("/manager/rota");
-    revalidatePath("/live");
-    revalidatePath("/manager/live");
-    revalidatePath("/cash-flow/payout");
-    revalidatePath("/manager/cash-flow/payout");
-  }
+  // Approving is now what PUTS the day on the Tuesday sheet (migration 035), so
+  // the payout has to be refreshed every time, not only when a count changed.
+  // freshHoursResult covers the employees + analytics screens; the rest show
+  // hours or drops and would otherwise sit stale.
+  revalidateApprovalPaths();
 
   return freshHoursResult(supabase);
+}
+
+/**
+ * Every screen whose numbers move when a day is signed off or withdrawn. A
+ * missing path here reads as a stale screen, and on the payout that means a
+ * wage sheet showing money that is no longer approved (Update 66).
+ */
+function revalidateApprovalPaths() {
+  revalidatePath("/rota");
+  revalidatePath("/manager/rota");
+  revalidatePath("/live");
+  revalidatePath("/manager/live");
+  revalidatePath("/cash-flow/payout");
+  revalidatePath("/manager/cash-flow/payout");
+  revalidatePath("/employees");
+  revalidatePath("/manager/employees");
 }
 
 /** Revert a day's approval and recompute the week's rollup. */
@@ -723,16 +798,34 @@ export async function unapproveDailyHours(input: {
     .maybeSingle();
   if (!ce) throw new Error("Clock record not found.");
 
-  const { error: upErr } = await supabase
+  // Withdraw every shift's sign-off, then let the header re-derive. Undoing a
+  // whole day is the blunt instrument; unapproveShift takes back ONE shift and
+  // leaves the rest of the day paid.
+  const withdrawn = await unapproveDaySessions(supabase, ce.id, user.id);
+  if (withdrawn > 0) {
+    await recomputeDayHeader(supabase, ce.id);
+  } else {
+    // Pre-029 day: no shifts, so the header carries the approval itself.
+    const { error: upErr } = await supabase
+      .from("clock_events")
+      .update({
+        hours_approved: false,
+        approved_hours: null,
+        approved_short_deliveries_count: null,
+        approved_long_deliveries_count: null,
+        approved_extra_short_deliveries: 0,
+        approved_extra_long_deliveries: 0,
+        approved_session_count: 0,
+      })
+      .eq("id", ce.id);
+    if (upErr) throw new Error(upErr.message);
+  }
+
+  const { error: stampErr } = await supabase
     .from("clock_events")
-    .update({
-      hours_approved: false,
-      approved_hours: null,
-      hours_approved_by: null,
-      hours_approved_at: null,
-    })
+    .update({ hours_approved_by: null, hours_approved_at: null })
     .eq("id", ce.id);
-  if (upErr) throw new Error(upErr.message);
+  if (stampErr) throw new Error(stampErr.message);
 
   const rate = await employeeNiRate(supabase, input.employee_id);
   const weekStart = toISODate(startOfISOWeek(parseISODate(input.event_date)));
@@ -742,8 +835,76 @@ export async function unapproveDailyHours(input: {
     action: "unapprove_daily_hours",
     entity: "clock_events",
     entity_id: ce.id,
-    changes: input,
+    changes: { ...input, shifts_withdrawn: withdrawn },
   });
+
+  revalidateApprovalPaths();
+
+  return freshHoursResult(supabase);
+}
+
+/**
+ * Sign off, or withdraw, ONE shift of a day.
+ *
+ * This is what makes the accumulate/undo behaviour work: a day whose morning
+ * shift is approved at 3 drops and whose evening shift is then approved at 1
+ * pays 4; withdrawing the evening shift alone returns the day to 3 rather than
+ * dropping it to nothing. Approving or undoing the whole day is the same thing
+ * applied to every shift at once.
+ */
+export async function setShiftApproval(input: {
+  session_id: string;
+  approved: boolean;
+  /** Corrected hours for this shift only. Ignored when withdrawing. */
+  override_hours?: number;
+}) {
+  const user = await requireAllowed();
+  const supabase = createServerSupabase();
+  if (!input.session_id) throw new Error("Shift not identified.");
+
+  const { data: session, error: sErr } = await supabase
+    .from("clock_sessions")
+    .select("id, clock_event_id, employee_id, event_date, clock_in_at, clock_out_at")
+    .eq("id", input.session_id)
+    .maybeSingle();
+  if (sErr) throw new Error(sErr.message);
+  if (!session) throw new Error("That shift no longer exists.");
+  if (input.approved && !session.clock_out_at) {
+    throw new Error("That shift is still open — it can be approved once it ends.");
+  }
+
+  let approvedHours: number | null = null;
+  if (input.approved && input.override_hours != null) {
+    const h = Number(input.override_hours);
+    if (!Number.isFinite(h) || h <= 0 || h > 24) {
+      throw new Error("Hours must be between 0 and 24.");
+    }
+    approvedHours = Math.round(h * 100) / 100;
+  }
+
+  await setSessionApproval(supabase, session.id, {
+    approved: input.approved,
+    approvedHours,
+    by: user.id,
+  });
+  await recomputeDayHeader(supabase, session.clock_event_id);
+
+  const rate = await employeeNiRate(supabase, session.employee_id);
+  const weekStart = toISODate(startOfISOWeek(parseISODate(session.event_date)));
+  await rollupApprovedWeek(supabase, session.employee_id, weekStart, rate, user.id);
+
+  await writeAudit({
+    action: input.approved ? "approve_shift" : "unapprove_shift",
+    entity: "clock_sessions",
+    entity_id: session.id,
+    changes: {
+      employee_id: session.employee_id,
+      event_date: session.event_date,
+      ...(approvedHours != null ? { approved_hours: approvedHours } : {}),
+    },
+  });
+
+  revalidateApprovalPaths();
 
   return freshHoursResult(supabase);
 }
@@ -764,7 +925,9 @@ export async function approveDailyHoursForDate(input: {
 
   const { data: events } = await supabase
     .from("clock_events")
-    .select("id, employee_id, clock_in_at, clock_out_at, worked_hours, hours_approved")
+    .select(
+      "id, employee_id, clock_in_at, clock_out_at, worked_hours, hours_approved, short_deliveries_count, long_deliveries_count, extra_short_deliveries, extra_long_deliveries",
+    )
     .eq("event_date", input.event_date)
     .in("employee_id", ids);
 
@@ -776,16 +939,33 @@ export async function approveDailyHoursForDate(input: {
     if (!e.clock_in_at || !e.clock_out_at || e.hours_approved) continue;
     const rawHours = Math.round(dayWorkedHours(e) * 100) / 100;
     if (rawHours <= 0) continue;
-    const { error } = await supabase
+
+    // No day total is passed: a bulk approve confirms what was clocked, so each
+    // shift keeps its own duration rather than a share of one typed figure.
+    const approvedShifts = await approveDaySessions(supabase, e.id, { by: user.id });
+    if (approvedShifts > 0) {
+      await recomputeDayHeader(supabase, e.id);
+    } else {
+      const { error } = await supabase
+        .from("clock_events")
+        .update({
+          hours_approved: true,
+          approved_hours: rawHours,
+          approved_short_deliveries_count: e.short_deliveries_count,
+          approved_long_deliveries_count: e.long_deliveries_count,
+          approved_extra_short_deliveries: Number(e.extra_short_deliveries) || 0,
+          approved_extra_long_deliveries: Number(e.extra_long_deliveries) || 0,
+          approved_session_count: 1,
+        })
+        .eq("id", e.id);
+      if (error) throw new Error(error.message);
+    }
+
+    const { error: stampErr } = await supabase
       .from("clock_events")
-      .update({
-        hours_approved: true,
-        approved_hours: rawHours,
-        hours_approved_by: user.id,
-        hours_approved_at: nowIso,
-      })
+      .update({ hours_approved_by: user.id, hours_approved_at: nowIso })
       .eq("id", e.id);
-    if (error) throw new Error(error.message);
+    if (stampErr) throw new Error(stampErr.message);
     affected.add(e.employee_id);
   }
 
@@ -801,6 +981,8 @@ export async function approveDailyHoursForDate(input: {
     entity_id: input.event_date,
     changes: { event_date: input.event_date, approved: affected.size },
   });
+
+  revalidateApprovalPaths();
 
   return freshHoursResult(supabase);
 }

@@ -163,6 +163,13 @@ export async function createManagerAccount(input: {
 export async function updateManagerWage(input: {
   allowed_user_id: string;
   fixed_daily_wage: number | null;
+  /**
+   * Per-drop rates for deliveries the manager covers (migration 034). Unlike
+   * the fixed wage these DO pay: they price the manager's line on the Tuesday
+   * sheet. Null clears the rate and falls back to the default petrol rate.
+   */
+  short_delivery_rate?: number | null;
+  long_delivery_rate?: number | null;
 }): Promise<{ ok: true }> {
   await requireAdmin();
   const supabase = createServerSupabase();
@@ -180,9 +187,25 @@ export async function updateManagerWage(input: {
       ? Number(input.fixed_daily_wage)
       : null;
 
+  // Bounded because this is money per drop: a stray zero here multiplies across
+  // every delivery on the sheet.
+  const rate = (v: number | null | undefined, label: string): number | null => {
+    if (v == null || v === ("" as unknown)) return null;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) throw new Error(`${label} can't be negative.`);
+    if (n > 50) throw new Error(`${label} of £${n} looks wrong — check it.`);
+    return n > 0 ? Math.round(n * 100) / 100 : null;
+  };
+  const shortRate = rate(input.short_delivery_rate, "Short delivery rate");
+  const longRate = rate(input.long_delivery_rate, "Long delivery rate");
+
   const { error } = await supabase
     .from("allowed_users")
-    .update({ fixed_daily_wage: wage })
+    .update({
+      fixed_daily_wage: wage,
+      short_delivery_rate: shortRate,
+      long_delivery_rate: longRate,
+    })
     .eq("id", acct.id);
   if (error) throw new Error(error.message);
 
@@ -190,11 +213,18 @@ export async function updateManagerWage(input: {
     action: "update_manager_wage",
     entity: "allowed_user",
     entity_id: acct.id,
-    changes: { fixed_daily_wage: wage },
+    changes: {
+      fixed_daily_wage: wage,
+      short_delivery_rate: shortRate,
+      long_delivery_rate: longRate,
+    },
   });
 
   revalidatePath("/managers");
   revalidatePath("/live");
+  // Rates price the manager's delivery line, so the sheet must be recomputed.
+  revalidatePath("/cash-flow/payout");
+  revalidatePath("/manager/cash-flow/payout");
   return { ok: true };
 }
 

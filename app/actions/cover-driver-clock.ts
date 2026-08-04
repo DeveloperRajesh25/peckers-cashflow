@@ -19,6 +19,10 @@ import {
   resolveManualClockOut,
 } from "@/lib/auto-clock-out";
 import { resolveActiveStoreId, type ActionResult } from "@/lib/types";
+import {
+  normaliseDeliveryInput,
+  type DeliveryInput,
+} from "@/lib/clock-sessions";
 
 // =============================================================
 // Cover driver clock in/out.
@@ -425,6 +429,12 @@ export type ManualCoverDriverClockEntryInput = {
   /** "HH:MM". Omit while the driver is still on shift. */
   clock_out_time?: string | null;
   reason: string;
+  /**
+   * Drops for the day. Cover drivers are single-shift, so these land straight
+   * on the clock event. Omitted leaves the counts untouched — on an existing
+   * row that means "times corrected, drops left alone".
+   */
+  deliveries?: DeliveryInput | null;
 };
 
 export async function upsertManualCoverDriverClockEntry(
@@ -557,6 +567,19 @@ async function performManualCoverEntry(input: ManualCoverDriverClockEntryInput) 
     payload.clock_out_lng = null;
   }
 
+  // Drops go straight on the day: cover drivers have no sessions table, one
+  // engagement per date. Omitted counts leave whatever is on record alone, so
+  // correcting a bad clock-out time can't silently zero a day's deliveries.
+  const deliveries = normaliseDeliveryInput(input.deliveries);
+  if (deliveries) {
+    payload.short_deliveries_count = deliveries.short;
+    payload.long_deliveries_count = deliveries.long;
+    payload.extra_short_deliveries = deliveries.extraShort;
+    payload.extra_long_deliveries = deliveries.extraLong;
+    payload.extra_short_reason = deliveries.extraShort > 0 ? deliveries.extraShortReason : null;
+    payload.extra_long_reason = deliveries.extraLong > 0 ? deliveries.extraLongReason : null;
+  }
+
   if (existing) {
     const { error } = await supabase
       .from("cover_driver_clock_events")
@@ -579,6 +602,16 @@ async function performManualCoverEntry(input: ManualCoverDriverClockEntryInput) 
       clock_in_at: payload.clock_in_at,
       clock_out_at: payload.clock_out_at ?? null,
       reason: input.reason.trim(),
+      ...(deliveries
+        ? {
+            deliveries: {
+              short: deliveries.short,
+              long: deliveries.long,
+              extra_short: deliveries.extraShort,
+              extra_long: deliveries.extraLong,
+            },
+          }
+        : {}),
       by: user.email,
     },
   });

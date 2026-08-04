@@ -37,6 +37,98 @@ function sessionHours(s: { clock_in_at: string; clock_out_at: string | null }): 
   return ms > 0 ? ms / 3_600_000 : 0;
 }
 
+/** The delivery counts a session (or a summed day) carries. */
+export type DeliveryCounts = {
+  short: number | null;
+  long: number | null;
+  extraShort: number;
+  extraLong: number;
+  extraShortReason: string | null;
+  extraLongReason: string | null;
+};
+
+/** The raw delivery fields a form submits, before validation. */
+export type DeliveryInput = {
+  short_deliveries_count?: number | null;
+  long_deliveries_count?: number | null;
+  extra_short_deliveries?: number | null;
+  extra_long_deliveries?: number | null;
+  extra_short_reason?: string | null;
+  extra_long_reason?: string | null;
+};
+
+/**
+ * Upper bound on any one count for a single shift. Not a business rule — a
+ * sanity bound on money: every drop is paid, so a fat-fingered "300" instead of
+ * "30" is cash out of the till. Well above any real round.
+ */
+export const MAX_DELIVERIES_PER_SHIFT = 150;
+
+/**
+ * Validate and normalise submitted delivery counts. Shared by every write path
+ * — clock-out, manual entry, Daily Approval — so all of them agree on what a
+ * legal count is and on the "an extra needs a reason" rule.
+ *
+ * Returns null when nothing was submitted at all, which callers treat as "leave
+ * whatever is already recorded alone" rather than "zero".
+ */
+export function normaliseDeliveryInput(
+  input: DeliveryInput | null | undefined,
+): DeliveryCounts | null {
+  if (!input) return null;
+  const given = [
+    input.short_deliveries_count,
+    input.long_deliveries_count,
+    input.extra_short_deliveries,
+    input.extra_long_deliveries,
+  ].some((v) => v != null);
+  if (!given) return null;
+
+  const count = (v: number | null | undefined, label: string): number => {
+    const n = Number(v) || 0;
+    if (!Number.isFinite(n) || n < 0) throw new Error(`${label} can't be negative.`);
+    if (n > MAX_DELIVERIES_PER_SHIFT) {
+      throw new Error(`${label} looks wrong — ${Math.round(n)} is above ${MAX_DELIVERIES_PER_SHIFT}.`);
+    }
+    return Math.round(n);
+  };
+
+  const extraShort = count(input.extra_short_deliveries, "Extra short deliveries");
+  const extraLong = count(input.extra_long_deliveries, "Extra long deliveries");
+  const extraShortReason = input.extra_short_reason?.trim() || null;
+  const extraLongReason = input.extra_long_reason?.trim() || null;
+  if (extraShort > 0 && !extraShortReason) {
+    throw new Error("Please give a reason for the extra short deliveries.");
+  }
+  if (extraLong > 0 && !extraLongReason) {
+    throw new Error("Please give a reason for the extra long deliveries.");
+  }
+
+  return {
+    short: count(input.short_deliveries_count, "Short deliveries"),
+    long: count(input.long_deliveries_count, "Long deliveries"),
+    extraShort,
+    extraLong,
+    extraShortReason,
+    extraLongReason,
+  };
+}
+
+type SessionDeliveryRow = {
+  short_deliveries_count?: number | null;
+  long_deliveries_count?: number | null;
+  extra_short_deliveries?: number | null;
+  extra_long_deliveries?: number | null;
+  extra_short_reason?: string | null;
+  extra_long_reason?: string | null;
+};
+
+/** The approval a shift carries (migration 035). */
+type SessionApprovalRow = {
+  hours_approved?: boolean | null;
+  approved_hours?: number | string | null;
+};
+
 export type DerivedDayHeader = {
   workedHours: number;
   sessionCount: number;
@@ -47,7 +139,60 @@ export type DerivedDayHeader = {
   firstIn: string | null;
   /** Latest clock-out of the day, by clock time. Null while a shift is open. */
   lastOut: string | null;
+  /** The day's deliveries: the SUM across its shifts (migration 033). */
+  deliveries: DeliveryCounts;
+  /**
+   * The same sums restricted to APPROVED shifts (migration 035) — the figures
+   * the Tuesday payout pays. Everything above stays the raw record of what was
+   * worked, which is what the Live board, the Rota and the employee's own view
+   * must keep showing.
+   */
+  approvedHours: number | null;
+  approvedDeliveries: DeliveryCounts;
+  approvedSessionCount: number;
+  /**
+   * True when every COMPLETED shift is signed off and at least one exists. An
+   * open shift never counts against it — a manager can't approve a shift that
+   * hasn't finished, so a day mid-way through must not read as outstanding
+   * work forever.
+   */
+  allApproved: boolean;
 };
+
+/**
+ * Sum a day's delivery counts across its shifts.
+ *
+ * short/long stay NULL when no shift recorded anything — null and 0 mean
+ * different things to the Daily Approval "No deliveries" warning, which exists
+ * to catch a driver who never entered a count at all.
+ *
+ * The reasons are not summable, so the day carries the first non-empty one of
+ * each. A reason explains why extras happened that day; a manager reviewing the
+ * day sees it alongside the total, and the per-shift text stays intact on the
+ * session row it belongs to.
+ */
+export function sumSessionDeliveries(sessions: SessionDeliveryRow[]): DeliveryCounts {
+  let short: number | null = null;
+  let long: number | null = null;
+  let extraShort = 0;
+  let extraLong = 0;
+  for (const s of sessions) {
+    if (s.short_deliveries_count != null) short = (short ?? 0) + Number(s.short_deliveries_count);
+    if (s.long_deliveries_count != null) long = (long ?? 0) + Number(s.long_deliveries_count);
+    extraShort += Number(s.extra_short_deliveries) || 0;
+    extraLong += Number(s.extra_long_deliveries) || 0;
+  }
+  return {
+    short,
+    long,
+    extraShort,
+    extraLong,
+    extraShortReason:
+      sessions.map((s) => s.extra_short_reason?.trim()).find((r) => !!r) ?? null,
+    extraLongReason:
+      sessions.map((s) => s.extra_long_reason?.trim()).find((r) => !!r) ?? null,
+  };
+}
 
 /**
  * What a day's header columns should read, given its sessions. Pure — the
@@ -60,7 +205,10 @@ export type DerivedDayHeader = {
  * would otherwise stamp the day as 17:00 → 13:00 (Update 72).
  */
 export function deriveDayHeader(
-  sessions: Array<{ clock_in_at: string; clock_out_at: string | null }>,
+  sessions: Array<
+    { clock_in_at: string; clock_out_at: string | null } & SessionDeliveryRow &
+      SessionApprovalRow
+  >,
 ): DerivedDayHeader {
   if (sessions.length === 0) {
     return {
@@ -70,6 +218,11 @@ export function deriveDayHeader(
       open: false,
       firstIn: null,
       lastOut: null,
+      deliveries: sumSessionDeliveries([]),
+      approvedHours: null,
+      approvedDeliveries: sumSessionDeliveries([]),
+      approvedSessionCount: 0,
+      allApproved: false,
     };
   }
 
@@ -94,6 +247,18 @@ export function deriveDayHeader(
         null,
       );
 
+  // Only a finished shift can be signed off, so approval is read off the
+  // completed ones. An unapproved OPEN shift is not outstanding work — it is
+  // work still happening.
+  const approved = completed.filter((s) => s.hours_approved);
+  const approvedHours = round2(
+    approved.reduce(
+      (sum, s) =>
+        sum + (s.approved_hours != null ? Number(s.approved_hours) || 0 : sessionHours(s)),
+      0,
+    ),
+  );
+
   return {
     workedHours,
     sessionCount: sessions.length,
@@ -101,6 +266,13 @@ export function deriveDayHeader(
     open,
     firstIn,
     lastOut,
+    // Every shift counts, including one still running — a driver logs drops
+    // live during their shift, and the Live board must show them as they come.
+    deliveries: sumSessionDeliveries(sessions),
+    approvedHours: approved.length > 0 ? approvedHours : null,
+    approvedDeliveries: sumSessionDeliveries(approved),
+    approvedSessionCount: approved.length,
+    allApproved: approved.length > 0 && approved.length === completed.length,
   };
 }
 
@@ -142,6 +314,180 @@ export async function sessionsForEvent(
     .order("seq", { ascending: true });
   if (error) throw new Error(error.message);
   return (data ?? []) as ClockSession[];
+}
+
+/**
+ * Write one shift's delivery counts. The caller recomputes the day header
+ * afterwards — this never touches clock_events itself, so recomputeDayHeader
+ * stays the single writer of the day's totals.
+ */
+export async function setSessionDeliveries(
+  supabase: SupabaseClient,
+  sessionId: string,
+  deliveries: DeliveryCounts,
+): Promise<void> {
+  const { error } = await supabase
+    .from("clock_sessions")
+    .update({
+      short_deliveries_count: deliveries.short,
+      long_deliveries_count: deliveries.long,
+      extra_short_deliveries: deliveries.extraShort,
+      extra_long_deliveries: deliveries.extraLong,
+      extra_short_reason: deliveries.extraShort > 0 ? deliveries.extraShortReason : null,
+      extra_long_reason: deliveries.extraLong > 0 ? deliveries.extraLongReason : null,
+    })
+    .eq("id", sessionId);
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Apply a DAY-level delivery total that a manager typed (Daily Approval, the
+ * Rota's delivery modal) onto a day that may hold several shifts.
+ *
+ * The manager is correcting the day, not a shift — they have no per-shift view
+ * — so the difference is settled on the day's LAST shift and the earlier ones
+ * are left exactly as the driver recorded them. That keeps the day's sum equal
+ * to what the manager typed (which is the number they will check afterwards)
+ * while preserving the per-shift detail that is actually known to be right.
+ *
+ * Returns false when the day has no sessions at all (a pre-029 row); the caller
+ * falls back to writing the header directly, as it always did.
+ */
+export async function applyDayDeliveryTotal(
+  supabase: SupabaseClient,
+  clockEventId: string,
+  total: DeliveryCounts,
+): Promise<boolean> {
+  const sessions = await sessionsForEvent(supabase, clockEventId);
+  if (sessions.length === 0) return false;
+
+  const last = sessions[sessions.length - 1];
+  const others = sessions.slice(0, -1);
+  const rest = sumSessionDeliveries(others);
+
+  // Never let the remainder go negative: a manager lowering the day total below
+  // what the earlier shifts already hold would otherwise credit a negative drop
+  // against the day — and so against the driver's pay.
+  const remainder: DeliveryCounts = {
+    short: total.short == null ? null : Math.max(0, total.short - (rest.short ?? 0)),
+    long: total.long == null ? null : Math.max(0, total.long - (rest.long ?? 0)),
+    extraShort: Math.max(0, total.extraShort - rest.extraShort),
+    extraLong: Math.max(0, total.extraLong - rest.extraLong),
+    extraShortReason: total.extraShortReason,
+    extraLongReason: total.extraLongReason,
+  };
+
+  await setSessionDeliveries(supabase, last.id, remainder);
+  return true;
+}
+
+/**
+ * Sign off (or withdraw) one shift. `approvedHours` corrects that shift's hours;
+ * null leaves the clocked duration standing.
+ *
+ * Deliberately does NOT recompute the day header — the caller does that once
+ * after the last shift it touches, so approving a whole day is one recompute
+ * rather than one per shift.
+ */
+export async function setSessionApproval(
+  supabase: SupabaseClient,
+  sessionId: string,
+  approval: { approved: boolean; approvedHours?: number | null; by: string },
+): Promise<void> {
+  const { error } = await supabase
+    .from("clock_sessions")
+    .update(
+      approval.approved
+        ? {
+            hours_approved: true,
+            approved_hours: approval.approvedHours ?? null,
+            hours_approved_by: approval.by,
+            hours_approved_at: new Date().toISOString(),
+          }
+        : {
+            hours_approved: false,
+            // The correction goes with the approval. Leaving it behind would
+            // silently re-apply a manager's old figure if the shift were later
+            // approved again by someone who never saw it.
+            approved_hours: null,
+            hours_approved_by: null,
+            hours_approved_at: null,
+          },
+    )
+    .eq("id", sessionId);
+  if (error) throw new Error(error.message);
+}
+
+/**
+ * Approve every completed shift of a day that isn't already signed off, and
+ * return how many that was.
+ *
+ * `dayHours`, when given, is a DAY total the manager typed. It is settled the
+ * same way a corrected delivery total is: the shifts already approved keep
+ * their agreed figures and the difference lands on the last shift being
+ * approved now, so the day sums to exactly the number the manager will check
+ * afterwards. Never negative — a total below what the earlier shifts already
+ * hold would otherwise pay the difference back out of someone's wages.
+ */
+export async function approveDaySessions(
+  supabase: SupabaseClient,
+  clockEventId: string,
+  opts: { by: string; dayHours?: number | null },
+): Promise<number> {
+  const sessions = await sessionsForEvent(supabase, clockEventId);
+  const completed = sessions.filter((s) => s.clock_out_at);
+  const pending = completed.filter((s) => !s.hours_approved);
+  if (pending.length === 0) return 0;
+
+  let remaining =
+    opts.dayHours != null && Number.isFinite(opts.dayHours)
+      ? Math.max(
+          0,
+          Number(opts.dayHours) -
+            completed
+              .filter((s) => s.hours_approved)
+              .reduce(
+                (sum, s) =>
+                  sum +
+                  (s.approved_hours != null
+                    ? Number(s.approved_hours) || 0
+                    : sessionHours(s)),
+                0,
+              ),
+        )
+      : null;
+
+  for (let i = 0; i < pending.length; i++) {
+    const s = pending[i];
+    let approvedHours: number | null = null;
+    if (remaining != null) {
+      const isLast = i === pending.length - 1;
+      // Everything left over goes on the final shift so the day totals exactly.
+      const share = isLast ? remaining : Math.min(remaining, sessionHours(s));
+      approvedHours = round2(share);
+      remaining = round2(Math.max(0, remaining - share));
+    }
+    await setSessionApproval(supabase, s.id, {
+      approved: true,
+      approvedHours,
+      by: opts.by,
+    });
+  }
+  return pending.length;
+}
+
+/** Withdraw the approval on every shift of a day. Returns how many changed. */
+export async function unapproveDaySessions(
+  supabase: SupabaseClient,
+  clockEventId: string,
+  by: string,
+): Promise<number> {
+  const sessions = await sessionsForEvent(supabase, clockEventId);
+  const approved = sessions.filter((s) => s.hours_approved);
+  for (const s of approved) {
+    await setSessionApproval(supabase, s.id, { approved: false, by });
+  }
+  return approved.length;
 }
 
 /** Sessions for many days at once, keyed by clock_events.id — for list screens. */
@@ -194,6 +540,28 @@ export async function recomputeDayHeader(
       clock_out_at: derived.lastOut,
       worked_hours: derived.completedCount > 0 ? derived.workedHours : null,
       session_count: derived.sessionCount,
+      // The day's delivery totals are a SUM of its shifts (migration 033), and
+      // this is their ONLY writer. Keeping them on the header is what lets the
+      // Rota, the Tuesday payout, Payout History, the Live board, Daily
+      // Approval and the Vita Mojo cross-check keep reading one row, unchanged
+      // — they simply read a correct number now on a split day.
+      short_deliveries_count: derived.deliveries.short,
+      long_deliveries_count: derived.deliveries.long,
+      extra_short_deliveries: derived.deliveries.extraShort,
+      extra_long_deliveries: derived.deliveries.extraLong,
+      extra_short_reason: derived.deliveries.extraShortReason,
+      extra_long_reason: derived.deliveries.extraLongReason,
+      // The APPROVED half (migration 035) — what the Tuesday payout pays. Same
+      // rule as the raw columns: derived here and nowhere else, so approving,
+      // undoing, correcting a count and adding a shift all settle through one
+      // writer and cannot disagree.
+      approved_short_deliveries_count: derived.approvedDeliveries.short,
+      approved_long_deliveries_count: derived.approvedDeliveries.long,
+      approved_extra_short_deliveries: derived.approvedDeliveries.extraShort,
+      approved_extra_long_deliveries: derived.approvedDeliveries.extraLong,
+      approved_session_count: derived.approvedSessionCount,
+      approved_hours: derived.approvedHours,
+      hours_approved: derived.allApproved,
     })
     .eq("id", clockEventId);
   if (error) throw new Error(error.message);
@@ -263,6 +631,9 @@ export async function closeSession(
     lng?: number | null;
     auto?: { source: string; at: string } | null;
     manual?: { by: string; at: string; reason: string } | null;
+    /** This shift's own drops — see migration 033. Omitted leaves whatever the
+     *  driver already logged live during the shift untouched. */
+    deliveries?: DeliveryCounts | null;
   },
 ): Promise<boolean> {
   const payload: Record<string, unknown> = {
@@ -270,6 +641,16 @@ export async function closeSession(
     clock_out_lat: input.lat ?? null,
     clock_out_lng: input.lng ?? null,
   };
+  if (input.deliveries) {
+    payload.short_deliveries_count = input.deliveries.short;
+    payload.long_deliveries_count = input.deliveries.long;
+    payload.extra_short_deliveries = input.deliveries.extraShort;
+    payload.extra_long_deliveries = input.deliveries.extraLong;
+    payload.extra_short_reason =
+      input.deliveries.extraShort > 0 ? input.deliveries.extraShortReason : null;
+    payload.extra_long_reason =
+      input.deliveries.extraLong > 0 ? input.deliveries.extraLongReason : null;
+  }
   if (input.auto) {
     payload.auto_clocked_out = true;
     payload.auto_clock_out_source = input.auto.source;
@@ -322,7 +703,7 @@ export async function adoptHeaderIntoSession(
     auto_clocked_out?: boolean | null;
     auto_clock_out_source?: string | null;
     auto_clock_out_at?: string | null;
-  },
+  } & SessionDeliveryRow,
 ): Promise<ClockSession | null> {
   if (!header.clock_in_at) return null;
 
@@ -350,6 +731,15 @@ export async function adoptHeaderIntoSession(
       auto_clocked_out: !!header.auto_clocked_out,
       auto_clock_out_source: header.auto_clock_out_source ?? null,
       auto_clock_out_at: header.auto_clock_out_at ?? null,
+      // The day's drops come with it. This session becomes the only thing the
+      // header is summed from, so leaving them behind would have the very next
+      // recomputeDayHeader wipe a legacy day's counts to zero (migration 033).
+      short_deliveries_count: header.short_deliveries_count ?? null,
+      long_deliveries_count: header.long_deliveries_count ?? null,
+      extra_short_deliveries: header.extra_short_deliveries ?? 0,
+      extra_long_deliveries: header.extra_long_deliveries ?? 0,
+      extra_short_reason: header.extra_short_reason ?? null,
+      extra_long_reason: header.extra_long_reason ?? null,
     })
     .select("*")
     .maybeSingle();

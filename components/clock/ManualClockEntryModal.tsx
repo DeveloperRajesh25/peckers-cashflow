@@ -35,6 +35,12 @@ export type ManualEntryCandidate = {
    * (migration 029), so they stay pickable, just labelled.
    */
   existing_shifts?: number;
+  /**
+   * Only a Driver earns a per-drop allowance, so only their card offers the
+   * delivery boxes. Cover drivers are drivers by definition and the modal
+   * treats every one of them as such regardless of this flag.
+   */
+  is_driver?: boolean;
 };
 
 const REASON_PRESETS = [
@@ -69,8 +75,24 @@ export function ManualClockEntryModal({
   const [otherReason, setOtherReason] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // Drops for the shift being recorded. Blank stays blank: an untouched box
+  // records nothing rather than an explicit zero, which is what the "No
+  // deliveries" warning on Daily Approval is there to catch.
+  const [shortDrops, setShortDrops] = React.useState("");
+  const [longDrops, setLongDrops] = React.useState("");
+  const [extraShort, setExtraShort] = React.useState("");
+  const [extraLong, setExtraLong] = React.useState("");
+  const [extraShortReason, setExtraShortReason] = React.useState("");
+  const [extraLongReason, setExtraLongReason] = React.useState("");
 
   const selected = candidates.find((c) => c.id === personId) ?? null;
+  // Cover drivers all drive; employees only if their position says so.
+  const showDeliveries = mode === "cover_driver" || !!selected?.is_driver;
+
+  const extraShortNeedsReason = (Number(extraShort) || 0) > 0 && !extraShortReason.trim();
+  const extraLongNeedsReason = (Number(extraLong) || 0) > 0 && !extraLongReason.trim();
+  const anyDrop =
+    !!shortDrops.trim() || !!longDrops.trim() || !!extraShort.trim() || !!extraLong.trim();
 
   // Pre-fill from the scheduled shift so the common case is pick → save.
   React.useEffect(() => {
@@ -109,7 +131,21 @@ export function ManualClockEntryModal({
     !sameTime &&
     !notYetWorked &&
     !!reason &&
+    !(showDeliveries && (extraShortNeedsReason || extraLongNeedsReason)) &&
     !busy;
+
+  /** Omitted entirely when nothing was typed, so the server writes no counts. */
+  function deliveryPayload() {
+    if (!showDeliveries || !anyDrop) return undefined;
+    return {
+      short_deliveries_count: Number(shortDrops) || 0,
+      long_deliveries_count: Number(longDrops) || 0,
+      extra_short_deliveries: Number(extraShort) || 0,
+      extra_long_deliveries: Number(extraLong) || 0,
+      extra_short_reason: extraShortReason.trim() || null,
+      extra_long_reason: extraLongReason.trim() || null,
+    };
+  }
 
   async function save() {
     setError(null);
@@ -117,9 +153,16 @@ export function ManualClockEntryModal({
     if (!inTime) return setError("Enter the clock-in time.");
     if (requireClockOut && !outTime) return setError("Enter the clock-out time.");
     if (!reason) return setError("Give a reason.");
+    if (showDeliveries && extraShortNeedsReason) {
+      return setError("Give a reason for the extra short deliveries.");
+    }
+    if (showDeliveries && extraLongNeedsReason) {
+      return setError("Give a reason for the extra long deliveries.");
+    }
 
     setBusy(true);
     try {
+      const deliveries = deliveryPayload();
       const res =
         mode === "employee"
           ? await upsertManualClockEntry({
@@ -128,6 +171,7 @@ export function ManualClockEntryModal({
               clock_in_time: inTime,
               clock_out_time: outTime || null,
               reason,
+              deliveries,
             })
           : await upsertManualCoverDriverClockEntry({
               cover_driver_id: personId,
@@ -135,6 +179,7 @@ export function ManualClockEntryModal({
               clock_in_time: inTime,
               clock_out_time: outTime || null,
               reason,
+              deliveries,
             });
 
       if (!res.ok) {
@@ -273,6 +318,81 @@ export function ManualClockEntryModal({
                 onChange={(e) => setOtherReason(e.target.value)}
                 maxLength={200}
               />
+            )}
+
+            {/* Drops for the shift being recorded. Without these a manually
+                entered day paid the hours but zero deliveries, which for a
+                driver is most of their money — the manager had to go and
+                correct it on Daily Approval afterwards, if they remembered. */}
+            {showDeliveries && (
+              <div className="rounded-xl border border-border bg-bg px-3 py-3 flex flex-col gap-3">
+                <p className="text-xs font-medium text-text-primary">
+                  Deliveries for this shift
+                </p>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <Input
+                    type="number"
+                    min="0"
+                    step="1"
+                    label="Short (SD)"
+                    value={shortDrops}
+                    onChange={(e) => setShortDrops(e.target.value)}
+                  />
+                  <Input
+                    type="number"
+                    min="0"
+                    step="1"
+                    label="Long (LD)"
+                    value={longDrops}
+                    onChange={(e) => setLongDrops(e.target.value)}
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <Input
+                    type="number"
+                    min="0"
+                    step="1"
+                    label="Extra short (MS)"
+                    value={extraShort}
+                    onChange={(e) => setExtraShort(e.target.value)}
+                  />
+                  <Input
+                    type="number"
+                    min="0"
+                    step="1"
+                    label="Extra long (ML)"
+                    value={extraLong}
+                    onChange={(e) => setExtraLong(e.target.value)}
+                  />
+                </div>
+
+                {(Number(extraShort) || 0) > 0 && (
+                  <Input
+                    label="Reason for extra short *"
+                    placeholder="Why were these beyond the round?"
+                    value={extraShortReason}
+                    onChange={(e) => setExtraShortReason(e.target.value)}
+                    maxLength={200}
+                  />
+                )}
+                {(Number(extraLong) || 0) > 0 && (
+                  <Input
+                    label="Reason for extra long *"
+                    placeholder="Why were these beyond the round?"
+                    value={extraLongReason}
+                    onChange={(e) => setExtraLongReason(e.target.value)}
+                    maxLength={200}
+                  />
+                )}
+
+                <p className="text-[11px] text-text-muted">
+                  Leave blank if you don&apos;t know the counts — the day is flagged
+                  “No deliveries” on Daily Approval so they can be filled in there.
+                  MS / ML are drops beyond the normal round, paid at the same rate.
+                </p>
+              </div>
             )}
 
             {error && (

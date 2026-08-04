@@ -27,12 +27,17 @@ import {
 } from "@/lib/auto-clock-out";
 import {
   adoptHeaderIntoSession,
+  applyDayDeliveryTotal,
   closeSession,
   findOpenSession,
+  normaliseDeliveryInput,
   openSession,
   overlapsExistingSession,
   recomputeDayHeader,
   sessionsForEvent,
+  setSessionDeliveries,
+  type DeliveryCounts,
+  type DeliveryInput,
 } from "@/lib/clock-sessions";
 import { employeeNiRate, rollupApprovedWeek } from "@/lib/employee-hours-rollup";
 import { hasRole, resolveActiveStoreId, type ActionResult } from "@/lib/types";
@@ -263,14 +268,14 @@ async function revokeApprovalForAddedShift(input: {
   if (!isProvisioningConfigured()) return;
   try {
     const admin = createAdminClient();
+    // Only the day's roll-up is restated. The already-approved shift KEEPS its
+    // approval and keeps paying (migration 035) — it was worked and signed off,
+    // and starting a second shift is no reason to take the first one back off
+    // the sheet. recomputeDayHeader flips hours_approved to false because the
+    // new shift is outstanding, which is what returns the day to the queue.
     await admin
       .from("clock_events")
-      .update({
-        hours_approved: false,
-        approved_hours: null,
-        hours_approved_by: null,
-        hours_approved_at: null,
-      })
+      .update({ hours_approved_by: null, hours_approved_at: null })
       .eq("id", input.clockEventId);
 
     const rate = await employeeNiRate(admin, input.employeeId);
@@ -304,6 +309,10 @@ function revalidateClockPaths() {
   revalidatePath("/manager/rota");
   revalidatePath("/employees");
   revalidatePath("/manager/employees");
+  // A clock write moves the payout too: a new shift lands unapproved, which
+  // takes the day back off the sheet until it's signed off (migration 035).
+  revalidatePath("/cash-flow/payout");
+  revalidatePath("/manager/cash-flow/payout");
 }
 
 export async function clockIn(input: {
@@ -439,8 +448,10 @@ async function performClockIn(input: {
 
   await recomputeDayHeader(supabase, clockEventId);
 
-  // Signing off 4h and then working another 4h must not leave the day paid at
-  // 4h. Revoking returns it to the pending queue with the full total.
+  // Signing off 4h and then working another 4h must not leave the day reading
+  // as fully approved. The new shift is unapproved, so recomputeDayHeader has
+  // already returned the day to the pending queue; this clears the stale
+  // "approved by" stamp and restates the week.
   if (existing?.hours_approved) {
     await revokeApprovalForAddedShift({
       clockEventId,
@@ -556,37 +567,30 @@ async function performClockOut(input: ClockOutInput) {
   const nowDate = new Date();
   const now = nowDate.toISOString();
 
+  // Delivery counts belong to THE SHIFT BEING CLOSED, not the day (migration
+  // 033). A driver clocking out of their evening shift reports what they did on
+  // that shift; the day's total is the SUM of its shifts, written by
+  // recomputeDayHeader below. Before 033 this overwrote a single day-level
+  // column, so a second clock-out silently erased the morning's drops.
   const closedOk = await closeSession(supabase, session.id, {
     clockOutAt: now,
     lat: input.latitude,
     lng: input.longitude,
+    deliveries: isDriver
+      ? {
+          short: Math.max(0, Number(input.short_deliveries_count) || 0),
+          long: Math.max(0, Number(input.long_deliveries_count) || 0),
+          extraShort: Math.max(0, Number(input.extra_short_deliveries) || 0),
+          extraLong: Math.max(0, Number(input.extra_long_deliveries) || 0),
+          extraShortReason: input.extra_short_reason?.trim() || null,
+          extraLongReason: input.extra_long_reason?.trim() || null,
+        }
+      : null,
   });
   if (!closedOk) throw new Error("You've already clocked out of that shift.");
 
-  // Delivery counts are a DAY total on the header, not per shift: a driver
-  // entering "12 short" at the end of their evening shift is reporting the
-  // day's round so far, and the clock-out form pre-fills with what's already
-  // recorded. Keeping them on the header also leaves the payout, the rota
-  // delivery column and the Vita Mojo cross-check reading one row, unchanged.
-  if (isDriver) {
-    const extraShort = Math.max(0, Number(input.extra_short_deliveries) || 0);
-    const extraLong = Math.max(0, Number(input.extra_long_deliveries) || 0);
-    const { error } = await supabase
-      .from("clock_events")
-      .update({
-        short_deliveries_count: Math.max(0, Number(input.short_deliveries_count) || 0),
-        long_deliveries_count: Math.max(0, Number(input.long_deliveries_count) || 0),
-        extra_short_deliveries: extraShort,
-        extra_long_deliveries: extraLong,
-        extra_short_reason:
-          extraShort > 0 ? input.extra_short_reason?.trim() || null : null,
-        extra_long_reason: extraLong > 0 ? input.extra_long_reason?.trim() || null : null,
-      })
-      .eq("id", existing.id);
-    if (error) throw new Error(error.message);
-  }
-
-  // Header last: first-in / last-out / summed hours all come from the sessions.
+  // Header last: first-in / last-out / summed hours AND summed deliveries all
+  // come from the sessions.
   const { workedHours, lastOut } = await recomputeDayHeader(supabase, existing.id);
 
   // If the shift was auto-created at clock-in, stamp the real worked window on
@@ -653,33 +657,37 @@ async function performUpdateDeliveryCount(input: DeliveryCountInput) {
     throw new Error("Please give a reason for the extra long deliveries.");
   }
 
-  const today = todayISO();
-  const { data: existing } = await supabase
-    .from("clock_events")
-    .select("id")
-    .eq("employee_id", employee.id)
-    .eq("event_date", today)
-    .maybeSingle();
-  if (!existing) throw new Error("No clock event for today.");
+  // The live count belongs to the shift the driver is ON — not the day — so a
+  // count logged during the evening shift can never overwrite the morning's
+  // (migration 033). Resolved from the open session, which also means a shift
+  // that began yesterday and is still running updates the right day.
+  const session = await findOpenSession(supabase, employee.id);
+  if (!session) throw new Error("You're not clocked in — clock in before logging deliveries.");
 
-  const { error } = await supabase
-    .from("clock_events")
-    .update({
-      short_deliveries_count: Math.max(0, Number(input.short_count) || 0),
-      long_deliveries_count: Math.max(0, Number(input.long_count) || 0),
-      extra_short_deliveries: extraShort,
-      extra_long_deliveries: extraLong,
-      extra_short_reason: extraShort > 0 ? input.extra_short_reason!.trim() : null,
-      extra_long_reason: extraLong > 0 ? input.extra_long_reason!.trim() : null,
-    })
-    .eq("id", existing.id);
-  if (error) throw new Error(error.message);
+  const clockEventId = session.clock_event_id;
+  await setSessionDeliveries(supabase, session.id, {
+    short: Math.max(0, Number(input.short_count) || 0),
+    long: Math.max(0, Number(input.long_count) || 0),
+    extraShort,
+    extraLong,
+    extraShortReason: input.extra_short_reason?.trim() || null,
+    extraLongReason: input.extra_long_reason?.trim() || null,
+  });
+  // Roll the shift's counts up into the day header every reader still uses.
+  await recomputeDayHeader(supabase, clockEventId);
 
   await writeAudit({
     action: "update_deliveries",
     entity: "clock_event",
-    entity_id: existing.id,
-    changes: { short: input.short_count, long: input.long_count, extraShort, extraLong },
+    entity_id: clockEventId,
+    changes: {
+      session_id: session.id,
+      session_seq: session.seq,
+      short: input.short_count,
+      long: input.long_count,
+      extraShort,
+      extraLong,
+    },
   });
 
   revalidatePath("/employee/attendance");
@@ -763,8 +771,25 @@ async function performSetClockDeliveries(input: SetClockDeliveriesInput) {
   };
 
   if (existing) {
-    const { error } = await supabase.from("clock_events").update(fields).eq("id", existing.id);
-    if (error) throw new Error(error.message);
+    // The manager typed a DAY total; the day may hold several shifts. Settle
+    // the difference on the last shift and leave the earlier ones as the driver
+    // recorded them, then let recomputeDayHeader write the header from the
+    // sessions so it stays their single writer (migration 033). A pre-029 day
+    // with no sessions falls back to writing the header directly, as before.
+    const applied = await applyDayDeliveryTotal(supabase, existing.id, {
+      short: shortCount,
+      long: longCount,
+      extraShort,
+      extraLong,
+      extraShortReason: extraShort > 0 ? input.extra_short_reason!.trim() : null,
+      extraLongReason: extraLong > 0 ? input.extra_long_reason!.trim() : null,
+    });
+    if (applied) {
+      await recomputeDayHeader(supabase, existing.id);
+    } else {
+      const { error } = await supabase.from("clock_events").update(fields).eq("id", existing.id);
+      if (error) throw new Error(error.message);
+    }
   } else {
     if (!eventStoreId) throw new Error("Driver has no store assigned.");
     const { error } = await supabase.from("clock_events").insert({
@@ -839,6 +864,12 @@ export type ManualClockEntryInput = {
   /** "HH:MM". Omit while the employee is still on shift. */
   clock_out_time?: string | null;
   reason: string;
+  /**
+   * Drops for the shift being recorded. Omitted leaves the session with no
+   * counts, which reads as "nothing recorded" on Daily Approval rather than an
+   * explicit zero — the distinction the "No deliveries" warning relies on.
+   */
+  deliveries?: DeliveryInput | null;
 };
 
 export async function upsertManualClockEntry(
@@ -861,7 +892,7 @@ async function performManualClockEntry(input: ManualClockEntryInput) {
 
   const { data: employee } = await supabase
     .from("employees")
-    .select("id, name, store_id, employment_status")
+    .select("id, name, store_id, employment_status, position")
     .eq("id", input.employee_id)
     .maybeSingle();
   if (!employee) throw new Error("Employee not found.");
@@ -919,13 +950,11 @@ async function performManualClockEntry(input: ManualClockEntryInput) {
     .eq("event_date", input.event_date)
     .maybeSingle();
 
-  // Changing the hours under an approval someone already signed off would move
-  // the weekly rollup silently. Make them unapprove first.
-  if (existing?.hours_approved) {
-    throw new Error(
-      "That day is already approved. Unapprove it first, then change the times.",
-    );
-  }
+  // An approved day no longer blocks this. Approval sits on the SHIFT now
+  // (migration 035), so a forgotten second shift is recorded as a NEW shift
+  // that arrives unapproved — it changes nothing already signed off, and the
+  // day simply shows as having outstanding work again. The overlap check below
+  // is what stops the same hours being recorded, and so paid, twice.
 
   // A day the employee is still working can't take an open manual shift on top
   // — the one-open-session rule applies however the shift was recorded.
@@ -1021,6 +1050,12 @@ async function performManualClockEntry(input: ManualClockEntryInput) {
     at: now.toISOString(),
     reason: input.reason.trim(),
   };
+  // Only a Driver is paid per drop, so counts submitted against anyone else are
+  // dropped rather than stored where nothing would ever read them.
+  const deliveries = hasRole(employee.position, "Driver")
+    ? normaliseDeliveryInput(input.deliveries)
+    : null;
+
   const session = await openSession(supabase, {
     clockEventId,
     employeeId: employee.id,
@@ -1037,7 +1072,12 @@ async function performManualClockEntry(input: ManualClockEntryInput) {
       lat: null,
       lng: null,
       manual: manualStamp,
+      // Against THIS shift, never the day — recomputeDayHeader below sums them,
+      // so filling in a forgotten morning can't wipe the evening's drops.
+      deliveries,
     });
+  } else if (deliveries) {
+    await setSessionDeliveries(supabase, session.id, deliveries);
   }
 
   const { workedHours, lastOut } = await recomputeDayHeader(supabase, clockEventId);
@@ -1064,6 +1104,16 @@ async function performManualClockEntry(input: ManualClockEntryInput) {
       clock_in_at: clockInAt.toISOString(),
       clock_out_at: clockOutAt?.toISOString() ?? null,
       reason: input.reason.trim(),
+      ...(deliveries
+        ? {
+            deliveries: {
+              short: deliveries.short,
+              long: deliveries.long,
+              extra_short: deliveries.extraShort,
+              extra_long: deliveries.extraLong,
+            },
+          }
+        : {}),
       by: user.email,
     },
   });
