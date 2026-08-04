@@ -9,7 +9,7 @@ import {
   clockedHours,
   formatDDMMYYYY,
   formatGBP,
-  formatHoursMins,
+  formatHoursMinsWords,
   formatShiftRange,
   formatTimeOnly,
   liveDayWorkedHours,
@@ -592,7 +592,7 @@ export function LiveDashboard({
                                   {mc.clock_out_at
                                     ? ` · Out ${formatTimeOnly(mc.clock_out_at)}`
                                     : ""}{" "}
-                                  · {formatHoursMins(worked)}h
+                                  · {formatHoursMinsWords(worked)}
                                   {mgrShiftCount > 1 && (
                                     <span
                                       className="ml-1 font-medium text-gold"

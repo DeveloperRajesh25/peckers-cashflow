@@ -119,7 +119,6 @@ async function computeSummary(
     entriesRes,
     employeesRes,
     clocksRes,
-    shiftsRes,
     settingsRes,
     coverRes,
     managersRes,
@@ -147,11 +146,6 @@ async function computeSummary(
       )
       .gte("event_date", payWeek.start)
       .lte("event_date", payWeek.end),
-    supabase
-      .from("rota_shifts")
-      .select("employee_id, store_id, shift_date, is_day_off, scheduled_hours")
-      .gte("shift_date", payWeek.start)
-      .lte("shift_date", payWeek.end),
     supabase.from("app_settings").select("key, value"),
     // Cover drivers are paid from APPROVED days only — their pay is settled at
     // approval, where the rates were snapshotted. Scoped to this store; unlike
@@ -182,16 +176,24 @@ async function computeSummary(
       .lte("event_date", payWeek.end),
   ]);
 
+  // A failed query must never read as "nobody worked": every wage on this sheet
+  // is derived from these rows, so an empty result from a BROKEN query is
+  // indistinguishable from a genuinely empty week and would silently underpay
+  // (or, before Update 93, quietly fall back to rota hours and overpay). Carry
+  // the message to the screen instead of letting the totals lie.
+  const loadError =
+    clocksRes.error?.message ??
+    employeesRes.error?.message ??
+    managerClocksRes.error?.message ??
+    coverRes.error?.message ??
+    entriesRes.error?.message ??
+    null;
+
   const settings = mergeSettings(settingsRes.data ?? []);
   const entries = (entriesRes.data ?? []) as DailyCashEntry[];
   const employees = (employeesRes.data ?? []) as Employee[];
   const lines = [
-    ...buildWageLinesForStore(
-      storeId,
-      employees,
-      clocksRes.data ?? [],
-      shiftsRes.data ?? [],
-    ),
+    ...buildWageLinesForStore(storeId, employees, clocksRes.data ?? []),
     ...buildCoverDriverWageLines(
       storeId,
       (coverRes.data ?? []) as CoverDriverPayRow[],
@@ -209,14 +211,17 @@ async function computeSummary(
     settings.cash_flow.carry_forward_surplus,
   );
 
-  return buildPrePaymentSummary({
-    store_id: storeId,
-    week_start_date: weekStartISO,
-    opening_balance: opening,
-    entries,
-    lines,
-    supermarket_cash: settings.cash_flow.supermarket_default_cash,
-  });
+  return {
+    ...buildPrePaymentSummary({
+      store_id: storeId,
+      week_start_date: weekStartISO,
+      opening_balance: opening,
+      entries,
+      lines,
+      supermarket_cash: settings.cash_flow.supermarket_default_cash,
+    }),
+    load_error: loadError,
+  };
 }
 
 /** Read-only live pre-payment summary (for the payout screen / dashboard forecast). */

@@ -6,7 +6,8 @@ import { Input, Textarea } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
 import { upsertManagerShift, deleteManagerShift } from "@/app/actions/manager-rota";
-import { formatDDMMYYYY, formatHoursMins, shiftHours } from "@/lib/utils";
+import { formatDDMMYYYY, shiftHours } from "@/lib/utils";
+import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import type { AllowedUser, ManagerShift } from "@/lib/types";
 
 type Props = {
@@ -160,9 +161,11 @@ export function ManagerShiftEditModal({
         )}
 
         {calculated > 0 && (
-          <p className="text-xs text-text-muted">
+          <p className="text-xs text-text-muted flex items-center gap-1 flex-wrap">
             Scheduled hours:{" "}
-            <span className="text-text-primary font-medium">{formatHoursMins(calculated)}h</span>
+            <span className="text-text-primary font-medium">
+              <HoursMinsDisplay hours={calculated} />
+            </span>
           </p>
         )}
 

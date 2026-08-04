@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
+import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import { ClockIcon } from "@/components/ui/icons";
 import {
   coverDriverClockIn,
@@ -20,7 +21,7 @@ import {
   clockedHours,
   formatDDMMYYYY,
   formatGBP,
-  formatHoursMins,
+  formatHoursMinsWords,
   formatTimeOnly,
   haversineMeters,
   isWithinGeofence,
@@ -368,11 +369,11 @@ export function CoverDriverClockApp({
                     <ClockIcon size={16} /> Shift complete for today
                   </span>
                   <span className="text-base font-semibold tabular-nums">
-                    {formatHoursMins(todayWorkedHours)}h
+                    <HoursMinsDisplay hours={todayWorkedHours} />
                   </span>
                 </div>
                 <p className="text-xs mt-1 text-success/80">
-                  You worked {formatHoursMins(todayWorkedHours)}h
+                  You worked {formatHoursMinsWords(todayWorkedHours)}
                   {clockedStore ? ` at ${clockedStore.name}` : ""} — clocked in{" "}
                   {formatTimeOnly(todayClock?.clock_in_at)} · clocked out{" "}
                   {formatTimeOnly(todayClock?.clock_out_at)}
@@ -578,7 +579,7 @@ export function CoverDriverClockApp({
                           Worked {formatTimeOnly(clk.clock_in_at)}–
                           {formatTimeOnly(clk.clock_out_at)}
                         </span>{" "}
-                        <span className="text-success font-medium">{formatHoursMins(worked)}h</span>
+                        <span className="text-success font-medium">{formatHoursMinsWords(worked)}</span>
                       </span>
                     ) : (
                       <span className="text-[11px] text-success">

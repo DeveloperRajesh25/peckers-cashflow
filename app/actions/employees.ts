@@ -8,7 +8,7 @@ import { writeAudit } from "./audit";
 import {
   addDays,
   dayWorkedHours,
-  formatHoursMins,
+  formatHoursMinsWords,
   parseISODate,
   startOfISOWeek,
   toISODate,
@@ -457,7 +457,7 @@ export async function approveClockedHours(input: {
     total_hours_worked: totalHours,
     hourly_rate_snapshot: rate,
     notes: wasAdjusted
-      ? `Adjusted from clocked ${formatHoursMins(clockedTotal)}h by manager`
+      ? `Adjusted from clocked ${formatHoursMinsWords(clockedTotal)} by manager`
       : null,
     logged_by: user.id,
     source: "clocked" as const,
@@ -936,16 +936,25 @@ export async function approveDailyHoursForDate(input: {
   for (const e of events ?? []) {
     // A null clock_out_at also means "a shift is still open", so anyone mid-way
     // through a split day is skipped rather than approved at half their hours.
-    if (!e.clock_in_at || !e.clock_out_at || e.hours_approved) continue;
+    if (!e.clock_in_at || !e.clock_out_at) continue;
     const rawHours = Math.round(dayWorkedHours(e) * 100) / 100;
     if (rawHours <= 0) continue;
 
     // No day total is passed: a bulk approve confirms what was clocked, so each
     // shift keeps its own duration rather than a share of one typed figure.
     const approvedShifts = await approveDaySessions(supabase, e.id, { by: user.id });
-    if (approvedShifts > 0) {
-      await recomputeDayHeader(supabase, e.id);
-    } else {
+
+    // Re-derive even when nothing was pending. A day can read approved while
+    // its header still disagrees with its shifts — migration 035's backfill
+    // seeded exactly that on days whose deliveries had never reached the
+    // sessions — and skipping on hours_approved alone left no screen able to
+    // heal it (Update 94). A day already in step recomputes to itself.
+    const derived = await recomputeDayHeader(supabase, e.id);
+
+    // A pre-029 day has no shifts to carry the approval, so its header still is
+    // the record and has to be written by hand.
+    if (derived.sessionCount === 0) {
+      if (e.hours_approved) continue;
       const { error } = await supabase
         .from("clock_events")
         .update({
@@ -961,11 +970,15 @@ export async function approveDailyHoursForDate(input: {
       if (error) throw new Error(error.message);
     }
 
-    const { error: stampErr } = await supabase
-      .from("clock_events")
-      .update({ hours_approved_by: user.id, hours_approved_at: nowIso })
-      .eq("id", e.id);
-    if (stampErr) throw new Error(stampErr.message);
+    // Only stamp when this call is what signed the day off. A heal must leave
+    // the manager who originally approved it on the record.
+    if (approvedShifts > 0 || derived.sessionCount === 0) {
+      const { error: stampErr } = await supabase
+        .from("clock_events")
+        .update({ hours_approved_by: user.id, hours_approved_at: nowIso })
+        .eq("id", e.id);
+      if (stampErr) throw new Error(stampErr.message);
+    }
     affected.add(e.employee_id);
   }
 

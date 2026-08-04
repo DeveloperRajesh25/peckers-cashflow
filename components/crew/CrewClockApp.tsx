@@ -7,13 +7,14 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
+import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import { clockIn, clockOut, updateDeliveryCount } from "@/app/actions/clock";
 import {
   WEEKDAY_LONG,
   addDays,
   clockedHours,
   formatDDMMYYYY,
-  formatHoursMins,
+  formatHoursMinsWords,
   formatShiftRange,
   formatTimeOnly,
   haversineMeters,
@@ -505,11 +506,11 @@ export function CrewClockApp({
                       : "Shift complete for today"}
                   </span>
                   <span className="text-base font-semibold tabular-nums">
-                    {formatHoursMins(todayWorkedHours)}h
+                    <HoursMinsDisplay hours={todayWorkedHours} />
                   </span>
                 </div>
                 <p className="text-xs mt-1 text-success/80">
-                  You worked {formatHoursMins(todayWorkedHours)}h
+                  You worked {formatHoursMinsWords(todayWorkedHours)}
                   {clockedStore ? ` at ${clockedStore.name}` : ""} —{" "}
                   {todayShiftLabel ||
                     `clocked in ${formatTimeOnly(todayClock?.clock_in_at)} · clocked out ${formatTimeOnly(todayClock?.clock_out_at)}`}
@@ -713,7 +714,7 @@ export function CrewClockApp({
                 Worked this week
               </div>
               <div className="text-lg font-semibold text-gold tabular-nums">
-                {formatHoursMins(weekWorkedHours)}h
+                <HoursMinsDisplay hours={weekWorkedHours} size="md" />
               </div>
             </div>
           }
@@ -783,7 +784,7 @@ export function CrewClockApp({
                           : `${formatTimeOnly(clk.clock_in_at)}–${clk.clock_out_at ? formatTimeOnly(clk.clock_out_at) : "now"}`}
                       </span>{" "}
                       {worked > 0 && (
-                        <span className="text-success font-medium">{formatHoursMins(worked)}h</span>
+                        <span className="text-success font-medium">{formatHoursMinsWords(worked)}</span>
                       )}
                       {daySessions.length > 1 && (
                         <span className="text-text-muted"> · {daySessions.length} shifts</span>

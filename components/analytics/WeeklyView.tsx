@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ChartIcon, ChevronLeftIcon, ChevronRightIcon } from "@/components/ui/icons";
 import { createClient } from "@/lib/supabase";
+import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import { StatTile } from "./StatTile";
 import { useChartColors } from "./useChartColors";
 import {
@@ -14,7 +15,6 @@ import {
   eachDay,
   endOfISOWeek,
   formatDDMMYYYY,
-  formatHoursMins,
   formatINR,
   isSameDay,
   startOfISOWeek,
@@ -288,10 +288,10 @@ export function WeeklyView({
                     >
                       <td className="px-3 py-3">{p.employee_name}</td>
                       <td className="px-3 py-3 text-right tabular-nums">
-                        {formatHoursMins(Number(p.total_hours_worked))}
+                        <HoursMinsDisplay hours={Number(p.total_hours_worked)} />
                       </td>
                       <td className="px-3 py-3 text-right tabular-nums">
-                        {formatHoursMins(Number(p.cash_hours))}
+                        <HoursMinsDisplay hours={Number(p.cash_hours)} />
                       </td>
                       <td className="px-3 py-3 text-right tabular-nums font-medium text-gold">
                         {formatINR(Number(p.cash_amount_due))}

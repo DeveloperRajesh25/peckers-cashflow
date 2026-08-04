@@ -13,11 +13,11 @@ import {
   formatDDMMYYYY,
   formatGBP,
   formatGBPPlain,
-  formatHoursMins,
   toCSV,
   weekLabel,
   parseISODate,
 } from "@/lib/utils";
+import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import { DeliveryCell } from "./DeliveryCell";
 import type { CashPayoutWithLines, Store } from "@/lib/types";
 
@@ -210,7 +210,9 @@ export function PayoutHistoryView({
                                 )}
                               </td>
                               <td className="px-4 py-2.5 text-text-muted">{l.role ?? "—"}</td>
-                              <td className="px-4 py-2.5 text-right tabular-nums">{formatHoursMins(l.cash_hours)}h</td>
+                              <td className="px-4 py-2.5 text-right tabular-nums">
+                                <HoursMinsDisplay hours={l.cash_hours} />
+                              </td>
                               <td className="px-4 py-2.5 text-right tabular-nums">{formatGBP(l.cash_rate)}</td>
                               <td className="px-4 py-2.5 text-right tabular-nums">{formatGBP(l.cash_wage)}</td>
                               <td className="px-4 py-2.5 text-right tabular-nums">

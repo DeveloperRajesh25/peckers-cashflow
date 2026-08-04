@@ -13,7 +13,17 @@ import {
   ChevronRightIcon,
   ClockIcon,
 } from "@/components/ui/icons";
-import { addDays, cn, formatHoursMins, parseHoursMinsInput, parseISODate, toISODate } from "@/lib/utils";
+import {
+  addDays,
+  cn,
+  formatHoursMins,
+  formatHoursMinsWords,
+  parseHoursMinsInput,
+  parseISODate,
+  toISODate,
+} from "@/lib/utils";
+import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
+import { HoursMinsInput } from "@/components/ui/HoursMinsInput";
 import { ManualClockEntryModal } from "@/components/clock/ManualClockEntryModal";
 import type {
   ClockDailySummary,
@@ -652,8 +662,8 @@ export function DailyHoursApproval({
         s.kind === "manager"
           ? `Approved ${s.name} — ${drops} deliveries`
           : deliveries
-            ? `Approved ${s.name} — ${formatHoursMins(eff)}h, ${drops} deliveries`
-            : `Approved ${s.name} — ${formatHoursMins(eff)}h`,
+            ? `Approved ${s.name} — ${formatHoursMinsWords(eff)}, ${drops} deliveries`
+            : `Approved ${s.name} — ${formatHoursMinsWords(eff)}`,
       );
       setEdited((p) => {
         const n = { ...p };
@@ -812,7 +822,8 @@ export function DailyHoursApproval({
             )}
           </p>
           <p className="text-xs text-text-muted">
-            {s.auto_clocked_out ? "Assumed" : "Clocked"} {formatHoursMins(s.clocked_hours)}h
+            {s.auto_clocked_out ? "Assumed" : "Clocked"}{" "}
+            <HoursMinsDisplay hours={s.clocked_hours} />
             {store && <> · {store}</>}
             {s.kind === "cover" && <> · cash</>}
             {s.kind === "manager" && <> · deliveries only</>}
@@ -835,13 +846,13 @@ export function DailyHoursApproval({
                       {sh.label}
                       <span className="text-text-muted">
                         {" "}
-                        · {formatHoursMins(sh.approvedHours ?? sh.hours)}h
+                        · {formatHoursMinsWords(sh.approvedHours ?? sh.hours)}
                       </span>
                       {sh.approvedHours != null &&
                         Math.abs(sh.approvedHours - sh.hours) > 0.01 && (
                           <span
                             className="text-warning"
-                            title={`Corrected from the clocked ${formatHoursMins(sh.hours)}h`}
+                            title={`Corrected from the clocked ${formatHoursMinsWords(sh.hours)}`}
                           >
                             {" "}
                             (adjusted)
@@ -896,7 +907,7 @@ export function DailyHoursApproval({
               <CheckIcon size={12} />
               {s.kind === "manager"
                 ? "Deliveries approved"
-                : `${formatHoursMins(s.approved_hours ?? s.clocked_hours)}h approved`}
+                : `${formatHoursMinsWords(s.approved_hours ?? s.clocked_hours)} approved`}
             </Badge>
             {s.is_driver && (
               <span
@@ -915,7 +926,7 @@ export function DailyHoursApproval({
             {adjusted && (
               <span
                 className="text-[11px] text-warning"
-                title={`Adjusted from clocked ${formatHoursMins(s.clocked_hours)}h`}
+                title={`Adjusted from clocked ${formatHoursMinsWords(s.clocked_hours)}`}
               >
                 adj
               </span>
@@ -937,27 +948,15 @@ export function DailyHoursApproval({
                 imply a correction that changes nothing. */}
             {s.kind !== "manager" && (
             <div className="flex flex-col items-end gap-0.5">
-              <div className="flex items-center gap-1">
-                <input
-                  type="text"
-                  inputMode="decimal"
-                  value={edited[key] ?? formatHoursMins(s.clocked_hours)}
-                  onChange={(e) =>
-                    setEdited((p) => ({ ...p, [key]: e.target.value }))
-                  }
-                  aria-label={`Hours for ${s.name} on ${longDate(s.event_date)} — enter as hours.minutes, e.g. 4.32 for 4h 32m`}
-                  title="Hours.minutes — e.g. 4.32 means 4h 32m, not 4.32 decimal hours"
-                  className={cn(
-                    "w-16 rounded-lg border bg-surface px-2 py-1 text-right text-sm tabular-nums outline-none focus:ring-2",
-                    invalidHoursEdit(s)
-                      ? "border-danger focus:border-danger focus:ring-danger/30"
-                      : "border-border focus:border-gold/60 focus:ring-gold/30",
-                  )}
-                />
-                <span className="text-xs text-text-muted">h</span>
-              </div>
+              <HoursMinsInput
+                value={edited[key] ?? formatHoursMins(s.clocked_hours)}
+                onChange={(next) => setEdited((p) => ({ ...p, [key]: next }))}
+                invalid={invalidHoursEdit(s)}
+                hourAriaLabel={`Hours for ${s.name} on ${longDate(s.event_date)}`}
+                minAriaLabel={`Minutes for ${s.name} on ${longDate(s.event_date)}`}
+              />
               {invalidHoursEdit(s) && (
-                <span className="text-[10px] text-danger">Invalid — use h.mm, e.g. 4.32</span>
+                <span className="text-[10px] text-danger">Invalid — minutes above 59</span>
               )}
             </div>
             )}

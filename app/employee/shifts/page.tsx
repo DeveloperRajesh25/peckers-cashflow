@@ -4,11 +4,11 @@ import { Badge } from "@/components/ui/Badge";
 import { createServerSupabase, requireRole } from "@/lib/supabase-server";
 import { findEmployeeForUser } from "@/lib/employee-lookup";
 import { PastWeekHours } from "@/components/crew/PastWeekHours";
+import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import {
   WEEKDAY_LONG,
   addDays,
   formatDDMMYYYY,
-  formatHoursMins,
   formatShiftRange,
   parseISODate,
   shiftHours,
@@ -131,7 +131,9 @@ function WeekBlock({
     <Card className="p-0 overflow-hidden">
       <CardHeader className="px-5 pt-5 flex-row items-center justify-between">
         <CardTitle>{weekLabel(weekStart)}</CardTitle>
-        <Badge variant="gold">{formatHoursMins(total)}h</Badge>
+        <Badge variant="gold">
+          <HoursMinsDisplay hours={total} size="sm" />
+        </Badge>
       </CardHeader>
       <div className="border-t border-border">
         {days.map((d) => {

@@ -18,12 +18,13 @@ import {
 import {
   formatGBP,
   formatDDMMYYYY,
-  formatHoursMins,
   weekLabel,
   parseISODate,
   formatTimeOnly,
   deliveryBreakdown,
 } from "@/lib/utils";
+import { payWeekOf } from "@/lib/cash-flow";
+import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import { DeliveryCell } from "./DeliveryCell";
 import type { CashPayoutWithLines, PrePaymentSummary } from "@/lib/types";
 
@@ -236,8 +237,16 @@ export function PrePaymentView({
               <ChevronLeftIcon size={16} />
             </Button>
           </Link>
-          <span className="text-sm font-medium text-text-primary min-w-[180px] text-center">
-            {weekLabel(parseISODate(weekStart))}
+          <span className="flex flex-col items-center min-w-[180px]">
+            <span className="text-sm font-medium text-text-primary text-center">
+              {weekLabel(parseISODate(weekStart))}
+            </span>
+            {/* Wages are a week in arrears, and "why isn't this person here?"
+                is almost always this window being misread — so name it. */}
+            <span className="text-[10px] text-text-muted text-center">
+              paying work from {formatDDMMYYYY(payWeekOf(weekStart).start)} –{" "}
+              {formatDDMMYYYY(payWeekOf(weekStart).end)}
+            </span>
           </span>
           <Link href={go(store.id, nextWeek)}>
             <Button variant="secondary" size="icon" aria-label="Next week">
@@ -260,6 +269,18 @@ export function PrePaymentView({
           </div>
         )}
       </div>
+
+      {summary.load_error && (
+        <div className="rounded-xl border border-danger/50 bg-danger/10 px-4 py-3">
+          <p className="text-sm font-medium text-danger">
+            These figures are incomplete — a query behind this sheet failed.
+          </p>
+          <p className="text-xs text-danger/80 mt-1">
+            Do not pay from this screen until it is fixed. If a database
+            migration is pending, run it and reload. ({summary.load_error})
+          </p>
+        </div>
+      )}
 
       {/* Pre-payment summary */}
       <Card>
@@ -387,7 +408,9 @@ export function PrePaymentView({
                         )}
                       </td>
                       <td className="px-4 py-3 text-text-muted">{l.role ?? "—"}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">{formatHoursMins(l.cash_hours)}h</td>
+                      <td className="px-4 py-3 text-right tabular-nums">
+                        <HoursMinsDisplay hours={l.cash_hours} />
+                      </td>
                       <td className="px-4 py-3 text-right tabular-nums">{formatGBP(l.cash_rate)}</td>
                       <td className="px-4 py-3 text-right tabular-nums">
                         <DeliveryCell line={l} />

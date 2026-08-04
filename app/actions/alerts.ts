@@ -8,7 +8,7 @@ import { writeAudit } from "./audit";
 import {
   addDays,
   dayWorkedHours,
-  formatHoursMins,
+  formatHoursMinsWords,
   startOfISOWeek,
   toISODate,
   todayISO,
@@ -267,7 +267,7 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
           store_id: emp.store_id,
           employee_id: emp.id,
           title: `${emp.name}: hours vary ${delta > 0 ? "+" : ""}${delta.toFixed(0)}%`,
-          message: `Scheduled ${formatHoursMins(thisWeek)}h this week vs ${formatHoursMins(avg)}h 4-week average (>${t.wage_variance_pct}% deviation).`,
+          message: `Scheduled ${formatHoursMinsWords(thisWeek)} this week vs ${formatHoursMinsWords(avg)} 4-week average (>${t.wage_variance_pct}% deviation).`,
           payload: { this_week: thisWeek, avg_4wk: avg, delta_percent: delta },
         },
         newAlerts,
@@ -507,7 +507,7 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
               employee_id: emp.id,
               shift_id: s.id,
               title: `${emp.name}: scheduled vs actual variance`,
-              message: `Worked ${formatHoursMins(actualHours)}h vs ${formatHoursMins(scheduled)}h scheduled (${delta > 0 ? "+" : ""}${delta.toFixed(0)}%).`,
+              message: `Worked ${formatHoursMinsWords(actualHours)} vs ${formatHoursMinsWords(scheduled)} scheduled (${delta > 0 ? "+" : ""}${delta.toFixed(0)}%).`,
               payload: { actual: actualHours, scheduled, delta_percent: delta },
             },
             newAlerts,
@@ -555,15 +555,12 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
   const todayWd = weekdayIndex(now); // 0=Mon .. 5=Sat .. 6=Sun
   const nowHour = now.getHours();
 
-  // The pay week's clock + shift rows across ALL stores. The wage forecast per
-  // store needs the whole week (not just the store's own rows) so an employee
-  // whose week spans stores has their NI/cash split computed once, globally, and
+  // The pay week's clock rows across ALL stores. The wage forecast per store
+  // needs the whole week (not just the store's own rows) so an employee whose
+  // week spans stores has their NI/cash split computed once, globally, and
   // their cash hours attributed to the store they worked them at.
   const payWeekClocks = clocks.filter(
     (c) => c.event_date >= payWeek.start && c.event_date <= payWeek.end,
-  );
-  const payWeekShifts = shifts.filter(
-    (s) => s.shift_date >= payWeek.start && s.shift_date <= payWeek.end,
   );
 
   for (const store of stores) {
@@ -631,7 +628,7 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
     // Leavers stay included: they're still owed for the pay week they worked.
     // Whoever worked at this store counts (including visitors from the other
     // store); buildWageLinesForStore keeps only those with pay due here.
-    const lines = buildWageLinesForStore(store.id, employees, payWeekClocks, payWeekShifts);
+    const lines = buildWageLinesForStore(store.id, employees, payWeekClocks);
     const summary = buildPrePaymentSummary({
       store_id: store.id,
       week_start_date: weekStart,

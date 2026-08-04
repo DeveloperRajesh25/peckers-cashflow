@@ -15,7 +15,16 @@ import type {
   EmployeeHoursComputed,
   EmployeeHoursSource,
 } from "@/lib/types";
-import { cn, formatDDMMYYYY, formatHoursMins, formatINR, parseHoursMinsInput } from "@/lib/utils";
+import {
+  cn,
+  formatDDMMYYYY,
+  formatHoursMins,
+  formatHoursMinsWords,
+  formatINR,
+  parseHoursMinsInput,
+} from "@/lib/utils";
+import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
+import { HoursMinsInput } from "@/components/ui/HoursMinsInput";
 
 // One row = one employee + one week.
 // Shows both the manager-entered value AND the clock-event total side-by-side.
@@ -306,7 +315,9 @@ export function HoursTable({
                     {/* Manager-entered hours */}
                     <td className="px-3 py-3 text-right tabular-nums">
                       {r.manual ? (
-                        <span className="font-medium">{formatHoursMins(r.manual.total_hours)}</span>
+                        <span className="font-medium">
+                          <HoursMinsDisplay hours={r.manual.total_hours} />
+                        </span>
                       ) : (
                         <span className="text-text-muted">—</span>
                       )}
@@ -317,21 +328,14 @@ export function HoursTable({
                       {r.clocked && isPendingApproval && !hideApprove ? (
                         <div className="flex flex-col items-end gap-0.5">
                           <div className="flex items-center gap-1">
-                            <input
-                              type="text"
-                              inputMode="decimal"
+                            <HoursMinsInput
                               value={rawEdit ?? formatHoursMins(r.clocked.total_hours)}
-                              onChange={(e) =>
-                                setEditedHours((prev) => ({ ...prev, [r.key]: e.target.value }))
+                              onChange={(next) =>
+                                setEditedHours((prev) => ({ ...prev, [r.key]: next }))
                               }
-                              aria-label={`Edit clocked hours for ${r.employee_name}, week of ${formatDDMMYYYY(r.week_start_date)} — enter as hours.minutes, e.g. 4.32 for 4h 32m`}
-                              title="Hours.minutes — e.g. 4.32 means 4h 32m, not 4.32 decimal hours"
-                              className={cn(
-                                "w-16 rounded-lg border bg-surface px-2 py-1 text-right text-sm tabular-nums outline-none focus:ring-2",
-                                invalidEdit
-                                  ? "border-danger focus:border-danger focus:ring-danger/30"
-                                  : "border-border focus:border-gold/60 focus:ring-gold/30",
-                              )}
+                              invalid={invalidEdit}
+                              hourAriaLabel={`Hours for ${r.employee_name}, week of ${formatDDMMYYYY(r.week_start_date)}`}
+                              minAriaLabel={`Minutes for ${r.employee_name}, week of ${formatDDMMYYYY(r.week_start_date)}`}
                             />
                             <span
                               className="text-[10px] text-text-muted"
@@ -349,7 +353,7 @@ export function HoursTable({
                             )}
                           </div>
                           {invalidEdit && (
-                            <span className="text-[10px] text-danger">Invalid — use h.mm, e.g. 4.32</span>
+                            <span className="text-[10px] text-danger">Invalid — minutes above 59</span>
                           )}
                         </div>
                       ) : r.clocked ? (
@@ -357,7 +361,7 @@ export function HoursTable({
                           className={discrepancy ? "text-warning" : ""}
                           title={`${r.clocked.session_count} clock session${r.clocked.session_count === 1 ? "" : "s"} this week`}
                         >
-                          {formatHoursMins(r.clocked.total_hours)}
+                          <HoursMinsDisplay hours={r.clocked.total_hours} />
                           <span className="ml-1 text-[10px] text-text-muted">
                             ×{r.clocked.session_count}d
                           </span>
@@ -376,10 +380,10 @@ export function HoursTable({
                     </td>
 
                     <td className="px-3 py-3 text-right tabular-nums">
-                      {formatHoursMins(bankH)}
+                      <HoursMinsDisplay hours={bankH} />
                     </td>
                     <td className="px-3 py-3 text-right tabular-nums">
-                      {formatHoursMins(cashH)}
+                      <HoursMinsDisplay hours={cashH} />
                     </td>
                     <td className="px-3 py-3 text-right tabular-nums">
                       {cashAmt > 0 ? (
@@ -418,7 +422,7 @@ export function HoursTable({
                           loading={approvingKey === r.key}
                           disabled={!(effectiveHours > 0)}
                         >
-                          Approve {formatHoursMins(effectiveHours)}h
+                          Approve {formatHoursMinsWords(effectiveHours)}
                         </Button>
                       ) : (
                         <span className="text-text-muted">—</span>

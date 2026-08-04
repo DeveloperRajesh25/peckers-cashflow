@@ -5,12 +5,12 @@ import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { Input, Select } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
+import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import { upsertManualClockEntry } from "@/app/actions/clock";
 import { upsertManualCoverDriverClockEntry } from "@/app/actions/cover-driver-clock";
 import {
   addDays,
   formatDDMMYYYY,
-  formatHoursMins,
   londonHHMM,
   londonISODate,
   parseISODate,
@@ -272,11 +272,13 @@ export function ManualClockEntryModal({
             )}
 
             {workedHours != null && (
-              <p className="text-xs text-text-muted -mt-1">
-                {formatHoursMins(workedHours)}h
-                {overnight
-                  ? ` — overnight, finishing ${outTime} on ${formatDDMMYYYY(endDate)}.`
-                  : "."}
+              <p className="text-xs text-text-muted -mt-1 flex items-center gap-1 flex-wrap">
+                <HoursMinsDisplay hours={workedHours} />
+                <span>
+                  {overnight
+                    ? `— overnight, finishing ${outTime} on ${formatDDMMYYYY(endDate)}.`
+                    : "."}
+                </span>
               </p>
             )}
 

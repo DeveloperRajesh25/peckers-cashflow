@@ -409,54 +409,34 @@ export type StoreClockRow = {
   approved_extra_long_deliveries?: number | null;
 };
 
-/** A scheduled shift row carrying which store + day it belongs to. */
-export type StoreShiftRow = {
-  employee_id: string;
-  store_id: string;
-  shift_date: string;
-  is_day_off: boolean;
-  scheduled_hours: number | null;
-};
-
 /** One resolved working day: the store worked and the hours that count. */
 type DayWork = { date: string; store_id: string; hours: number };
 
 /**
- * Resolve an employee's working days for the week. Clock records are the source
- * of truth: if the employee clocked in AND out on ANY day that week, only
- * clocked days count (each attributed to the store it was clocked at). If they
- * never completed a clock all week, fall back to their scheduled rota days so a
- * payout can still be produced.
+ * Resolve an employee's payable working days for the week: the APPROVED hours
+ * on each clocked day, attributed to the store it was clocked at.
+ *
+ * There is deliberately NO rota fallback. Scheduled hours are a plan, never a
+ * record of work, and nothing on the rota has been signed off by anyone — so
+ * paying them contradicts the rule that approval gates pay (migration 035). It
+ * also used to pay people who never turned up: an employee rostered 30h who
+ * worked none of it was billed the full 30 (Update 93). An employee whose clock
+ * record is genuinely missing is corrected with a manual clock entry
+ * (migration 026) and then approved, which is the path that records what they
+ * actually worked.
+ *
+ * Note this is deliberately not resolvedDayHours(), which answers a different
+ * question — "what did this person actually work" — and is what the Rota, the
+ * Live board and the employee's own screens must keep showing.
  */
-function resolveWorkingDays(clocks: StoreClockRow[], shifts: StoreShiftRow[]): DayWork[] {
-  const clockedDays: DayWork[] = [];
-  // Only APPROVED hours are payable (migration 035). A day that was clocked but
-  // never signed off contributes nothing, and a split day contributes only the
-  // shifts a manager has confirmed. Note this is deliberately not
-  // resolvedDayHours(), which answers a different question — "what did this
-  // person actually work" — and is what the Rota, the Live board and the
-  // employee's own screens must keep showing.
+function resolveWorkingDays(clocks: StoreClockRow[]): DayWork[] {
+  const days: DayWork[] = [];
   for (const c of clocks) {
     if (!c.clock_in_at) continue;
     const hours = Number(c.approved_hours) || 0;
-    if (hours > 0) {
-      clockedDays.push({ date: c.event_date, store_id: c.store_id, hours });
-    }
+    if (hours > 0) days.push({ date: c.event_date, store_id: c.store_id, hours });
   }
-  if (clockedDays.length > 0) return clockedDays;
-
-  // The rota fallback is for an employee with NO completed clock all week, and
-  // it stays gated the same way: scheduled hours nobody has approved are not
-  // payable either, so this only fires when there is genuinely nothing clocked.
-  if (clocks.some((c) => c.clock_in_at && c.clock_out_at)) return [];
-
-  const scheduledDays: DayWork[] = [];
-  for (const s of shifts) {
-    if (s.is_day_off) continue;
-    const hours = Number(s.scheduled_hours) || 0;
-    if (hours > 0) scheduledDays.push({ date: s.shift_date, store_id: s.store_id, hours });
-  }
-  return scheduledDays;
+  return days;
 }
 
 /** Total resolved working hours per store for an employee's week. */
@@ -509,18 +489,17 @@ function cashHoursAtStore(
 
 /**
  * Build the wage lines for ONE store's pay week, correctly handling employees
- * whose week spans multiple stores. `clocks`/`shifts` must cover the whole pay
- * week across ALL stores: the "clock trumps schedule" resolution and the
- * home-store NI rule both need to see the employee's full week (their home hours
- * may sit at a different store than `storeId`). Only employees with cash and/or
- * deliveries AT `storeId` produce a line — so it can be handed the full employee
- * roster and it will keep just those who worked at the store.
+ * whose week spans multiple stores. `clocks` must cover the whole pay week
+ * across ALL stores: the home-store NI rule needs to see the employee's full
+ * week (their home hours may sit at a different store than `storeId`). Only
+ * employees with cash and/or deliveries AT `storeId` produce a line — so it can
+ * be handed the full employee roster and it will keep just those who worked at
+ * the store.
  */
 export function buildWageLinesForStore(
   storeId: string,
   employees: Employee[],
   clocks: StoreClockRow[],
-  shifts: StoreShiftRow[],
 ): WageLine[] {
   const clocksByEmp = new Map<string, StoreClockRow[]>();
   for (const c of clocks) {
@@ -528,18 +507,11 @@ export function buildWageLinesForStore(
     arr.push(c);
     clocksByEmp.set(c.employee_id, arr);
   }
-  const shiftsByEmp = new Map<string, StoreShiftRow[]>();
-  for (const s of shifts) {
-    const arr = shiftsByEmp.get(s.employee_id) ?? [];
-    arr.push(s);
-    shiftsByEmp.set(s.employee_id, arr);
-  }
 
   const lines: WageLine[] = [];
   for (const emp of employees) {
     const empClocks = clocksByEmp.get(emp.id) ?? [];
-    const empShifts = shiftsByEmp.get(emp.id) ?? [];
-    const days = resolveWorkingDays(empClocks, empShifts);
+    const days = resolveWorkingDays(empClocks);
     const cashHours = round2(cashHoursAtStore(days, storeId, emp));
 
     // Deliveries come from the APPROVED columns on the clock rows AT this store

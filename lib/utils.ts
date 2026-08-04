@@ -216,11 +216,32 @@ export function minutesToTime(mins: number): string {
  * Pairs with `parseHoursMinsInput`, the inverse for the few boxes a manager
  * types an override into.
  */
-export function formatHoursMins(hours: number | null | undefined): string {
+/**
+ * The hours/minutes split every hour-display helper below is built from — pure
+ * extraction of the maths `formatHoursMins` already did, so its output is
+ * unchanged. Rounds to the nearest whole minute and carries into the hour
+ * (4.999h -> 5h 0m, never the invalid "4h 60m").
+ */
+function splitHoursMins(hours: number | null | undefined): { h: number; m: number } {
   const totalMinutes = Math.round((Number(hours) || 0) * 60);
-  const h = Math.floor(totalMinutes / 60);
-  const m = totalMinutes % 60;
+  return { h: Math.floor(totalMinutes / 60), m: totalMinutes % 60 };
+}
+
+export function formatHoursMins(hours: number | null | undefined): string {
+  const { h, m } = splitHoursMins(hours);
   return `${h}.${pad(m)}`;
+}
+
+/**
+ * Same value as `formatHoursMins`, spelled out for places that can only hold
+ * plain text — tooltips, toast notifications, audit log entries — where a
+ * two-box display isn't possible. "4 hr 30 min" rather than "4.30". Minutes
+ * aren't zero-padded here; unlike the H.MM notation there's no adjacent digit
+ * to misread, so "4 hr 3 min" reads more naturally than "4 hr 03 min".
+ */
+export function formatHoursMinsWords(hours: number | null | undefined): string {
+  const { h, m } = splitHoursMins(hours);
+  return `${h} hr ${m} min`;
 }
 
 /**

@@ -5,9 +5,11 @@ import { Input, Select } from "@/components/ui/Input";
 import { DatePicker } from "@/components/ui/DatePicker";
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/ui/Toast";
+import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
+import { HoursMinsInput } from "@/components/ui/HoursMinsInput";
 import { logEmployeeHours } from "@/app/actions/employees";
 import type { Employee, EmployeeHoursComputed } from "@/lib/types";
-import { formatHoursMins, formatINR, formatGBP, parseHoursMinsInput, startOfISOWeek, toISODate } from "@/lib/utils";
+import { formatINR, formatGBP, parseHoursMinsInput, startOfISOWeek, toISODate } from "@/lib/utils";
 
 const BANK_LIMIT = 20;
 
@@ -114,15 +116,17 @@ export function LogHoursForm({
         error={errors.week}
       />
 
-      <Input
-        type="text"
-        inputMode="decimal"
-        label="Total Hours This Week (hours.minutes)"
-        placeholder="e.g. 28.30 for 28h 30m"
-        value={hours}
-        onChange={(e) => setHours(e.target.value)}
-        error={errors.hours}
-      />
+      <div className="flex flex-col gap-1.5">
+        <label className="text-sm font-medium text-text-subtle">Total Hours This Week</label>
+        <HoursMinsInput
+          value={hours}
+          onChange={setHours}
+          invalid={!!errors.hours}
+          hourAriaLabel="Total hours this week"
+          minAriaLabel="Total minutes this week"
+        />
+        {errors.hours && <p className="text-xs text-danger">{errors.hours}</p>}
+      </div>
 
       <Input
         label="Notes"
@@ -136,13 +140,13 @@ export function LogHoursForm({
         <div className="rounded-xl bg-bg border border-border px-4 py-3 flex items-center justify-between">
           <span className="text-xs uppercase tracking-wide text-text-muted">Bank hours</span>
           <span className="text-sm font-semibold">
-            {totalHours > 0 ? formatHoursMins(bankHours) : "—"} hrs
+            {totalHours > 0 ? <HoursMinsDisplay hours={bankHours} /> : "—"}
           </span>
         </div>
         <div className="rounded-xl bg-bg border border-border px-4 py-3 flex items-center justify-between">
           <span className="text-xs uppercase tracking-wide text-text-muted">Cash hours</span>
           <span className="text-sm font-semibold">
-            {totalHours > 0 ? formatHoursMins(cashHours) : "—"} hrs
+            {totalHours > 0 ? <HoursMinsDisplay hours={cashHours} /> : "—"}
           </span>
         </div>
         <div className="rounded-xl bg-gold/10 border border-gold/30 px-4 py-3 flex items-center justify-between">

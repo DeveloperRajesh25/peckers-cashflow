@@ -19,7 +19,7 @@
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { AnalyticsRangePicker } from "@/components/crew/AnalyticsRangePicker";
-import { cn, formatGBP, formatHoursMins } from "@/lib/utils";
+import { cn, formatGBP, formatHoursMinsWords } from "@/lib/utils";
 import {
   DELIVERY_WEEK_OPTIONS,
   MONTHS_IN_CHART,
@@ -34,7 +34,7 @@ import type {
 } from "@/lib/employee-analytics";
 
 function hoursText(h: number) {
-  return `${formatHoursMins(h)}h`;
+  return formatHoursMinsWords(h);
 }
 
 function StatCard({
@@ -293,7 +293,7 @@ export function EmployeeAnalyticsView({
           )}
           <Badge variant={hoursDelta >= 0 ? "success" : "neutral"}>
             {hoursDelta >= 0 ? "+" : "−"}
-            {formatHoursMins(Math.abs(hoursDelta))}h vs last week
+            {formatHoursMinsWords(Math.abs(hoursDelta))} vs last week
           </Badge>
         </div>
         <p className="text-[11px] text-text-muted mt-3">
@@ -352,7 +352,7 @@ export function EmployeeAnalyticsView({
             heading="Hours"
             data={data.weeks}
             value={(b) => b.hours}
-            format={(n) => formatHoursMins(n)}
+            format={(n) => formatHoursMinsWords(n)}
           />
         </div>
         <div className="mt-5 pt-4 border-t border-border">
@@ -397,7 +397,7 @@ export function EmployeeAnalyticsView({
             heading="Hours"
             data={data.months}
             value={(b) => b.hours}
-            format={(n) => formatHoursMins(n)}
+            format={(n) => formatHoursMinsWords(n)}
           />
         </div>
         <div className="mt-5 pt-4 border-t border-border">

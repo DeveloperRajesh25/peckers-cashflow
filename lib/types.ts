@@ -1053,4 +1053,10 @@ export type PrePaymentSummary = {
   /** actual_cash_available − grand_total_wages, clamped ≥ 0. */
   surplus: number;
   lines: WageLine[];
+  /**
+   * Set when a query behind these figures failed. The totals are then NOT
+   * trustworthy — an empty result from a broken query looks exactly like a week
+   * nobody worked, so the screen must say so rather than show a confident £0.
+   */
+  load_error?: string | null;
 };

@@ -17,7 +17,7 @@ import {
   addDays,
   eachDay,
   formatGBP,
-  formatHoursMins,
+  formatHoursMinsWords,
   formatShiftRange,
   parseISODate,
   startOfISOWeek,
@@ -26,6 +26,7 @@ import {
   weekdayIndex,
 } from "@/lib/utils";
 import { ChevronLeftIcon, ChevronRightIcon, InfoIcon } from "@/components/ui/icons";
+import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import { applyScheduleToWeek } from "@/app/actions/schedule";
 import { worksForCash } from "@/lib/cash-flow";
 import { wageComplianceForEmployee } from "@/lib/compliance";
@@ -822,11 +823,11 @@ export function RotaView({
                                 {Number(clk.session_count) > 1 && (
                                   <span
                                     className="block text-gold"
-                                    title={`${clk.session_count} separate shifts worked this day, ${formatHoursMins(Number(clk.worked_hours ?? 0))}h in total excluding the gap between them.`}
+                                    title={`${clk.session_count} separate shifts worked this day, ${formatHoursMinsWords(Number(clk.worked_hours ?? 0))} in total excluding the gap between them.`}
                                   >
                                     {clk.session_count} shifts worked
                                     {clk.worked_hours != null && (
-                                      <> · {formatHoursMins(Number(clk.worked_hours))}h</>
+                                      <> · {formatHoursMinsWords(Number(clk.worked_hours))}</>
                                     )}
                                   </span>
                                 )}
@@ -908,7 +909,9 @@ export function RotaView({
                           );
                         })()}
                       </td>
-                      <td className="px-3 py-2 text-right font-medium">{formatHoursMins(total)}h</td>
+                      <td className="px-3 py-2 text-right font-medium">
+                        <HoursMinsDisplay hours={total} />
+                      </td>
                     </tr>
                   );
                 })}
@@ -1153,11 +1156,11 @@ export function RotaView({
                               {Number(clk.session_count) > 1 && (
                                 <span
                                   className="block text-gold"
-                                  title={`Attendance, not the schedule: ${clk.session_count} separate shifts worked this day, ${formatHoursMins(Number(clk.worked_hours ?? 0))}h in total excluding the gap between them.`}
+                                  title={`Attendance, not the schedule: ${clk.session_count} separate shifts worked this day, ${formatHoursMinsWords(Number(clk.worked_hours ?? 0))} in total excluding the gap between them.`}
                                 >
                                   {clk.session_count} shifts worked
                                   {clk.worked_hours != null && (
-                                    <> · {formatHoursMins(Number(clk.worked_hours))}h</>
+                                    <> · {formatHoursMinsWords(Number(clk.worked_hours))}</>
                                   )}
                                 </span>
                               )}
@@ -1242,12 +1245,12 @@ export function RotaView({
                       );
                     })}
                     <td className="px-2 py-2 text-right font-medium">
-                      {formatHoursMins(total)}h
+                      <HoursMinsDisplay hours={total} />
                     </td>
                     <td className="px-2 py-2 text-right">
                       {cashHrs > 0 ? (
                         <span className="font-medium text-gold">
-                          {formatHoursMins(cashHrs)}h
+                          <HoursMinsDisplay hours={cashHrs} />
                         </span>
                       ) : (
                         <span className="text-text-muted">—</span>
@@ -1255,7 +1258,7 @@ export function RotaView({
                     </td>
                     <td className="px-2 py-2 text-right text-text-subtle">
                       <span className={flagVariance ? "text-warning" : ""}>
-                        {formatHoursMins(avg)}h
+                        <HoursMinsDisplay hours={avg} />
                         {flagVariance && (
                           <span className="ml-1 text-[10px]">
                             ({variance > 0 ? "+" : ""}
@@ -1505,7 +1508,7 @@ export function RotaView({
                         );
                       })}
                       <td className="px-2 py-2 text-right font-medium">
-                        {formatHoursMins(total)}h
+                        <HoursMinsDisplay hours={total} />
                       </td>
                       {/* Cash only — no NI/cash split, unlike the employee rota. */}
                       <td className="px-3 py-2 text-right">

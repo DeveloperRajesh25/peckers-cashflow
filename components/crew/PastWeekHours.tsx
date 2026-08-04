@@ -26,11 +26,11 @@ import {
   ChevronRightIcon,
   ClockIcon,
 } from "@/components/ui/icons";
+import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import {
   WEEKDAY_LONG,
   addDays,
   formatDDMMYYYY,
-  formatHoursMins,
   formatTimeOnly,
   parseISODate,
   resolvedDayHours,
@@ -152,7 +152,7 @@ export function PastWeekHours({
               Total worked
             </div>
             <div className="text-lg font-semibold text-gold tabular-nums">
-              {formatHoursMins(totalHours)}h
+              <HoursMinsDisplay hours={totalHours} size="md" />
             </div>
           </div>
         }
@@ -274,7 +274,7 @@ export function PastWeekHours({
                   <div className="text-sm text-right shrink-0 tabular-nums">
                     {worked ? (
                       <span className="font-semibold text-success">
-                        {formatHoursMins(d.hours)}h
+                        <HoursMinsDisplay hours={d.hours} />
                       </span>
                     ) : (
                       <span className="text-text-muted">—</span>
@@ -287,7 +287,9 @@ export function PastWeekHours({
 
           <div className="px-5 py-3 border-t border-border bg-surface-hover/50 flex items-center justify-between">
             <span className="text-sm font-medium">Week total</span>
-            <Badge variant="gold">{formatHoursMins(totalHours)}h</Badge>
+            <Badge variant="gold">
+              <HoursMinsDisplay hours={totalHours} size="sm" />
+            </Badge>
           </div>
 
           {totalHours === 0 && (

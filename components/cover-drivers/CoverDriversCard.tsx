@@ -10,7 +10,8 @@ import { AddCoverDriverModal } from "./AddCoverDriverModal";
 import { EditCoverDriverModal } from "./EditCoverDriverModal";
 import { CoverDriverScheduleModal } from "./CoverDriverScheduleModal";
 import { CoverDriverCard } from "./CoverDriverCard";
-import { formatDDMMYYYY, formatGBP, formatHoursMins } from "@/lib/utils";
+import { formatDDMMYYYY, formatGBP } from "@/lib/utils";
+import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import type { CoverDriver, CoverDriverDaySummary, Store } from "@/lib/types";
 
 export function CoverDriversCard({
@@ -148,7 +149,7 @@ export function CoverDriversCard({
                       {formatDDMMYYYY(r.work_date)}
                     </td>
                     <td className="px-3 py-3 text-right tabular-nums">
-                      {formatHoursMins(r.total_hours)}
+                      <HoursMinsDisplay hours={r.total_hours} />
                     </td>
                     <td className="px-3 py-3 text-right tabular-nums">
                       {formatGBP(r.hourly_cash_rate)}

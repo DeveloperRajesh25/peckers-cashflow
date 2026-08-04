@@ -533,6 +533,20 @@ export async function recomputeDayHeader(
 
   const derived = deriveDayHeader(sessions);
 
+  // Same rule as the empty-sessions guard above, one level down: when NO shift
+  // has ever recorded a count, the sum is not "zero drops" — there is simply
+  // nothing to sum, and the header may still hold counts written before
+  // migration 033 moved them onto the shifts. Writing the derived nulls over
+  // the top would erase the only surviving record of that round, and on a
+  // driver who is under the NI limit deliveries are their entire pay
+  // (Update 94). Once any shift carries a count the sessions are authoritative
+  // again, including a manager correcting a day down to a genuine zero.
+  const sessionsHaveDeliveries =
+    derived.deliveries.short != null ||
+    derived.deliveries.long != null ||
+    derived.deliveries.extraShort > 0 ||
+    derived.deliveries.extraLong > 0;
+
   const { error } = await supabase
     .from("clock_events")
     .update({
@@ -545,12 +559,16 @@ export async function recomputeDayHeader(
       // Rota, the Tuesday payout, Payout History, the Live board, Daily
       // Approval and the Vita Mojo cross-check keep reading one row, unchanged
       // — they simply read a correct number now on a split day.
-      short_deliveries_count: derived.deliveries.short,
-      long_deliveries_count: derived.deliveries.long,
-      extra_short_deliveries: derived.deliveries.extraShort,
-      extra_long_deliveries: derived.deliveries.extraLong,
-      extra_short_reason: derived.deliveries.extraShortReason,
-      extra_long_reason: derived.deliveries.extraLongReason,
+      ...(sessionsHaveDeliveries
+        ? {
+            short_deliveries_count: derived.deliveries.short,
+            long_deliveries_count: derived.deliveries.long,
+            extra_short_deliveries: derived.deliveries.extraShort,
+            extra_long_deliveries: derived.deliveries.extraLong,
+            extra_short_reason: derived.deliveries.extraShortReason,
+            extra_long_reason: derived.deliveries.extraLongReason,
+          }
+        : {}),
       // The APPROVED half (migration 035) — what the Tuesday payout pays. Same
       // rule as the raw columns: derived here and nowhere else, so approving,
       // undoing, correcting a count and adding a shift all settle through one
