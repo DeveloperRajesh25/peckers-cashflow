@@ -67,6 +67,8 @@ export function mapManagerDaysToApproval(
     approved: Boolean(d.deliveries_approved),
     auto_clocked_out: Boolean(d.auto_clocked_out),
     session_count: Number(d.session_count) || 0,
+    manual_entry: Boolean(d.manual_entry),
+    manual_entry_reason: d.manual_entry_reason ?? null,
   }));
 }
 
@@ -125,9 +127,27 @@ export async function recomputeManagerDayHeader(
   // manager's shift only ever has its DELIVERIES signed off — their hours are
   // salaried and pay nothing — so the flag is mapped across rather than the
   // shared function learning a second field name for the same idea.
-  const derived = deriveDayHeader(
-    sessions.map((s) => ({ ...s, hours_approved: s.deliveries_approved })),
-  );
+  const mapped = sessions.map((s) => ({ ...s, hours_approved: s.deliveries_approved }));
+
+  // TWO derivations, because a deliveries-only row (migration 037) is a carrier
+  // for drops, not a shift. It has no duration and the manager was never here,
+  // so it must not put a clock-in on the day: that is what the Live board reads
+  // to count their fixed daily wage, and what the Rota reads to mark them
+  // present. Times, hours and shift count come from the REAL shifts; the drops
+  // and their sign-off come from all of them.
+  const derived = deriveDayHeader(mapped.filter((s) => !s.deliveries_only));
+  const withDeliveries = deriveDayHeader(mapped);
+
+  // Same rule recomputeDayHeader follows for employees (Update 94): when NO
+  // shift carries a count, the sum is not "zero drops" — there is nothing to
+  // sum, and the header may still hold counts written before 034 moved them
+  // onto the shifts. Writing the derived nulls over the top would erase the
+  // only surviving record of that round.
+  const sessionsHaveDeliveries =
+    withDeliveries.deliveries.short != null ||
+    withDeliveries.deliveries.long != null ||
+    withDeliveries.deliveries.extraShort > 0 ||
+    withDeliveries.deliveries.extraLong > 0;
 
   const { error } = await supabase
     .from("manager_clock_events")
@@ -140,24 +160,115 @@ export async function recomputeManagerDayHeader(
       // is their ONLY writer — the same rule recomputeDayHeader follows for
       // employees, so a manager who did drops on two separate shifts has both
       // counted rather than the later one overwriting the earlier.
-      short_deliveries_count: derived.deliveries.short,
-      long_deliveries_count: derived.deliveries.long,
-      extra_short_deliveries: derived.deliveries.extraShort,
-      extra_long_deliveries: derived.deliveries.extraLong,
-      extra_short_reason: derived.deliveries.extraShortReason,
-      extra_long_reason: derived.deliveries.extraLongReason,
+      ...(sessionsHaveDeliveries
+        ? {
+            short_deliveries_count: withDeliveries.deliveries.short,
+            long_deliveries_count: withDeliveries.deliveries.long,
+            extra_short_deliveries: withDeliveries.deliveries.extraShort,
+            extra_long_deliveries: withDeliveries.deliveries.extraLong,
+            extra_short_reason: withDeliveries.deliveries.extraShortReason,
+            extra_long_reason: withDeliveries.deliveries.extraLongReason,
+          }
+        : {}),
       // The approved half (migration 035): only signed-off drops are paid.
-      approved_short_deliveries_count: derived.approvedDeliveries.short,
-      approved_long_deliveries_count: derived.approvedDeliveries.long,
-      approved_extra_short_deliveries: derived.approvedDeliveries.extraShort,
-      approved_extra_long_deliveries: derived.approvedDeliveries.extraLong,
-      approved_session_count: derived.approvedSessionCount,
-      deliveries_approved: derived.allApproved,
+      approved_short_deliveries_count: withDeliveries.approvedDeliveries.short,
+      approved_long_deliveries_count: withDeliveries.approvedDeliveries.long,
+      approved_extra_short_deliveries: withDeliveries.approvedDeliveries.extraShort,
+      approved_extra_long_deliveries: withDeliveries.approvedDeliveries.extraLong,
+      approved_session_count: withDeliveries.approvedSessionCount,
+      deliveries_approved: withDeliveries.allApproved,
     })
     .eq("id", clockEventId);
   if (error) throw new Error(error.message);
 
-  return derived;
+  // The bounds and hours the caller stamps elsewhere come from the real shifts;
+  // the drops it audits must be the day's whole total.
+  return { ...derived, deliveries: withDeliveries.deliveries };
+}
+
+/**
+ * The day's deliveries-only row, if it has one (migration 037). At most one
+ * exists — manager_clock_sessions_one_deliveries_only enforces it — so
+ * re-recording a manager's missed drops corrects that day rather than paying
+ * the same round twice.
+ */
+export async function findDeliveriesOnlySession(
+  supabase: SupabaseClient,
+  clockEventId: string,
+): Promise<ManagerClockSession | null> {
+  const { data, error } = await supabase
+    .from("manager_clock_sessions")
+    .select("*")
+    .eq("clock_event_id", clockEventId)
+    .eq("deliveries_only", true)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as ManagerClockSession | null) ?? null;
+}
+
+/**
+ * Record drops for a day the manager never clocked.
+ *
+ * Zero-length and closed, deliberately: closed so it can never occupy the
+ * one-open-session slot and lock the manager out of clocking in, zero-length so
+ * that even a reader which does sum it contributes nothing to worked hours.
+ * The caller recomputes the day header afterwards.
+ */
+export async function insertDeliveriesOnlySession(
+  supabase: SupabaseClient,
+  input: {
+    clockEventId: string;
+    managerId: string;
+    storeId: string;
+    eventDate: string;
+    at: string;
+    deliveries: DeliveryCounts;
+    manual: { by: string; at: string; reason: string };
+  },
+): Promise<ManagerClockSession> {
+  const existing = await managerSessionsForEvent(supabase, input.clockEventId);
+  const seq = existing.length > 0 ? Math.max(...existing.map((s) => s.seq)) + 1 : 1;
+
+  const { data, error } = await supabase
+    .from("manager_clock_sessions")
+    .insert({
+      clock_event_id: input.clockEventId,
+      manager_id: input.managerId,
+      store_id: input.storeId,
+      event_date: input.eventDate,
+      seq,
+      clock_in_at: input.at,
+      clock_out_at: input.at,
+      deliveries_only: true,
+      // Null, and it stays null: a row with no coordinates was never verified.
+      clock_in_lat: null,
+      clock_in_lng: null,
+      manual_entry: true,
+      manual_entry_by: input.manual.by,
+      manual_entry_at: input.manual.at,
+      manual_entry_reason: input.manual.reason,
+      short_deliveries_count: input.deliveries.short,
+      long_deliveries_count: input.deliveries.long,
+      extra_short_deliveries: input.deliveries.extraShort,
+      extra_long_deliveries: input.deliveries.extraLong,
+      extra_short_reason:
+        input.deliveries.extraShort > 0 ? input.deliveries.extraShortReason : null,
+      extra_long_reason:
+        input.deliveries.extraLong > 0 ? input.deliveries.extraLongReason : null,
+    })
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    if (error.code === "23505") {
+      throw new Error(
+        "Deliveries have already been recorded by hand for that day. Correct them on the approval row instead.",
+      );
+    }
+    throw new Error(error.message);
+  }
+  if (!data) throw new Error("Could not record those deliveries. Please try again.");
+  return data as ManagerClockSession;
 }
 
 /** Sign off (or withdraw) one manager shift's deliveries. */

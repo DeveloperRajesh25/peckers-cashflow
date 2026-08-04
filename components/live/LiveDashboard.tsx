@@ -249,6 +249,10 @@ export function LiveDashboard({
   // count the gap between the morning and evening shifts.
   const managerSessionsByMgr = new Map<string, ManagerClockSession[]>();
   for (const s of managerClockSessions) {
+    // A deliveries-only row (migration 037) carries drops for a day the manager
+    // never clocked. It is not a shift: counting it would show a "×2 shifts"
+    // marker and a window nobody worked.
+    if (s.deliveries_only) continue;
     const arr = managerSessionsByMgr.get(s.manager_id) ?? [];
     arr.push(s);
     managerSessionsByMgr.set(s.manager_id, arr);

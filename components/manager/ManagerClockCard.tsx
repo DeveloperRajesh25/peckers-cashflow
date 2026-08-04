@@ -153,9 +153,15 @@ export function ManagerClockCard({
     }
   }
 
-  // Chronological, never by seq — seq is insertion order.
+  // Chronological, never by seq — seq is insertion order. A deliveries-only row
+  // (migration 037) is dropped here: it carries drops recorded by hand for a day
+  // with no clock record, and listing it would show a 12:00–12:00 "shift" that
+  // was never worked. Its counts are still read below, where they belong.
   const sessions = React.useMemo(
-    () => [...todaySessions].sort((a, b) => a.clock_in_at.localeCompare(b.clock_in_at)),
+    () =>
+      todaySessions
+        .filter((s) => !s.deliveries_only)
+        .sort((a, b) => a.clock_in_at.localeCompare(b.clock_in_at)),
     [todaySessions],
   );
   // The header's clock_out_at is nulled while any shift is open, so it answers
@@ -177,13 +183,15 @@ export function ManagerClockCard({
   const earlierDropsToday = React.useMemo(() => {
     let short = 0;
     let long = 0;
-    for (const s of sessions) {
+    // Over ALL of today's rows, including a hand-entered one — those drops are
+    // already on the day, so counting them again in this shift would pay twice.
+    for (const s of todaySessions) {
       if (!s.clock_out_at) continue; // the shift being closed now
       short += (Number(s.short_deliveries_count) || 0) + (Number(s.extra_short_deliveries) || 0);
       long += (Number(s.long_deliveries_count) || 0) + (Number(s.extra_long_deliveries) || 0);
     }
     return { short, long, any: short > 0 || long > 0 };
-  }, [sessions]);
+  }, [todaySessions]);
 
   function resetDropForm() {
     setShortDrops("");

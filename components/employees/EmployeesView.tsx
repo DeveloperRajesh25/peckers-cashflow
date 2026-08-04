@@ -80,6 +80,12 @@ type Props = {
    * paid per drop like anyone else's.
    */
   managerDaily?: ManagerDailyApprovalRow[];
+  /**
+   * Manager login accounts, for recording drops a manager covered on a day they
+   * never clocked in. Separate from managerDaily, which only holds days that
+   * already carry counts.
+   */
+  managers?: Array<{ id: string; name: string }>;
   /** Server's "today" as YYYY-MM-DD (avoids client/server timezone drift). */
   todayISO: string;
   stores: Store[];
@@ -119,6 +125,7 @@ export function EmployeesView({
   clockSummaries = [],
   clockDailySummaries = [],
   managerDaily = [],
+  managers = [],
   loadError = null,
   todayISO,
   stores,
@@ -454,6 +461,7 @@ export function EmployeesView({
           onCoverApproveDate={handleCoverApproveDate}
           onCoverUnapprove={handleCoverUnapprove}
           managerSummaries={visibleManagerDaily}
+          managers={managers}
           onManagerApprove={handleManagerApprove}
           onManagerUnapprove={handleManagerUnapprove}
           onShiftApproval={handleShiftApproval}

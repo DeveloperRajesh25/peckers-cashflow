@@ -25,6 +25,7 @@ import {
 import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import { HoursMinsInput } from "@/components/ui/HoursMinsInput";
 import { ManualClockEntryModal } from "@/components/clock/ManualClockEntryModal";
+import { ManagerDeliveryEntryModal } from "@/components/clock/ManagerDeliveryEntryModal";
 import type {
   ClockDailySummary,
   CoverDailyApprovalRow,
@@ -253,8 +254,8 @@ function fromManager(m: ManagerDailyApprovalRow): ApprovalRow {
     approved_hours: null,
     approved_row_id: null,
     auto_clocked_out: m.auto_clocked_out,
-    manual_entry: false,
-    manual_entry_reason: null,
+    manual_entry: m.manual_entry,
+    manual_entry_reason: m.manual_entry_reason,
     is_driver: true,
     short_deliveries: m.short_deliveries,
     long_deliveries: m.long_deliveries,
@@ -319,6 +320,7 @@ export function DailyHoursApproval({
   showStore,
   employees = [],
   coverDrivers = [],
+  managers = [],
   onManualSaved,
   onApprove,
   onApproveDate,
@@ -339,6 +341,8 @@ export function DailyHoursApproval({
   /** Active roster, for the "someone forgot to clock in" picker. */
   employees?: Array<{ id: string; name: string; is_driver?: boolean }>;
   coverDrivers?: Array<{ id: string; name: string }>;
+  /** Manager accounts, for recording drops a manager covered off the clock. */
+  managers?: Array<{ id: string; name: string }>;
   /** Managers who clocked in on a listed day, for delivery sign-off. */
   managerSummaries?: ManagerDailyApprovalRow[];
   onManualSaved?: () => void;
@@ -346,7 +350,7 @@ export function DailyHoursApproval({
   const toast = useToast();
   const [selectedDate, setSelectedDate] = React.useState(todayISO);
   const [showAddMissed, setShowAddMissed] = React.useState<
-    "employee" | "cover_driver" | null
+    "employee" | "cover_driver" | "manager" | null
   >(null);
   const [edited, setEdited] = React.useState<Record<string, string>>({});
   // Corrected delivery counts, keyed `<rowKey>:short` / `<rowKey>:long`. Kept
@@ -557,6 +561,36 @@ export function DailyHoursApproval({
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [employees, summaries, selectedDate]);
+
+  // Every manager stays pickable, unlike cover drivers: a manager row only
+  // exists on this screen once drops have been logged, so "already has a
+  // record" is exactly the person whose count may still need correcting. What
+  // they already have that day is labelled instead.
+  const managerManualCandidates = React.useMemo(() => {
+    const byManager = new Map(
+      managerSummaries
+        .filter((m) => m.event_date === selectedDate)
+        .map((m) => [
+          m.manager_id,
+          {
+            drops:
+              m.short_deliveries +
+              m.long_deliveries +
+              m.extra_short_deliveries +
+              m.extra_long_deliveries,
+            approved: m.approved,
+          },
+        ]),
+    );
+    return managers
+      .map((m) => ({
+        id: m.id,
+        name: m.name,
+        existing_drops: byManager.get(m.id)?.drops ?? 0,
+        approved: byManager.get(m.id)?.approved ?? false,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [managers, managerSummaries, selectedDate]);
 
   const coverManualCandidates = React.useMemo(() => {
     const withRecord = new Set(
@@ -790,9 +824,12 @@ export function DailyHoursApproval({
               <span
                 className="ml-2 align-middle text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-warning/40 bg-warning/10 text-warning font-medium"
                 title={
-                  s.manual_entry_reason
-                    ? `Times entered by a manager (no location check) — ${s.manual_entry_reason}`
-                    : "Times entered by a manager — this day was not location-verified."
+                  (s.kind === "manager"
+                    ? "Deliveries entered by hand for a day with no clock record"
+                    : "Times entered by a manager (no location check)") +
+                  (s.manual_entry_reason
+                    ? ` — ${s.manual_entry_reason}`
+                    : " — this day was not location-verified.")
                 }
               >
                 Manual
@@ -822,8 +859,17 @@ export function DailyHoursApproval({
             )}
           </p>
           <p className="text-xs text-text-muted">
-            {s.auto_clocked_out ? "Assumed" : "Clocked"}{" "}
-            <HoursMinsDisplay hours={s.clocked_hours} />
+            {/* A hand-entered manager day has no clock record at all, so
+                "Clocked 0h" would read as a shift that paid nothing rather
+                than as a round recorded after the fact. */}
+            {s.kind === "manager" && s.manual_entry && s.clocked_hours === 0 ? (
+              <>No clock record</>
+            ) : (
+              <>
+                {s.auto_clocked_out ? "Assumed" : "Clocked"}{" "}
+                <HoursMinsDisplay hours={s.clocked_hours} />
+              </>
+            )}
             {store && <> · {store}</>}
             {s.kind === "cover" && <> · cash</>}
             {s.kind === "manager" && <> · deliveries only</>}
@@ -1175,6 +1221,16 @@ export function DailyHoursApproval({
               Add cover entry
             </Button>
           )}
+          {managerManualCandidates.length > 0 && onManagerApprove && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setShowAddMissed("manager")}
+              title="Record deliveries a manager covered — no clock times, only the drops they're paid for"
+            >
+              Add manager entry
+            </Button>
+          )}
         </div>
       </div>
 
@@ -1286,7 +1342,19 @@ export function DailyHoursApproval({
         </section>
       )}
 
-      {showAddMissed && (
+      {showAddMissed === "manager" && (
+        <ManagerDeliveryEntryModal
+          eventDate={selectedDate}
+          candidates={managerManualCandidates}
+          onClose={() => setShowAddMissed(null)}
+          onSaved={() => {
+            setShowAddMissed(null);
+            onManualSaved?.();
+          }}
+        />
+      )}
+
+      {(showAddMissed === "employee" || showAddMissed === "cover_driver") && (
         <ManualClockEntryModal
           mode={showAddMissed}
           eventDate={selectedDate}
@@ -1317,7 +1385,10 @@ export function DailyHoursApproval({
         only and are paid per approved day, with no weekly split.{" "}
         <span className="font-medium text-text-primary">Manager</span> rows appear
         only when a manager covered deliveries — their salary is untouched, so
-        only the drop counts are confirmed here.
+        only the drop counts are confirmed here.{" "}
+        <span className="font-medium text-text-primary">Add manager entry</span>{" "}
+        records drops for a day a manager never clocked in; it asks for no times,
+        because nothing is paid from their hours.
       </p>
       <p className="text-xs text-text-muted">
         For drivers, <span className="font-medium text-text-primary">sd</span> /{" "}

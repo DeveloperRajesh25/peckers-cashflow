@@ -122,9 +122,11 @@ export default async function EmployeesPage() {
     coverDrivers,
   );
 
-  const managerNames = new Map(
-    (managersRes.data ?? []).map((m) => [m.id as string, (m.name as string) ?? "Manager"]),
-  );
+  const managerAccounts = (managersRes.data ?? []).map((m) => ({
+    id: m.id as string,
+    name: (m.name as string) ?? "Manager",
+  }));
+  const managerNames = new Map(managerAccounts.map((m) => [m.id, m.name]));
   const managerDaily = mapManagerDaysToApproval(
     (managerClocksRes.data ?? []) as ManagerClockEvent[],
     managerNames,
@@ -145,6 +147,7 @@ export default async function EmployeesPage() {
         clockSummaries={clockSummaries}
         clockDailySummaries={clockDailySummaries}
         managerDaily={managerDaily}
+        managers={managerAccounts}
         loadError={clocksRes.error?.message ?? null}
         todayISO={todayISO()}
         stores={storesRes.data ?? []}

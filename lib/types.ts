@@ -611,6 +611,15 @@ export type ManagerClockEvent = {
    * the drops reach the Tuesday sheet either way, as an employee's do.
    */
   deliveries_approved?: boolean | null;
+  /**
+   * The day's drops were recorded by hand because the manager never clocked in
+   * (migration 037). Such a day has NO clock times and was never location-
+   * verified, which is what the "Manual" badge on Daily Approval reports.
+   */
+  manual_entry?: boolean | null;
+  manual_entry_by?: string | null;
+  manual_entry_at?: string | null;
+  manual_entry_reason?: string | null;
   deliveries_approved_by?: string | null;
   deliveries_approved_at?: string | null;
 };
@@ -652,6 +661,17 @@ export type ManagerClockSession = {
   deliveries_approved?: boolean | null;
   deliveries_approved_by?: string | null;
   deliveries_approved_at?: string | null;
+  /**
+   * Drops recorded for a day the manager never clocked (migration 037). The row
+   * has clock_in_at = clock_out_at, carries no duration, and is excluded from
+   * the day's bounds, hours and shift count — only its counts are read.
+   */
+  deliveries_only?: boolean | null;
+  /** Recorded by hand, so never geofence-verified. Mirrors clock_sessions. */
+  manual_entry?: boolean | null;
+  manual_entry_by?: string | null;
+  manual_entry_at?: string | null;
+  manual_entry_reason?: string | null;
   created_at: string;
 };
 
@@ -676,6 +696,13 @@ export type ManagerDailyApprovalRow = {
   approved: boolean;
   auto_clocked_out: boolean;
   session_count: number;
+  /**
+   * The day's drops were entered by hand (migration 037). True implies there is
+   * no clock record at all for the day — worked_hours reads 0 and no times are
+   * shown, because nothing was ever clocked.
+   */
+  manual_entry: boolean;
+  manual_entry_reason: string | null;
 };
 
 /**

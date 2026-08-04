@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
 import { detectStoreForLocation, verifyGeofenceAtStore } from "@/lib/geofence-verify";
+import { londonWallClockToUtc } from "@/lib/auto-clock-out";
 import { todayISO } from "@/lib/utils";
 import { resolveActiveStoreId, type ActionResult } from "@/lib/types";
 import {
@@ -10,10 +11,13 @@ import {
   applyManagerDayDeliveryTotal,
   approveManagerDaySessions,
   closeManagerSession,
+  findDeliveriesOnlySession,
   findOpenManagerSession,
+  insertDeliveriesOnlySession,
   managerSessionsForEvent,
   openManagerSession,
   recomputeManagerDayHeader,
+  setManagerSessionDeliveries,
   unapproveManagerDaySessions,
 } from "@/lib/manager-clock-sessions";
 import {
@@ -302,6 +306,211 @@ async function performManagerClockOut(input: ManagerClockOutInput) {
             day_deliveries: { short: dayDrops.short, long: dayDrops.long },
           }
         : {}),
+    },
+  });
+
+  revalidateManagerClockPaths();
+}
+
+// =============================================================
+// Manager-entered deliveries for a day the manager never clocked (migration 037)
+//
+// The third missed-entry path on Daily Approval, beside the employee and cover
+// driver ones. Deliberately NOT a manual clock-in: a manager's fixed daily wage
+// turns on merely having clocked in, so inventing times would overstate the
+// wage bill on the Live board and mark them present on the Rota for a day they
+// weren't there. Only the drops are recorded — which is all a manager is ever
+// paid for through this app.
+//
+// The counts go on a DELIVERIES-ONLY session, never straight onto the day
+// header: header-only counts are what Update 94 had to repair, because the next
+// recompute derives the header from its shifts and erases them.
+// =============================================================
+
+/** Above this, a missed-entry submission is a typo rather than a round. */
+const MAX_MANUAL_MANAGER_DROPS = 150;
+
+export type ManualManagerDeliveryInput = {
+  manager_id: string;
+  /** YYYY-MM-DD. Never in the future — the day has to have happened. */
+  event_date: string;
+  deliveries: DeliveryInput;
+  reason: string;
+};
+
+export async function upsertManualManagerDeliveryEntry(
+  input: ManualManagerDeliveryInput,
+): Promise<ActionResult> {
+  return asResult(() => performManualManagerDeliveryEntry(input));
+}
+
+async function performManualManagerDeliveryEntry(input: ManualManagerDeliveryInput) {
+  // Role gate first — a non-staff caller must not get as far as reading a row.
+  const user = await requireApprover();
+  const supabase = createServerSupabase();
+
+  if (!input.manager_id) throw new Error("Select a manager");
+  if (!input.event_date) throw new Error("Date is required");
+  if (!input.reason?.trim()) {
+    throw new Error("Give a reason — this records deliveries with no clock record.");
+  }
+  if (input.event_date > todayISO()) {
+    throw new Error("That date hasn't happened yet.");
+  }
+
+  const deliveries = normaliseDeliveryInput(input.deliveries);
+  if (!deliveries) throw new Error("Enter the deliveries this manager covered.");
+  const total =
+    (deliveries.short ?? 0) +
+    (deliveries.long ?? 0) +
+    deliveries.extraShort +
+    deliveries.extraLong;
+  if (total <= 0) {
+    // A day of nothing has nothing to approve and nothing to pay — it would
+    // create a row that never appears on any screen.
+    throw new Error("Enter at least one delivery.");
+  }
+  if (total > MAX_MANUAL_MANAGER_DROPS) {
+    throw new Error(`${total} deliveries in one day looks wrong — check the counts.`);
+  }
+
+  const { data: manager } = await supabase
+    .from("allowed_users")
+    .select("id, name, role, store_id")
+    .eq("id", input.manager_id)
+    .maybeSingle();
+  if (!manager) throw new Error("Manager not found.");
+  if (manager.role !== "manager") throw new Error("That account isn't a manager.");
+
+  const { data: existing } = await supabase
+    .from("manager_clock_events")
+    .select("*")
+    .eq("manager_id", input.manager_id)
+    .eq("event_date", input.event_date)
+    .maybeSingle();
+
+  // Attributed to the store the caller is running — that is where the drops
+  // were covered. An admin falls back to the day's own store, then the
+  // manager's home store.
+  const storeId =
+    user.allowed!.role === "manager"
+      ? resolveActiveStoreId(user.allowed)
+      : existing?.store_id ?? manager.store_id;
+  if (!storeId) throw new Error("No store to record these deliveries against.");
+  if (
+    user.allowed!.role === "manager" &&
+    existing?.store_id &&
+    existing.store_id !== storeId
+  ) {
+    throw new Error("That day was clocked at another store — record it from there.");
+  }
+
+  const now = new Date();
+  const manualStamp = {
+    by: user.id,
+    at: now.toISOString(),
+    reason: input.reason.trim(),
+  };
+
+  let clockEventId = existing?.id as string | undefined;
+  if (!existing) {
+    const { data: created, error } = await supabase
+      .from("manager_clock_events")
+      .insert({
+        manager_id: input.manager_id,
+        store_id: storeId,
+        event_date: input.event_date,
+        // Deliberately null: the manager was never here, and clock_in_at is
+        // what the Live board reads to count their daily wage.
+        clock_in_at: null,
+        clock_out_at: null,
+        manual_entry: true,
+        manual_entry_by: manualStamp.by,
+        manual_entry_at: manualStamp.at,
+        manual_entry_reason: manualStamp.reason,
+      })
+      .select("id")
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    clockEventId = created?.id;
+  }
+  if (!clockEventId) throw new Error("Could not record those deliveries. Please try again.");
+
+  // A pre-031 day keeps its times on the HEADER with no session beneath it.
+  // Adding a session to such a day would make the header derive from that one
+  // session alone and blank the real clock-in, so the existing shift is adopted
+  // into a session of its own first.
+  if (existing?.clock_in_at) {
+    await adoptManagerHeaderIntoSession(supabase, {
+      ...existing,
+      id: existing.id,
+      manager_id: input.manager_id,
+      store_id: existing.store_id,
+      event_date: input.event_date,
+    });
+  }
+
+  // A day already carrying hand-entered drops is CORRECTED, not added to —
+  // otherwise re-submitting the same round would pay it twice.
+  const alreadyEntered = await findDeliveriesOnlySession(supabase, clockEventId);
+  if (alreadyEntered?.deliveries_approved) {
+    throw new Error(
+      "Those deliveries are already approved. Undo the approval on the day's row to change them.",
+    );
+  }
+
+  if (alreadyEntered) {
+    await setManagerSessionDeliveries(supabase, alreadyEntered.id, deliveries);
+  } else {
+    await insertDeliveriesOnlySession(supabase, {
+      clockEventId,
+      managerId: input.manager_id,
+      storeId,
+      eventDate: input.event_date,
+      // Midday, and never shown: the row exists to carry counts, and it is
+      // zero-length so it contributes no hours wherever it is summed.
+      at: londonWallClockToUtc(input.event_date, "12:00").toISOString(),
+      deliveries,
+      manual: manualStamp,
+    });
+  }
+
+  if (existing) {
+    // An existing day is flagged too — the drops on it were still entered by
+    // hand, and the badge is what tells a reviewer to look.
+    const { error } = await supabase
+      .from("manager_clock_events")
+      .update({
+        manual_entry: true,
+        manual_entry_by: manualStamp.by,
+        manual_entry_at: manualStamp.at,
+        manual_entry_reason: manualStamp.reason,
+      })
+      .eq("id", clockEventId);
+    if (error) throw new Error(error.message);
+  }
+
+  await recomputeManagerDayHeader(supabase, clockEventId);
+
+  await writeAudit({
+    action: alreadyEntered
+      ? "manual_manager_deliveries_corrected"
+      : "manual_manager_deliveries",
+    entity: "manager_clock_event",
+    entity_id: clockEventId,
+    changes: {
+      manager_id: input.manager_id,
+      manager_name: manager.name,
+      event_date: input.event_date,
+      store_id: storeId,
+      deliveries: {
+        short: deliveries.short,
+        long: deliveries.long,
+        extra_short: deliveries.extraShort,
+        extra_long: deliveries.extraLong,
+      },
+      reason: manualStamp.reason,
+      by: user.email,
     },
   });
 
