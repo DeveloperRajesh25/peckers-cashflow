@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
-import { detectStoreForLocation, verifyGeofenceAtStore } from "@/lib/geofence-verify";
+import { detectStoreForLocation, verifyGeofenceForClockOut } from "@/lib/geofence-verify";
 import { londonWallClockToUtc } from "@/lib/auto-clock-out";
 import { todayISO } from "@/lib/utils";
 import { resolveActiveStoreId, type ActionResult } from "@/lib/types";
@@ -248,13 +248,14 @@ async function performManagerClockOut(input: ManagerClockOutInput) {
     if (!session) throw new Error("You haven't clocked in yet today.");
   }
 
-  // Clock out from the store they clocked IN at (recorded on the session), not
-  // whatever store they may have switched to since — you sign off where your
-  // shift actually was.
+  // Clock out from the store they clocked IN at (recorded on the session) — the
+  // shift stays attributed there whatever store they switched to since. Being at
+  // ANOTHER store still signs the shift off, because a manager who moved sites
+  // must not be stranded clocked in (see verifyGeofenceForClockOut).
   const clockedStoreId = session.store_id ?? existing.store_id;
   if (!clockedStoreId) throw new Error("Your clock-in has no store on record. Contact your admin.");
 
-  await verifyGeofenceAtStore(
+  await verifyGeofenceForClockOut(
     supabase,
     clockedStoreId,
     input.latitude,

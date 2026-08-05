@@ -16,8 +16,7 @@ import {
 } from "@/lib/utils";
 import {
   detectStoreForLocation,
-  verifyGeofenceAtStore,
-  type GeofenceLogContext,
+  verifyGeofenceForClockOut,
 } from "@/lib/geofence-verify";
 import { findEmployeeForUser } from "@/lib/employee-lookup";
 import {
@@ -74,16 +73,6 @@ async function requireAllowed() {
 
 async function getEmployeeForUser(userId: string, userEmail: string) {
   return findEmployeeForUser(createServerSupabase(), userId, userEmail);
-}
-
-async function verifyGeofence(
-  storeId: string,
-  lat: number,
-  lng: number,
-  accuracy?: number | null,
-  logCtx?: GeofenceLogContext,
-) {
-  return verifyGeofenceAtStore(createServerSupabase(), storeId, lat, lng, accuracy, logCtx);
 }
 
 type ClockInShiftCandidate = { id: string; is_day_off: boolean; start_time: string | null };
@@ -529,9 +518,12 @@ async function performClockOut(input: ClockOutInput) {
     if (!session) throw new Error("You haven't clocked in yet today.");
   }
 
-  // Clock out at the same store they clocked in at — that's where the day's
-  // work is recorded, so it's where they must be to sign off.
-  await verifyGeofence(
+  // Clock out at the store the shift is recorded against — or, failing that, at
+  // whichever store they're actually standing in. Staff cover across stores, so
+  // pinning the check to the recorded store alone can strand someone on site
+  // (see verifyGeofenceForClockOut).
+  const { atStore } = await verifyGeofenceForClockOut(
+    supabase,
     session.store_id ?? existing.store_id,
     input.latitude,
     input.longitude,
@@ -612,6 +604,9 @@ async function performClockOut(input: ClockOutInput) {
       session_seq: session.seq,
       worked_hours: workedHours,
       location: [input.latitude, input.longitude],
+      // Only present when they signed off somewhere other than the store the
+      // shift is recorded against — worth seeing when a day's store is queried.
+      clocked_out_at_store: atStore?.name ?? null,
       short_deliveries: input.short_deliveries_count ?? null,
       long_deliveries: input.long_deliveries_count ?? null,
     },

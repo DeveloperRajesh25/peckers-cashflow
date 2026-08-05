@@ -1,8 +1,10 @@
 // =============================================================
-// Shared server-side geofence check. Reads the store's coordinates + radius and
-// throws a user-facing error if the reported position is out of range. Used by
-// both crew clock (app/actions/clock.ts) and manager clock
-// (app/actions/manager-clock.ts) so they agree on the verdict.
+// Shared server-side geofence check. Reads store coordinates + radius and throws
+// a user-facing error if the reported position is out of range. Used by crew,
+// manager and cover driver clock actions so they agree on the verdict.
+//
+//   detectStoreForLocation      clocking IN — which store are they standing in?
+//   verifyGeofenceForClockOut   clocking OUT — the shift's store, or any store
 //
 // Takes the caller's Supabase client so RLS runs under the caller's session.
 // =============================================================
@@ -60,23 +62,30 @@ async function logGeofenceFailure(
   }
 }
 
-export async function verifyGeofenceAtStore(
+type StoreCheck = {
+  inRange: boolean;
+  name: string;
+  distance: number;
+  radius: number;
+};
+
+/** Distance verdict for one store, or null when that store has no coordinates
+ *  to measure against. Neither logs nor throws — the caller decides what a miss
+ *  means. */
+async function checkGeofenceAtStore(
   supabase: SupabaseClient,
   storeId: string,
   lat: number,
   lng: number,
   accuracy?: number | null,
-  logCtx?: GeofenceLogContext,
-): Promise<{ distance: number }> {
+): Promise<StoreCheck | null> {
   const { data: store } = await supabase
     .from("stores")
     .select("latitude, longitude, geofence_radius_m, name")
     .eq("id", storeId)
     .maybeSingle();
 
-  if (!store?.latitude || !store?.longitude) {
-    throw new Error("Store location not configured. Contact your manager.");
-  }
+  if (!store?.latitude || !store?.longitude) return null;
 
   const distance = haversineMeters(
     Number(store.latitude),
@@ -85,21 +94,49 @@ export async function verifyGeofenceAtStore(
     lng,
   );
   const radius = Number(store.geofence_radius_m ?? 250);
-  if (!isWithinGeofence(distance, radius, accuracy)) {
-    const message = `You're ${Math.round(distance)}m from ${store.name}. You must be within ${radius}m to clock in or out.`;
-    await logGeofenceFailure(supabase, logCtx, {
-      lat,
-      lng,
-      accuracy,
-      nearestStoreId: storeId,
-      nearestStoreName: store.name,
-      distance,
-      radius,
-      message,
-    });
-    throw new Error(message);
+  return {
+    inRange: isWithinGeofence(distance, radius, accuracy),
+    name: store.name as string,
+    distance,
+    radius,
+  };
+}
+
+/**
+ * Geofence check for CLOCKING OUT. The shift's recorded store is tried first —
+ * that is where the work is attributed, and the normal case is signing off where
+ * you clocked in. But it must not be the ONLY store accepted: staff cover across
+ * stores, and any drift between where the shift is recorded and where the person
+ * actually is (a shift recorded at their home store, a manager-entered shift, a
+ * store switched mid-day) would otherwise trap them on site with no way to clock
+ * out — the app telling someone standing at Stevenage that they're 12km from
+ * Hitchin.
+ *
+ * So: in range of the recorded store → done. Otherwise, if they are standing
+ * inside SOME store's geofence, that is good enough to sign off; the returned
+ * store says where they actually were, for the audit trail. Only someone at no
+ * store at all is refused, which is the rule this check exists to enforce. A
+ * recorded store with no coordinates configured takes the same fallback rather
+ * than erroring — an admin's missing setting is not the clocker's problem.
+ *
+ * Attribution is deliberately NOT changed here — the day's store stays the one
+ * the work was recorded against, so wages don't move between stores at clock-out.
+ */
+export async function verifyGeofenceForClockOut(
+  supabase: SupabaseClient,
+  storeId: string | null,
+  lat: number,
+  lng: number,
+  accuracy?: number | null,
+  logCtx?: GeofenceLogContext,
+): Promise<{ distance: number; atStore: DetectedStore | null }> {
+  if (storeId) {
+    const check = await checkGeofenceAtStore(supabase, storeId, lat, lng, accuracy);
+    if (check?.inRange) return { distance: check.distance, atStore: null };
   }
-  return { distance };
+  // Throws its own distance-aware error (and logs it) when they're at no store.
+  const detected = await detectStoreForLocation(supabase, lat, lng, accuracy, logCtx);
+  return { distance: detected.distance, atStore: detected };
 }
 
 export type DetectedStore = {

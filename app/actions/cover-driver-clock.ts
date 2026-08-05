@@ -11,7 +11,7 @@ import {
   timeToMinutes,
   todayISO,
 } from "@/lib/utils";
-import { detectStoreForLocation, verifyGeofenceAtStore } from "@/lib/geofence-verify";
+import { detectStoreForLocation, verifyGeofenceForClockOut } from "@/lib/geofence-verify";
 import { findCoverDriverForUser } from "@/lib/cover-driver-lookup";
 import {
   londonWallClockToUtc,
@@ -284,8 +284,9 @@ async function performClockOut(input: ClockOutInput) {
   if (existing.clock_out_at) throw new Error("You've already clocked out today.");
 
   // Clock out at the store they clocked IN at — that's where the day's work is
-  // recorded, so that's where they must be to sign off.
-  await verifyGeofenceAtStore(
+  // recorded. Standing at another store still signs the day off rather than
+  // stranding them clocked in (see verifyGeofenceForClockOut).
+  await verifyGeofenceForClockOut(
     supabase,
     existing.store_id,
     input.latitude,

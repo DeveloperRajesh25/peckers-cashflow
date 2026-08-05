@@ -172,6 +172,10 @@ export function ManagerClockCard({
   // There is no terminal phase any more: having clocked out is no bar to
   // starting another shift, which is the whole point of the feature.
   const phase: "in" | "out" = clockedIn ? "out" : "in";
+  // Clocking OUT is accepted at any store — the shift stays attributed to the
+  // one it was clocked in at, and a manager who moved sites must not be left
+  // stranded clocked in. Clocking in still requires the active store.
+  const canClock = phase === "out" ? inRange || detectedStore != null : inRange;
   const completedCount = sessions.filter((s) => s.clock_out_at).length;
   const hasFinishedShift = completedCount > 0 || !!todayClock?.clock_out_at;
   const workedToday = todayClock?.clock_in_at
@@ -413,7 +417,7 @@ export function ManagerClockCard({
               variant={phase === "out" ? "secondary" : "primary"}
               onClick={act}
               loading={busy}
-              disabled={!inRange || busy}
+              disabled={!canClock || busy}
               iconLeft={<ClockIcon size={18} />}
             >
               {phase === "out"
@@ -422,10 +426,11 @@ export function ManagerClockCard({
                   ? "Start Another Shift"
                   : "Clock In Now"}
             </Button>
-            {!inRange && geo.status === "ok" && (
+            {!canClock && geo.status === "ok" && (
               <p className="text-xs text-danger text-center">
-                You&apos;re too far from {store?.name ?? "your store"} to clock{" "}
-                {phase === "out" ? "out" : "in"}.
+                {phase === "out"
+                  ? "You're not within range of any store. Move closer to clock out."
+                  : `You're too far from ${store?.name ?? "your store"} to clock in.`}
               </p>
             )}
             {phase === "out" && (

@@ -165,10 +165,14 @@ export function CoverDriverClockApp({
   let targetDistance: number | null;
   let inRange: boolean;
   if (currentPhase === "out" || currentPhase === "done") {
-    targetStore = clockedStore;
-    const d = storeDistances.find((sd) => sd.store.id === clockedStore?.id) ?? null;
-    targetDistance = d?.distance ?? null;
-    inRange = !!d?.inRange;
+    const atClocked = storeDistances.find((sd) => sd.store.id === clockedStore?.id) ?? null;
+    // Being at ANY store signs the day off, mirroring the server — a day
+    // recorded against the wrong store must not strand them clocked in.
+    const anyStore = storeDistances.find((sd) => sd.inRange) ?? null;
+    const at = atClocked?.inRange ? atClocked : anyStore;
+    targetStore = clockedStore ?? at?.store ?? null;
+    targetDistance = atClocked?.distance ?? at?.distance ?? null;
+    inRange = !!at;
   } else {
     const detected = storeDistances.find((sd) => sd.inRange) ?? null;
     targetStore = detected?.store ?? storeDistances[0]?.store ?? null;
@@ -461,7 +465,7 @@ export function CoverDriverClockApp({
                 {!inRange && geo.status === "ok" && (
                   <p className="text-xs text-danger text-center">
                     {currentPhase === "out"
-                      ? `You're too far from ${targetStore?.name ?? "the store"} to clock out.`
+                      ? "You're not within range of any store. Move closer to the store you're covering to clock out."
                       : "You're not within range of any store. Move closer to the store you're covering."}
                   </p>
                 )}
