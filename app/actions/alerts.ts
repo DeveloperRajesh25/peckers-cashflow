@@ -22,6 +22,7 @@ import {
   buildPrePaymentSummary,
   buildWageLinesForStore,
   payWeekOf,
+  supermarketCashAmount,
 } from "@/lib/cash-flow";
 import { wageComplianceForEmployee } from "@/lib/compliance";
 import { isCredentialEmail } from "@/lib/credentials";
@@ -635,7 +636,10 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
       opening_balance: opening,
       entries: storeEntries,
       lines,
-      supermarket_cash: settings.cash_flow.supermarket_default_cash,
+      supermarket_cash: supermarketCashAmount(
+        store.name,
+        settings.cash_flow.supermarket_default_cash,
+      ),
     });
 
     const payout = payoutByStore.get(store.id);

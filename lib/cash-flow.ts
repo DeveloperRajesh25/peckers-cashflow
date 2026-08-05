@@ -35,6 +35,43 @@ export function round2(n: number): number {
 /** £2 per delivery covers the driver's petrol; labour is paid hourly. */
 export const DELIVERY_PETROL_RATE = 2;
 
+/** Every store but Hitchin (Settings → Cash Flow controls the amount). */
+export const SUPERMARKET_CASH_LABEL_DEFAULT = "Plus: Walkern and watton-at-stone money";
+
+/**
+ * Hitchin's supermarket cash float comes from a different location and is
+ * fixed rather than configurable — everywhere else uses the Settings default.
+ * Matched on the store's display NAME (lowercase, substring — "Hitchin
+ * Peckers" included) rather than its stable `code`, purely so every call site
+ * can use whatever store row it already has to hand without an extra lookup.
+ */
+function supermarketCashOverride(
+  storeName: string | null | undefined,
+): { label: string; amount: number } | null {
+  if (storeName?.toLowerCase().includes("hitchin")) {
+    return { label: "Plus: Meppershall", amount: 350 };
+  }
+  return null;
+}
+
+/** The label to show above the supermarket cash float on the payout sheet. */
+export function supermarketCashLabel(storeName: string | null | undefined): string {
+  return supermarketCashOverride(storeName)?.label ?? SUPERMARKET_CASH_LABEL_DEFAULT;
+}
+
+/**
+ * The supermarket cash float itself, folded into actual_cash_available. Feeds
+ * both the live payout summary (payouts.ts) and the wage-forecast alert scan
+ * (alerts.ts) — both must resolve the same number the same way, or the alert
+ * could warn of a shortfall the sheet itself doesn't show.
+ */
+export function supermarketCashAmount(
+  storeName: string | null | undefined,
+  defaultAmount: number,
+): number {
+  return supermarketCashOverride(storeName)?.amount ?? defaultAmount;
+}
+
 /**
  * The pay week for a Tuesday payout: wages paid on this week's Tuesday are
  * for the PREVIOUS Monday–Sunday week.

@@ -14,6 +14,7 @@ import {
   buildPrePaymentSummary,
   buildWageLinesForStore,
   payWeekOf,
+  supermarketCashAmount,
   type CoverDriverPayRow,
   type ManagerPayee,
   type ManagerPayRow,
@@ -123,6 +124,7 @@ async function computeSummary(
     coverRes,
     managersRes,
     managerClocksRes,
+    storeRes,
   ] = await Promise.all([
     supabase
       .from("daily_cash_entries")
@@ -174,6 +176,9 @@ async function computeSummary(
       .eq("store_id", storeId)
       .gte("event_date", payWeek.start)
       .lte("event_date", payWeek.end),
+    // Only needed to resolve the supermarket cash float — Hitchin's is a fixed
+    // override, everywhere else reads the Settings default.
+    supabase.from("stores").select("name").eq("id", storeId).maybeSingle(),
   ]);
 
   // A failed query must never read as "nobody worked": every wage on this sheet
@@ -218,7 +223,10 @@ async function computeSummary(
       opening_balance: opening,
       entries,
       lines,
-      supermarket_cash: settings.cash_flow.supermarket_default_cash,
+      supermarket_cash: supermarketCashAmount(
+        storeRes.data?.name,
+        settings.cash_flow.supermarket_default_cash,
+      ),
     }),
     load_error: loadError,
   };
