@@ -386,12 +386,10 @@ async function performClockIn(input: {
   if (existing) {
     const { error } = await supabase
       .from("clock_events")
-      .update({
-        shift_id: shiftId,
-        // A day already carrying a shift keeps the store it started at; only a
-        // fresh day takes the store just detected.
-        store_id: existing.clock_in_at ? existing.store_id : workedStoreId,
-      })
+      // The day's store is deliberately NOT written here: recomputeDayHeader
+      // derives it from the shifts below, so clocking in at another store moves
+      // the day there rather than leaving it frozen at wherever it started.
+      .update({ shift_id: shiftId })
       .eq("id", existing.id);
     if (error) throw new Error(error.message);
   } else {

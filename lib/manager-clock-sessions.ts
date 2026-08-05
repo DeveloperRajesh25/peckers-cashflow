@@ -156,6 +156,10 @@ export async function recomputeManagerDayHeader(
       clock_out_at: derived.lastOut,
       worked_hours: derived.completedCount > 0 ? derived.workedHours : null,
       session_count: derived.sessionCount,
+      // Same rule as employees: the day follows the store of the shift they're
+      // on, so a manager covering elsewhere shows under that store. From the
+      // REAL shifts only — a deliveries-only row is not attendance anywhere.
+      ...(derived.storeId ? { store_id: derived.storeId } : {}),
       // The day's drop totals are a SUM of its shifts (migration 034), and this
       // is their ONLY writer — the same rule recomputeDayHeader follows for
       // employees, so a manager who did drops on two separate shifts has both

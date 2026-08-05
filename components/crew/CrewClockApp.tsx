@@ -299,6 +299,8 @@ export function CrewClockApp({
   let targetStore: Store | null;
   let targetDistance: number | null;
   let inRange: boolean;
+  /** Set only when they're standing in a store OTHER than the shift's. */
+  let elsewhereStore: Store | null = null;
   if (currentPhase === "out") {
     const atClocked = storeDistances.find((sd) => sd.store.id === clockedStore?.id) ?? null;
     // Being at ANY store signs the shift off, mirroring the server: staff cover
@@ -309,6 +311,7 @@ export function CrewClockApp({
     targetStore = clockedStore ?? at?.store ?? null;
     targetDistance = atClocked?.distance ?? at?.distance ?? null;
     inRange = !!at;
+    if (at && at.store.id !== clockedStore?.id) elsewhereStore = at.store;
   } else {
     const detected = storeDistances.find((sd) => sd.inRange) ?? null;
     // Fall back to the nearest store purely for the "you're Xm away" message.
@@ -473,9 +476,11 @@ export function CrewClockApp({
                       ? "Getting your location…"
                       : geo.status === "ok"
                         ? currentPhase === "out"
-                          ? targetStore
-                            ? `${targetDistance != null ? `${Math.round(targetDistance)}m from ` : "At "}${targetStore.name} · ±${Math.round(geo.accuracy)}m GPS accuracy`
-                            : "Clocked-in store unavailable."
+                          ? elsewhereStore
+                            ? `You're at ${elsewhereStore.name} — your shift is recorded at ${targetStore?.name ?? "another store"} · ±${Math.round(geo.accuracy)}m GPS`
+                            : targetStore
+                              ? `${targetDistance != null ? `${Math.round(targetDistance)}m from ` : "At "}${targetStore.name} · ±${Math.round(geo.accuracy)}m GPS accuracy`
+                              : "Clocked-in store unavailable."
                           : inRange && targetStore
                             ? `You're at ${targetStore.name} · ${targetDistance != null ? `${Math.round(targetDistance)}m away · ` : ""}±${Math.round(geo.accuracy)}m GPS`
                             : targetStore

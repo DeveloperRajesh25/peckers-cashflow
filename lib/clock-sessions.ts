@@ -130,6 +130,17 @@ type SessionApprovalRow = {
 };
 
 export type DerivedDayHeader = {
+  /**
+   * Which store the day belongs to: the store of the shift currently OPEN, else
+   * the latest shift's. Null when no shift carries one.
+   *
+   * The day is a header over shifts that can each be at a DIFFERENT store —
+   * staff cross-cover, and a manager-entered shift is stamped with the store
+   * the manager was running, not one GPS ever verified. Freezing the day at the
+   * first store it saw put people on the wrong store's Live board while they
+   * stood in another store, and paid the day to the wrong till.
+   */
+  storeId: string | null;
   workedHours: number;
   sessionCount: number;
   /** How many of them are closed. Zero means worked_hours must stay null. */
@@ -206,12 +217,14 @@ export function sumSessionDeliveries(sessions: SessionDeliveryRow[]): DeliveryCo
  */
 export function deriveDayHeader(
   sessions: Array<
-    { clock_in_at: string; clock_out_at: string | null } & SessionDeliveryRow &
+    { clock_in_at: string; clock_out_at: string | null; store_id?: string | null } &
+      SessionDeliveryRow &
       SessionApprovalRow
   >,
 ): DerivedDayHeader {
   if (sessions.length === 0) {
     return {
+      storeId: null,
       workedHours: 0,
       sessionCount: 0,
       completedCount: 0,
@@ -229,6 +242,15 @@ export function deriveDayHeader(
   const completed = sessions.filter((s) => s.clock_out_at);
   const open = sessions.some((s) => !s.clock_out_at);
   const workedHours = round2(completed.reduce((sum, s) => sum + sessionHours(s), 0));
+
+  // Where they are NOW (the open shift), else where they were last. By clock
+  // time, never insertion order — a forgotten morning entered after the evening
+  // must not become "the latest shift".
+  const latest = sessions.reduce((newest, s) =>
+    new Date(s.clock_in_at).getTime() > new Date(newest.clock_in_at).getTime() ? s : newest,
+  );
+  const storeId =
+    sessions.find((s) => !s.clock_out_at)?.store_id ?? latest.store_id ?? null;
 
   const firstIn = sessions.reduce<string | null>(
     (min, s) =>
@@ -260,6 +282,7 @@ export function deriveDayHeader(
   );
 
   return {
+    storeId,
     workedHours,
     sessionCount: sessions.length,
     completedCount: completed.length,
@@ -554,6 +577,11 @@ export async function recomputeDayHeader(
       clock_out_at: derived.lastOut,
       worked_hours: derived.completedCount > 0 ? derived.workedHours : null,
       session_count: derived.sessionCount,
+      // The day follows the shift they're ON, so someone who clocks in at
+      // another store shows — and is paid — there rather than wherever the day
+      // happened to start. Never nulled: a legacy shift with no store of its own
+      // leaves the day's existing one standing.
+      ...(derived.storeId ? { store_id: derived.storeId } : {}),
       // The day's delivery totals are a SUM of its shifts (migration 033), and
       // this is their ONLY writer. Keeping them on the header is what lets the
       // Rota, the Tuesday payout, Payout History, the Live board, Daily
