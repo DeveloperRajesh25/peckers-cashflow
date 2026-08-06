@@ -210,7 +210,9 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
         .gte("entry_date", weekStart),
       supabase
         .from("cash_payouts")
-        .select("id, store_id, week_start_date, status, locked")
+        .select(
+          "id, store_id, week_start_date, status, locked, adjustment_amount, adjustment_reason",
+        )
         .eq("week_start_date", weekStart),
       supabase
         .from("cash_payouts")
@@ -535,6 +537,8 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
     store_id: string;
     status: string;
     locked: boolean;
+    adjustment_amount: number | null;
+    adjustment_reason: string | null;
   }>;
   const priorPayouts = (priorPayoutsRes.data ?? []) as Array<{
     store_id: string;
@@ -630,6 +634,7 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
     // Whoever worked at this store counts (including visitors from the other
     // store); buildWageLinesForStore keeps only those with pay due here.
     const lines = buildWageLinesForStore(store.id, employees, payWeekClocks);
+    const payout = payoutByStore.get(store.id);
     const summary = buildPrePaymentSummary({
       store_id: store.id,
       week_start_date: weekStart,
@@ -640,9 +645,12 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
         store.name,
         settings.cash_flow.supermarket_default_cash,
       ),
+      // Must match the sheet: a manual adjustment can be the whole reason a
+      // draw is or isn't needed, and an alert warning of a shortfall the sheet
+      // doesn't show is worse than no alert at all.
+      adjustment: Number(payout?.adjustment_amount) || 0,
+      adjustment_reason: payout?.adjustment_reason ?? null,
     });
-
-    const payout = payoutByStore.get(store.id);
 
     // Post Office draw required — flag on the Monday before and on payday Tuesday.
     if (summary.post_office_draw > 0.001 && todayWd <= 1) {

@@ -167,6 +167,17 @@ export function PayoutHistoryView({
                       <Mini label="Logged differences" value={formatGBP(p.logged_differences)} />
                       <Mini label="Post Office draw" value={formatGBP(p.post_office_draw)} />
                       <Mini label="Surplus carried fwd" value={formatGBP(p.surplus_carry_forward)} />
+                      {/* Only on the weeks that carry one — otherwise every
+                          historical sheet grows a "£0.00" tile that explains
+                          nothing. The draw and surplus above already include it. */}
+                      {Math.abs(Number(p.adjustment_amount) || 0) > 0.001 && (
+                        <Mini
+                          label={`Adjustment${p.adjustment_reason ? ` — ${p.adjustment_reason}` : ""}`}
+                          value={`${Number(p.adjustment_amount) > 0 ? "+" : "−"} ${formatGBP(
+                            Math.abs(Number(p.adjustment_amount)),
+                          )}`}
+                        />
+                      )}
                     </div>
                     <div className="overflow-x-auto border-t border-border">
                       <table className="w-full text-sm">

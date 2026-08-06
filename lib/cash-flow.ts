@@ -287,18 +287,29 @@ export function buildPrePaymentSummary(input: {
   lines: WageLine[];
   /** Default supermarket cash float added to the pot (0 if not configured). */
   supermarket_cash?: number;
+  /**
+   * Manual cash adjustment (migration 039), SIGNED: positive = cash added,
+   * negative = cash taken out. Settles AFTER actual_cash_available so the cash
+   * reconciliation above stays a record of real till movements only.
+   */
+  adjustment?: number;
+  adjustment_reason?: string | null;
 }): PrePaymentSummary {
   const totals = summariseWeekEntries(input.entries);
   const opening = round2(input.opening_balance);
   const supermarketCash = round2(Math.max(0, Number(input.supermarket_cash) || 0));
   // Cash available to pay wages = carried-forward surplus + envelopes collected
-  // + the default supermarket float. Wages are deducted from this; any remainder
-  // is surplus, and a shortfall is the Post Office draw.
+  // + the default supermarket float. Deliberately excludes the adjustment: this
+  // figure is what the till reconciliation accounts for, and the adjustment by
+  // definition is the money it doesn't.
   const actualCashAvailable = round2(opening + totals.cashCollected + supermarketCash);
   const totalCashWages = round2(input.lines.reduce((s, l) => s + l.cash_wage, 0));
   const totalDeliveryWages = round2(input.lines.reduce((s, l) => s + l.delivery_wages, 0));
   const grandTotal = round2(totalCashWages + totalDeliveryWages);
-  const diff = round2(actualCashAvailable - grandTotal);
+  // Signed, and NOT clamped at zero — a negative adjustment (cash taken out of
+  // the pot) is the whole reason the field can hold one.
+  const adjustment = round2(Number(input.adjustment) || 0);
+  const diff = round2(actualCashAvailable + adjustment - grandTotal);
 
   return {
     store_id: input.store_id,
@@ -312,10 +323,47 @@ export function buildPrePaymentSummary(input: {
     total_cash_wages: totalCashWages,
     total_delivery_wages: totalDeliveryWages,
     grand_total_wages: grandTotal,
+    adjustment,
+    // Only meaningful alongside a non-zero amount; kept in step so the sheet
+    // can never show a reason with nothing to explain.
+    adjustment_reason: adjustment !== 0 ? input.adjustment_reason?.trim() || null : null,
     post_office_draw: diff < 0 ? round2(-diff) : 0,
     surplus: diff > 0 ? diff : 0,
     lines: input.lines,
   };
+}
+
+/**
+ * Upper bound on a manual payout adjustment. Not a business rule — a sanity
+ * bound on money, well above any real weekly correction, so a fat-fingered
+ * "35000" instead of "350" is caught before it changes what gets drawn from the
+ * Post Office and carried forward as next week's opening balance.
+ */
+export const MAX_PAYOUT_ADJUSTMENT = 10000;
+
+/**
+ * Validate a submitted adjustment. Shared by the server action and the form so
+ * both agree on what is legal, and on the rule that money moving with no
+ * explanation is the one thing this field must never allow.
+ */
+export function normalisePayoutAdjustment(
+  amount: number | string | null | undefined,
+  reason: string | null | undefined,
+): { amount: number; reason: string | null } {
+  const n = round2(Number(amount) || 0);
+  if (!Number.isFinite(n)) throw new Error("Enter a valid amount.");
+  if (Math.abs(n) > MAX_PAYOUT_ADJUSTMENT) {
+    throw new Error(
+      `An adjustment over £${MAX_PAYOUT_ADJUSTMENT.toLocaleString()} looks wrong — check the amount.`,
+    );
+  }
+  const trimmed = reason?.trim() || null;
+  if (n !== 0 && !trimmed) {
+    throw new Error("Give a reason for the adjustment.");
+  }
+  // Clearing the amount clears the reason with it, so a stale explanation can
+  // never outlive the movement it described.
+  return { amount: n, reason: n === 0 ? null : trimmed };
 }
 
 // ---------------- aggregation from clock events ----------------

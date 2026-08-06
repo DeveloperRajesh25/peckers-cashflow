@@ -13,6 +13,7 @@ import {
   buildManagerWageLines,
   buildPrePaymentSummary,
   buildWageLinesForStore,
+  normalisePayoutAdjustment,
   payWeekOf,
   supermarketCashAmount,
   type CoverDriverPayRow,
@@ -125,6 +126,7 @@ async function computeSummary(
     managersRes,
     managerClocksRes,
     storeRes,
+    adjustmentRes,
   ] = await Promise.all([
     supabase
       .from("daily_cash_entries")
@@ -179,6 +181,14 @@ async function computeSummary(
     // Only needed to resolve the supermarket cash float — Hitchin's is a fixed
     // override, everywhere else reads the Settings default.
     supabase.from("stores").select("name").eq("id", storeId).maybeSingle(),
+    // The manual adjustment for this store-week (migration 039). It lives on
+    // the payout header, so a week with no sheet generated yet simply has none.
+    supabase
+      .from("cash_payouts")
+      .select("adjustment_amount, adjustment_reason")
+      .eq("store_id", storeId)
+      .eq("week_start_date", weekStartISO)
+      .maybeSingle(),
   ]);
 
   // A failed query must never read as "nobody worked": every wage on this sheet
@@ -227,9 +237,79 @@ async function computeSummary(
         storeRes.data?.name,
         settings.cash_flow.supermarket_default_cash,
       ),
+      adjustment: Number(adjustmentRes.data?.adjustment_amount) || 0,
+      adjustment_reason: adjustmentRes.data?.adjustment_reason ?? null,
     }),
     load_error: loadError,
   };
+}
+
+/**
+ * Set (or clear) the manual cash adjustment on a store's payout week.
+ *
+ * The adjustment lives on the payout header, so the sheet has to exist first —
+ * which is also the right order of work: you generate the sheet, see what the
+ * shortfall or surplus actually is, and only then know what needs adjusting.
+ *
+ * Blocked once the payout is confirmed. A locked payout is the record of what
+ * was really paid out, and its surplus has already been carried into the next
+ * week's opening balance — moving the number afterwards would silently restate
+ * a week that is already settled. Unlock it (Super Admin) to amend.
+ */
+export async function setPayoutAdjustment(input: {
+  store_id: string;
+  week_start: string;
+  amount: number;
+  reason: string | null;
+}): Promise<{ ok: true }> {
+  const user = await requireStaff();
+  assertStoreAccess(user, input.store_id);
+  const supabase = createServerSupabase();
+  const weekStart = toISODate(startOfISOWeek(parseISODate(input.week_start)));
+
+  // Never trust the client's arithmetic or its bounds — same rule every money
+  // path in this module follows.
+  const { amount, reason } = normalisePayoutAdjustment(input.amount, input.reason);
+
+  const { data: payout } = await supabase
+    .from("cash_payouts")
+    .select("id, locked, adjustment_amount, adjustment_reason")
+    .eq("store_id", input.store_id)
+    .eq("week_start_date", weekStart)
+    .maybeSingle();
+  if (!payout) {
+    throw new Error("Generate the payout sheet first, then add the adjustment.");
+  }
+  if (payout.locked) {
+    throw new Error("This payout is confirmed and locked. A Super Admin must unlock it to amend.");
+  }
+
+  const { error } = await supabase
+    .from("cash_payouts")
+    .update({ adjustment_amount: amount, adjustment_reason: reason })
+    .eq("id", payout.id);
+  if (error) throw new Error(error.message);
+
+  await writeAudit({
+    action: amount === 0 ? "payout_adjustment_cleared" : "payout_adjustment_set",
+    entity: "cash_payout",
+    entity_id: payout.id,
+    changes: {
+      store_id: input.store_id,
+      week_start: weekStart,
+      was: {
+        amount: Number(payout.adjustment_amount) || 0,
+        reason: payout.adjustment_reason ?? null,
+      },
+      now: { amount, reason },
+      by: user.email,
+    },
+  });
+
+  // The draw/surplus this feeds is what the alert scan forecasts, so re-run it.
+  void scanForAlertsBackground();
+  revalidateCashFlow();
+  return { ok: true };
 }
 
 /** Read-only live pre-payment summary (for the payout screen / dashboard forecast). */

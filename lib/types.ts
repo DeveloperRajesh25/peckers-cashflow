@@ -971,6 +971,13 @@ export type CashPayout = {
   total_cash_wages: number;
   total_delivery_wages: number;
   grand_total_wages: number;
+  /**
+   * Manual cash adjustment (migration 039), SIGNED: positive = cash added to
+   * the pot, negative = taken out. Applied at the settle, NOT inside
+   * actual_cash_available — see buildPrePaymentSummary.
+   */
+  adjustment_amount: number;
+  adjustment_reason: string | null;
   post_office_draw: number;
   surplus_carry_forward: number;
   locked: boolean;
@@ -1075,9 +1082,16 @@ export type PrePaymentSummary = {
   total_cash_wages: number;
   total_delivery_wages: number;
   grand_total_wages: number;
-  /** grand_total_wages − actual_cash_available, clamped ≥ 0 (Post Office draw). */
+  /**
+   * Manual cash adjustment for this store-week (migration 039), SIGNED.
+   * Deliberately outside actual_cash_available — it settles one step later, so
+   * the cash reconciliation above it stays a record of real till movements.
+   */
+  adjustment: number;
+  adjustment_reason: string | null;
+  /** grand_total_wages − (actual_cash_available + adjustment), clamped ≥ 0. */
   post_office_draw: number;
-  /** actual_cash_available − grand_total_wages, clamped ≥ 0. */
+  /** (actual_cash_available + adjustment) − grand_total_wages, clamped ≥ 0. */
   surplus: number;
   lines: WageLine[];
   /**

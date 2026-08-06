@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { Select } from "@/components/ui/Input";
+import { Input, Select } from "@/components/ui/Input";
 import { Badge } from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
 import { ChevronLeftIcon, ChevronRightIcon, CheckIcon } from "@/components/ui/icons";
@@ -13,6 +13,7 @@ import {
   generatePayout,
   markLinePaid,
   confirmPayout,
+  setPayoutAdjustment,
   unlockPayout,
 } from "@/app/actions/payouts";
 import {
@@ -93,6 +94,10 @@ export function PrePaymentView({
         total_cash_wages: payout.total_cash_wages,
         total_delivery_wages: payout.total_delivery_wages,
         grand_total_wages: payout.grand_total_wages,
+        // Frozen with everything else at confirm — the adjustment that was
+        // actually settled, not whatever the live figure says now.
+        adjustment: Number(payout.adjustment_amount) || 0,
+        adjustment_reason: payout.adjustment_reason ?? null,
         post_office_draw: payout.post_office_draw,
         surplus: payout.surplus_carry_forward,
       }
@@ -195,6 +200,54 @@ export function PrePaymentView({
     try {
       await confirmPayout({ payout_id: payout.id });
       toast.success("Wages confirmed and locked");
+      router.refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // The adjustment editor. Seeded from whatever is on record and re-seeded
+  // whenever the server figure changes, so a save (or another manager's edit
+  // landing on refresh) leaves the boxes agreeing with the row above them.
+  const [adjAmount, setAdjAmount] = React.useState(
+    fin.adjustment ? String(fin.adjustment) : "",
+  );
+  const [adjReason, setAdjReason] = React.useState(fin.adjustment_reason ?? "");
+  const [adjOpen, setAdjOpen] = React.useState(false);
+  React.useEffect(() => {
+    setAdjAmount(fin.adjustment ? String(fin.adjustment) : "");
+    setAdjReason(fin.adjustment_reason ?? "");
+  }, [fin.adjustment, fin.adjustment_reason]);
+
+  const adjParsed = adjAmount.trim() === "" ? 0 : Number(adjAmount);
+  const adjInvalid = adjAmount.trim() !== "" && !Number.isFinite(adjParsed);
+  const adjNeedsReason = !adjInvalid && adjParsed !== 0 && !adjReason.trim();
+
+  async function doSaveAdjustment() {
+    if (adjInvalid) {
+      toast.error("Enter a valid amount.");
+      return;
+    }
+    if (adjNeedsReason) {
+      toast.error("Give a reason for the adjustment.");
+      return;
+    }
+    setBusy("adjust");
+    try {
+      await setPayoutAdjustment({
+        store_id: store.id,
+        week_start: weekStart,
+        amount: adjParsed,
+        reason: adjReason.trim() || null,
+      });
+      toast.success(
+        adjParsed === 0
+          ? "Adjustment cleared"
+          : `Adjustment saved — ${adjParsed > 0 ? "+" : "−"}${formatGBP(Math.abs(adjParsed))}`,
+      );
+      setAdjOpen(false);
       router.refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
@@ -312,6 +365,16 @@ export function PrePaymentView({
               <SummaryRow label="Total cash wages due" value={`(${formatGBP(fin.total_cash_wages)})`} tone="bad" />
               <SummaryRow label="Total delivery wages due" value={`(${formatGBP(fin.total_delivery_wages)})`} tone="bad" />
               <SummaryRow label="Grand total wages due" value={`(${formatGBP(fin.grand_total_wages)})`} tone="bad" strong />
+              {/* Only rendered when there is something to explain — a "£0.00"
+                  adjustment row on every sheet is noise, and its absence is
+                  what makes a present one worth reading. */}
+              {Math.abs(fin.adjustment) > 0.001 && (
+                <SummaryRow
+                  label={`Adjustment${fin.adjustment_reason ? ` — ${fin.adjustment_reason}` : ""}`}
+                  value={`${fin.adjustment > 0 ? "+" : "−"} ${formatGBP(Math.abs(fin.adjustment))}`}
+                  tone={fin.adjustment > 0 ? "good" : "bad"}
+                />
+              )}
               {fin.post_office_draw > 0.001 ? (
                 <SummaryRow
                   label="⚠ Post Office draw required"
@@ -330,6 +393,97 @@ export function PrePaymentView({
         {fin.post_office_draw > 0.001 && (
           <div className="mt-4 rounded-xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger font-medium">
             Draw {formatGBP(fin.post_office_draw)} from the Post Office before paying wages this Tuesday.
+          </div>
+        )}
+
+        {/* Manual adjustment. Every other figure on this sheet is derived, so
+            cash that moved for a reason the system doesn't model had nowhere
+            to go — the alternative was mis-recording an envelope, which
+            corrupts the Vita Mojo reconciliation as well. Hidden once locked:
+            the surplus has already been carried into next week's opening
+            balance by then. */}
+        {!confirmed && (
+          <div className="mt-4 border-t border-border/60 pt-4">
+            {!payout ? (
+              <p className="text-xs text-text-muted">
+                Generate the payout sheet to add a cash adjustment.
+              </p>
+            ) : !adjOpen ? (
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <p className="text-xs text-text-muted">
+                  {Math.abs(fin.adjustment) > 0.001 ? (
+                    <>
+                      Adjusted by{" "}
+                      <span className="font-medium text-text-primary">
+                        {fin.adjustment > 0 ? "+" : "−"}
+                        {formatGBP(Math.abs(fin.adjustment))}
+                      </span>
+                      {fin.adjustment_reason ? ` — ${fin.adjustment_reason}` : ""}
+                    </>
+                  ) : (
+                    <>Need to add or take out cash this sheet doesn&apos;t know about?</>
+                  )}
+                </p>
+                <Button variant="outline" size="sm" onClick={() => setAdjOpen(true)}>
+                  {Math.abs(fin.adjustment) > 0.001 ? "Edit adjustment" : "Add adjustment"}
+                </Button>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-wrap items-end gap-3">
+                  <Input
+                    label="Adjustment (+ / −)"
+                    type="number"
+                    step="0.01"
+                    prefix="£"
+                    inputMode="decimal"
+                    placeholder="0.00"
+                    value={adjAmount}
+                    onChange={(e) => setAdjAmount(e.target.value)}
+                    error={adjInvalid ? "Not a valid amount" : null}
+                    containerClassName="w-40"
+                  />
+                  <Input
+                    label="Reason *"
+                    placeholder="What is this money for?"
+                    value={adjReason}
+                    onChange={(e) => setAdjReason(e.target.value)}
+                    maxLength={200}
+                    containerClassName="flex-1 min-w-[14rem]"
+                  />
+                  <div className="flex items-center gap-2 pb-0.5">
+                    <Button
+                      onClick={doSaveAdjustment}
+                      loading={busy === "adjust"}
+                      disabled={adjInvalid || adjNeedsReason}
+                    >
+                      Save
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        setAdjOpen(false);
+                        setAdjAmount(fin.adjustment ? String(fin.adjustment) : "");
+                        setAdjReason(fin.adjustment_reason ?? "");
+                      }}
+                      disabled={busy === "adjust"}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+                <p className="text-xs text-text-muted">
+                  A <span className="font-medium text-success">positive</span> amount is
+                  cash added to the pot — it shrinks the Post Office draw, or grows the
+                  surplus carried into next week. A{" "}
+                  <span className="font-medium text-danger">negative</span> amount (e.g.{" "}
+                  <span className="tabular-nums">-50</span>) is cash taken out and does the
+                  opposite. Set it to 0 to remove the adjustment. This does{" "}
+                  <span className="font-medium text-text-primary">not</span> change the
+                  envelope figures or anyone&apos;s wages.
+                </p>
+              </div>
+            )}
           </div>
         )}
       </Card>
