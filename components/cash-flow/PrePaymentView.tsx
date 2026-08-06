@@ -404,11 +404,7 @@ export function PrePaymentView({
             balance by then. */}
         {!confirmed && (
           <div className="mt-4 border-t border-border/60 pt-4">
-            {!payout ? (
-              <p className="text-xs text-text-muted">
-                Generate the payout sheet to add a cash adjustment.
-              </p>
-            ) : !adjOpen ? (
+            {!adjOpen ? (
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <p className="text-xs text-text-muted">
                   {Math.abs(fin.adjustment) > 0.001 ? (
@@ -481,6 +477,9 @@ export function PrePaymentView({
                   opposite. Set it to 0 to remove the adjustment. This does{" "}
                   <span className="font-medium text-text-primary">not</span> change the
                   envelope figures or anyone&apos;s wages.
+                  {!payout && (
+                    <> Saving also generates this week&apos;s payout sheet.</>
+                  )}
                 </p>
               </div>
             )}

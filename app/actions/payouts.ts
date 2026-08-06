@@ -247,9 +247,10 @@ async function computeSummary(
 /**
  * Set (or clear) the manual cash adjustment on a store's payout week.
  *
- * The adjustment lives on the payout header, so the sheet has to exist first —
- * which is also the right order of work: you generate the sheet, see what the
- * shortfall or surplus actually is, and only then know what needs adjusting.
+ * The adjustment lives on the payout header, so a week with no sheet yet has
+ * one generated for it here rather than the manager being sent away to press
+ * Generate first. Idempotent either way: generating is "create or refresh", and
+ * it never touches the two adjustment columns.
  *
  * Blocked once the payout is confirmed. A locked payout is the record of what
  * was really paid out, and its surplus has already been carried into the next
@@ -277,31 +278,58 @@ export async function setPayoutAdjustment(input: {
     .eq("store_id", input.store_id)
     .eq("week_start_date", weekStart)
     .maybeSingle();
-  if (!payout) {
-    throw new Error("Generate the payout sheet first, then add the adjustment.");
-  }
-  if (payout.locked) {
+  if (payout?.locked) {
     throw new Error("This payout is confirmed and locked. A Super Admin must unlock it to amend.");
   }
+
+  // Clearing an adjustment on a week that has no sheet is a no-op, and must not
+  // conjure one: generating is a real side effect (a draft appears in Payout
+  // History) and there is nothing here to record.
+  if (!payout && amount === 0) return { ok: true };
+
+  // No sheet for this week yet: build one, so an adjustment can be entered
+  // before anyone has pressed Generate. Deliberately the FULL generate path
+  // rather than a bare header carrying only the adjustment — Payout History
+  // lists drafts as well as confirmed weeks, and PrePaymentView switches its
+  // wage table over to the stored lines the moment a payout row exists, so a
+  // shell row would read as a sheet on which nobody is owed anything.
+  const payoutId = payout?.id ?? (await generatePayout(input)).payout_id;
 
   const { error } = await supabase
     .from("cash_payouts")
     .update({ adjustment_amount: amount, adjustment_reason: reason })
-    .eq("id", payout.id);
+    .eq("id", payoutId);
   if (error) throw new Error(error.message);
+
+  // The header's draw and surplus were derived before this adjustment existed
+  // — whether the sheet was generated a moment ago or last week — so re-derive
+  // them now that it does. computeSummary reads the adjustment back off the
+  // row, which is why this runs after the write and not before it.
+  const settled = await computeSummary(supabase, input.store_id, weekStart);
+  const { error: settleErr } = await supabase
+    .from("cash_payouts")
+    .update({
+      post_office_draw: settled.post_office_draw,
+      surplus_carry_forward: settled.surplus,
+    })
+    .eq("id", payoutId);
+  if (settleErr) throw new Error(settleErr.message);
 
   await writeAudit({
     action: amount === 0 ? "payout_adjustment_cleared" : "payout_adjustment_set",
     entity: "cash_payout",
-    entity_id: payout.id,
+    entity_id: payoutId,
     changes: {
       store_id: input.store_id,
       week_start: weekStart,
+      sheet_generated: !payout,
       was: {
-        amount: Number(payout.adjustment_amount) || 0,
-        reason: payout.adjustment_reason ?? null,
+        amount: Number(payout?.adjustment_amount) || 0,
+        reason: payout?.adjustment_reason ?? null,
       },
       now: { amount, reason },
+      draw: settled.post_office_draw,
+      surplus: settled.surplus,
       by: user.email,
     },
   });
