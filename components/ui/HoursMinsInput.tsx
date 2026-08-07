@@ -1,3 +1,5 @@
+"use client";
+
 import * as React from "react";
 import { cn } from "@/lib/utils";
 
@@ -17,6 +19,20 @@ import { cn } from "@/lib/utils";
  * `parseHoursMinsInput` accepts from free typing (that shorthand exists for a
  * single combined box; a box labelled "min" should mean exactly what it says).
  */
+function splitValue(value: string): { h: string; m: string } {
+  const dot = value.indexOf(".");
+  if (dot === -1) return { h: value, m: "" };
+  return { h: value.slice(0, dot), m: value.slice(dot + 1) };
+}
+
+/** The exact "H.MM" string every caller already parses — unchanged. */
+function combine(h: string, m: string): string {
+  if (h === "" && m === "") return "";
+  const hh = h === "" ? "0" : h;
+  const mm = m === "" ? "00" : m.padStart(2, "0");
+  return `${hh}.${mm}`;
+}
+
 export function HoursMinsInput({
   value,
   onChange,
@@ -34,26 +50,31 @@ export function HoursMinsInput({
   minAriaLabel: string;
   className?: string;
 }) {
-  const dot = value.indexOf(".");
-  const hourStr = dot === -1 ? value : value.slice(0, dot);
-  const minStr = dot === -1 ? "" : value.slice(dot + 1);
+  // What the boxes SHOW is kept separately from the "H.MM" value they emit.
+  // Emitting a left-padded minute ("3" → "0.03") and then reading it straight
+  // back made the box full at one digit, so a second keystroke was truncated
+  // away and a minute like 30 could never be typed.
+  const [draft, setDraft] = React.useState(() => splitValue(value));
+  const [lastValue, setLastValue] = React.useState(value);
 
-  function combine(h: string, m: string): string {
-    if (h === "" && m === "") return "";
-    const hh = h === "" ? "0" : h;
-    const mm = m === "" ? "00" : m.padStart(2, "0");
-    return `${hh}.${mm}`;
+  if (value !== lastValue) {
+    setLastValue(value);
+    // Only reset the boxes when the change came from OUTSIDE — our own emit
+    // round-trips to the same string and must leave what's being typed alone.
+    if (value !== combine(draft.h, draft.m)) setDraft(splitValue(value));
   }
 
   function handleHour(e: React.ChangeEvent<HTMLInputElement>) {
-    const digits = e.target.value.replace(/\D/g, "").slice(0, 3);
-    onChange(combine(digits, minStr));
+    const h = e.target.value.replace(/\D/g, "").slice(0, 3);
+    setDraft((p) => ({ ...p, h }));
+    onChange(combine(h, draft.m));
   }
 
   function handleMin(e: React.ChangeEvent<HTMLInputElement>) {
-    let digits = e.target.value.replace(/\D/g, "").slice(0, 2);
-    if (digits !== "" && Number(digits) > 59) digits = "59";
-    onChange(combine(hourStr, digits));
+    let m = e.target.value.replace(/\D/g, "").slice(0, 2);
+    if (m !== "" && Number(m) > 59) m = "59";
+    setDraft((p) => ({ ...p, m }));
+    onChange(combine(draft.h, m));
   }
 
   const boxClass = cn(
@@ -68,7 +89,7 @@ export function HoursMinsInput({
       <input
         type="text"
         inputMode="numeric"
-        value={hourStr}
+        value={draft.h}
         onChange={handleHour}
         aria-label={hourAriaLabel}
         className={boxClass}
@@ -77,7 +98,7 @@ export function HoursMinsInput({
       <input
         type="text"
         inputMode="numeric"
-        value={minStr}
+        value={draft.m}
         onChange={handleMin}
         aria-label={minAriaLabel}
         className={boxClass}

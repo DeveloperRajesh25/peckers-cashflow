@@ -180,6 +180,11 @@ function hhmm(iso: string): string {
 
 const rowKey = (r: ApprovalRow) => `${r.kind}:${r.person_id}:${r.event_date}`;
 
+/** Delivery boxes are counts: digits only, capped at three so a stray keypress
+ *  can't produce a five-figure round. Typed as text rather than number so the
+ *  scroll wheel and arrow keys can't silently change a count mid-review. */
+const deliveryDigits = (raw: string) => raw.replace(/\D/g, "").slice(0, 3);
+
 function fromEmployee(s: ClockDailySummary): ApprovalRow {
   return {
     kind: "employee",
@@ -773,7 +778,10 @@ export function DailyHoursApproval({
     }
   }
 
-  function Row({ s }: { s: ApprovalRow }) {
+  // A plain render function, NOT a nested component. Declaring a component
+  // inside the body gives it a new identity on every keystroke, which remounts
+  // the row and throws focus out of whatever input is being typed in.
+  function renderRow(s: ApprovalRow) {
     const key = rowKey(s);
     const busy = busyKey === key;
     const store = showStore ? storeName(s.store_id) : null;
@@ -788,6 +796,7 @@ export function DailyHoursApproval({
 
     return (
       <div
+        key={key}
         className={cn(
           "flex flex-wrap items-center gap-x-3 gap-y-2 py-3",
           s.approved && "opacity-75",
@@ -1013,12 +1022,14 @@ export function DailyHoursApproval({
               <>
                 <div className="flex items-center gap-1">
                   <input
-                    type="number"
-                    step="1"
-                    min="0"
+                    type="text"
+                    inputMode="numeric"
                     value={editedDeliv[`${key}:short`] ?? String(s.short_deliveries)}
                     onChange={(e) =>
-                      setEditedDeliv((p) => ({ ...p, [`${key}:short`]: e.target.value }))
+                      setEditedDeliv((p) => ({
+                        ...p,
+                        [`${key}:short`]: deliveryDigits(e.target.value),
+                      }))
                     }
                     aria-label={`Short deliveries for ${s.name} on ${longDate(s.event_date)}`}
                     title="SD — short deliveries, the normal round"
@@ -1029,12 +1040,14 @@ export function DailyHoursApproval({
                   />
                   <span className="text-xs text-text-muted">sd</span>
                   <input
-                    type="number"
-                    step="1"
-                    min="0"
+                    type="text"
+                    inputMode="numeric"
                     value={editedDeliv[`${key}:long`] ?? String(s.long_deliveries)}
                     onChange={(e) =>
-                      setEditedDeliv((p) => ({ ...p, [`${key}:long`]: e.target.value }))
+                      setEditedDeliv((p) => ({
+                        ...p,
+                        [`${key}:long`]: deliveryDigits(e.target.value),
+                      }))
                     }
                     aria-label={`Long deliveries for ${s.name} on ${longDate(s.event_date)}`}
                     title="LD — long deliveries, the normal round"
@@ -1053,16 +1066,15 @@ export function DailyHoursApproval({
                     server rejects the approval. */}
                 <div className="flex items-center gap-1">
                   <input
-                    type="number"
-                    step="1"
-                    min="0"
+                    type="text"
+                    inputMode="numeric"
                     value={
                       editedDeliv[`${key}:extraShort`] ?? String(s.extra_short_deliveries)
                     }
                     onChange={(e) =>
                       setEditedDeliv((p) => ({
                         ...p,
-                        [`${key}:extraShort`]: e.target.value,
+                        [`${key}:extraShort`]: deliveryDigits(e.target.value),
                       }))
                     }
                     aria-label={`Extra short deliveries for ${s.name} on ${longDate(s.event_date)}`}
@@ -1071,16 +1083,15 @@ export function DailyHoursApproval({
                   />
                   <span className="text-xs text-text-muted">ms</span>
                   <input
-                    type="number"
-                    step="1"
-                    min="0"
+                    type="text"
+                    inputMode="numeric"
                     value={
                       editedDeliv[`${key}:extraLong`] ?? String(s.extra_long_deliveries)
                     }
                     onChange={(e) =>
                       setEditedDeliv((p) => ({
                         ...p,
-                        [`${key}:extraLong`]: e.target.value,
+                        [`${key}:extraLong`]: deliveryDigits(e.target.value),
                       }))
                     }
                     aria-label={`Extra long deliveries for ${s.name} on ${longDate(s.event_date)}`}
@@ -1281,9 +1292,7 @@ export function DailyHoursApproval({
           </p>
         ) : (
           <div className="px-4 divide-y divide-border/60">
-            {visibleSelected.map((s) => (
-              <Row key={rowKey(s)} s={s} />
-            ))}
+            {visibleSelected.map((s) => renderRow(s))}
           </div>
         )}
       </section>
@@ -1332,9 +1341,7 @@ export function DailyHoursApproval({
                   </Button>
                 </div>
                 <div className="px-3 divide-y divide-border/60">
-                  {rows.map((s) => (
-                    <Row key={rowKey(s)} s={s} />
-                  ))}
+                  {rows.map((s) => renderRow(s))}
                 </div>
               </div>
             );
