@@ -32,6 +32,8 @@ import type { CashPayoutWithLines, PrePaymentSummary } from "@/lib/types";
 type StoreOpt = { id: string; name: string };
 type DisplayLine = {
   employee_name: string;
+  /** Null on a cover driver or manager line — one of the two ids below is set. */
+  employee_id?: string | null;
   /** Set on a cover driver line — they're paid from the same sheet, badged. */
   cover_driver_id?: string | null;
   /** Set on a manager line — deliveries they covered, badged the same way. */
@@ -104,6 +106,51 @@ export function PrePaymentView({
     : summary;
 
   const lines: DisplayLine[] = payout ? payout.lines : summary.lines;
+
+  // A generated sheet is a SNAPSHOT of cash_payout_lines, not a live view. Work
+  // approved after it was generated changes `summary` but not the saved lines,
+  // so the sheet silently kept showing the old figures and the only signal was
+  // confirmPayout refusing to lock. Compare the two here and say so.
+  const drift = React.useMemo(() => {
+    if (!payout) return null;
+    const keyOf = (l: DisplayLine) =>
+      l.cover_driver_id
+        ? `cd:${l.cover_driver_id}`
+        : l.manager_id
+          ? `mgr:${l.manager_id}`
+          : `emp:${l.employee_id}`;
+    const dropsOf = (l: DisplayLine) => {
+      const d = deliveryBreakdown(l);
+      return d.sd + d.ld + d.sm + d.lm;
+    };
+    const stored = new Map(payout.lines.map((l) => [keyOf(l), l as DisplayLine]));
+    const added: string[] = [];
+    const changed: { name: string; from: number; to: number; drops: number }[] = [];
+    for (const live of summary.lines) {
+      const prior = stored.get(keyOf(live));
+      if (!prior) {
+        added.push(live.employee_name);
+        continue;
+      }
+      stored.delete(keyOf(live));
+      // Money AND drop counts: a correction that swaps a short for a long drop
+      // can leave the total identical while the sheet still shows wrong counts.
+      if (
+        Math.abs(Number(prior.total_payment) - live.total_payment) > 0.005 ||
+        dropsOf(prior) !== dropsOf(live)
+      ) {
+        changed.push({
+          name: live.employee_name,
+          from: Number(prior.total_payment),
+          to: live.total_payment,
+          drops: dropsOf(live) - dropsOf(prior),
+        });
+      }
+    }
+    const removed = Array.from(stored.values()).map((l) => l.employee_name);
+    if (added.length === 0 && changed.length === 0 && removed.length === 0) return null;
+    return { added, changed, removed };
+  }, [payout, summary.lines]);
 
   // Ticking "paid" writes to the server and then re-renders the whole page, so
   // the box used to sit on its old value for a second or more. Hold the new
@@ -509,6 +556,61 @@ export function PrePaymentView({
             </Button>
           )}
         </div>
+
+        {/* Approvals landing after the sheet was generated are invisible below
+            — the table renders the saved snapshot. Say what changed and offer
+            the one click that pulls it in, rather than letting the sheet be
+            confirmed on figures nobody has seen. */}
+        {drift && (
+          <div className="mx-5 mt-4 rounded-lg border border-warning/50 bg-warning/10 px-4 py-3">
+            <p className="text-sm font-medium text-warning">
+              This sheet is out of date — work was approved after it was generated.
+            </p>
+            <ul className="mt-1.5 flex flex-col gap-0.5 text-xs text-text-subtle">
+              {drift.added.map((name) => (
+                <li key={`a:${name}`}>
+                  <span className="font-medium text-text-primary">{name}</span> is not
+                  on the sheet yet
+                </li>
+              ))}
+              {drift.changed.map((c) => (
+                <li key={`c:${c.name}`}>
+                  <span className="font-medium text-text-primary">{c.name}</span>{" "}
+                  {formatGBP(c.from)} → {formatGBP(c.to)}
+                  {c.drops !== 0 && (
+                    <>
+                      {" "}
+                      ({c.drops > 0 ? "+" : ""}
+                      {c.drops} deliver{Math.abs(c.drops) === 1 ? "y" : "ies"})
+                    </>
+                  )}
+                </li>
+              ))}
+              {drift.removed.map((name) => (
+                <li key={`r:${name}`}>
+                  <span className="font-medium text-text-primary">{name}</span> no
+                  longer has anything to pay
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-xs text-text-muted">
+              {locked
+                ? "Unlock the payout to pull these in — the figures below are the confirmed snapshot."
+                : "Regenerate the sheet to pull these in. Payments already ticked stay ticked."}
+            </p>
+            {!locked && (
+              <Button
+                size="sm"
+                variant="secondary"
+                className="mt-2"
+                onClick={doGenerate}
+                loading={busy === "generate"}
+              >
+                Regenerate sheet
+              </Button>
+            )}
+          </div>
+        )}
 
         {lines.length === 0 ? (
           <p className="text-sm text-text-muted text-center py-12">

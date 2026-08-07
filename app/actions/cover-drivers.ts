@@ -39,13 +39,17 @@ function assertStoreAccess(user: SessionUser, storeId: string) {
   }
 }
 
-// Cover drivers appear on the employees pages and in their own portal only.
+// Cover drivers appear on the employees pages, their own portal, and the
+// Tuesday payout — approving a day is what makes it payable, so the sheet has
+// to be revalidated with it or the approval reads as "nobody worked".
 // Deliberately NOT /rota, /live, /analytics or /ni-monthly — they are absent
 // from those modules by design.
 function revalidateCoverDrivers() {
   revalidatePath("/employees");
   revalidatePath("/manager/employees");
   revalidatePath("/cover-driver/attendance");
+  revalidatePath("/cash-flow/payout");
+  revalidatePath("/manager/cash-flow/payout");
 }
 
 async function freshHours(): Promise<CoverDriverHoursComputed[]> {
