@@ -65,6 +65,14 @@ export type AllowedUser = {
    */
   short_delivery_rate: number | null;
   long_delivery_rate: number | null;
+  /**
+   * Per-drop rates for a manager's MISC drops — the extras beyond the normal
+   * round (migration 040). Managers only: employees and cover drivers pay
+   * their misc drops at the base rate. Null falls back to the base rate above,
+   * so leaving these unset reproduces the pre-040 maths exactly.
+   */
+  extra_short_delivery_rate: number | null;
+  extra_long_delivery_rate: number | null;
   created_at: string;
 };
 
@@ -1007,11 +1015,18 @@ export type CashPayoutLine = {
   /** Rounds delivered on the normal run (excludes the misc/extra counts). */
   short_deliveries_count: number;
   long_deliveries_count: number;
-  /** Extra ("miscellaneous") drops beyond the normal round, paid at the same rate. */
+  /** Extra ("miscellaneous") drops beyond the normal round. */
   short_misc_count: number;
   long_misc_count: number;
   short_delivery_rate: number;
   long_delivery_rate: number;
+  /**
+   * The rate each MISC drop was priced at, snapshotted so a later rate change
+   * can't restate a paid week (migration 040). Null = the base rate above was
+   * used, which is every line written before 040 and every non-manager line.
+   */
+  short_misc_rate: number | null;
+  long_misc_rate: number | null;
   delivery_wages: number;
   total_payment: number;
   is_paid: boolean;
@@ -1059,11 +1074,18 @@ export type WageLine = {
   /** Rounds delivered on the normal run (excludes the misc/extra counts). */
   short_deliveries_count: number;
   long_deliveries_count: number;
-  /** Extra ("miscellaneous") drops beyond the normal round, paid at the same rate. */
+  /** Extra ("miscellaneous") drops beyond the normal round. */
   short_misc_count: number;
   long_misc_count: number;
   short_delivery_rate: number;
   long_delivery_rate: number;
+  /**
+   * The rate the MISC drops were priced at (migration 040). Only a manager line
+   * can differ from the base rate; everyone else leaves these null, meaning
+   * "same as short_delivery_rate / long_delivery_rate".
+   */
+  short_misc_rate?: number | null;
+  long_misc_rate?: number | null;
   delivery_wages: number;
   total_payment: number;
 };

@@ -51,6 +51,10 @@ export function ManagersView({
   // manager is paid", and the wage one is the row people already click.
   const [shortRateValue, setShortRateValue] = React.useState("");
   const [longRateValue, setLongRateValue] = React.useState("");
+  // Misc drops can be priced separately for managers (migration 040). Blank
+  // means "same as the base rate", which is what every manager had before.
+  const [extraShortRateValue, setExtraShortRateValue] = React.useState("");
+  const [extraLongRateValue, setExtraLongRateValue] = React.useState("");
   const [wageSaving, setWageSaving] = React.useState(false);
   const [emailEditing, setEmailEditing] = React.useState<AllowedUser | null>(null);
   const [emailValue, setEmailValue] = React.useState("");
@@ -146,6 +150,12 @@ export function ManagersView({
     setWageValue(m.fixed_daily_wage != null ? String(m.fixed_daily_wage) : "");
     setShortRateValue(m.short_delivery_rate != null ? String(m.short_delivery_rate) : "");
     setLongRateValue(m.long_delivery_rate != null ? String(m.long_delivery_rate) : "");
+    setExtraShortRateValue(
+      m.extra_short_delivery_rate != null ? String(m.extra_short_delivery_rate) : "",
+    );
+    setExtraLongRateValue(
+      m.extra_long_delivery_rate != null ? String(m.extra_long_delivery_rate) : "",
+    );
   }
 
   async function saveWage() {
@@ -157,6 +167,12 @@ export function ManagersView({
         fixed_daily_wage: wageValue.trim() ? Number(wageValue) : null,
         short_delivery_rate: shortRateValue.trim() ? Number(shortRateValue) : null,
         long_delivery_rate: longRateValue.trim() ? Number(longRateValue) : null,
+        extra_short_delivery_rate: extraShortRateValue.trim()
+          ? Number(extraShortRateValue)
+          : null,
+        extra_long_delivery_rate: extraLongRateValue.trim()
+          ? Number(extraLongRateValue)
+          : null,
       });
       toast.success("Pay settings updated");
       setWageEditing(null);
@@ -265,6 +281,22 @@ export function ManagersView({
                           <span className="block text-[11px] text-text-muted">
                             {formatGBP(m.short_delivery_rate ?? 0)} SD ·{" "}
                             {formatGBP(m.long_delivery_rate ?? 0)} LD
+                          </span>
+                        )}
+                        {/* Only shown once an extra is priced differently —
+                            otherwise misc pays at SD/LD and a second line
+                            repeating them would read as a change that isn't one. */}
+                        {(m.extra_short_delivery_rate != null ||
+                          m.extra_long_delivery_rate != null) && (
+                          <span className="block text-[11px] text-gold">
+                            {formatGBP(
+                              m.extra_short_delivery_rate ?? m.short_delivery_rate ?? 0,
+                            )}{" "}
+                            MS ·{" "}
+                            {formatGBP(
+                              m.extra_long_delivery_rate ?? m.long_delivery_rate ?? 0,
+                            )}{" "}
+                            ML
                           </span>
                         )}
                       </button>
@@ -387,33 +419,70 @@ export function ManagersView({
               autoFocus
             />
 
-            <div className="grid grid-cols-2 gap-3">
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                label="Short delivery rate (£)"
-                prefix="£"
-                value={shortRateValue}
-                onChange={(e) => setShortRateValue(e.target.value)}
-                placeholder="default"
-              />
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                label="Long delivery rate (£)"
-                prefix="£"
-                value={longRateValue}
-                onChange={(e) => setLongRateValue(e.target.value)}
-                placeholder="default"
-              />
+            <div>
+              <p className="text-xs uppercase tracking-wider text-text-muted mb-2">
+                Normal round
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  label="Short delivery rate — SD (£)"
+                  prefix="£"
+                  value={shortRateValue}
+                  onChange={(e) => setShortRateValue(e.target.value)}
+                  placeholder="default"
+                />
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  label="Long delivery rate — LD (£)"
+                  prefix="£"
+                  value={longRateValue}
+                  onChange={(e) => setLongRateValue(e.target.value)}
+                  placeholder="default"
+                />
+              </div>
+            </div>
+
+            <div>
+              <p className="text-xs uppercase tracking-wider text-text-muted mb-2">
+                Misc — extras beyond the round
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  label="Misc short rate — MS (£)"
+                  prefix="£"
+                  value={extraShortRateValue}
+                  onChange={(e) => setExtraShortRateValue(e.target.value)}
+                  placeholder="same as SD"
+                />
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  label="Misc long rate — ML (£)"
+                  prefix="£"
+                  value={extraLongRateValue}
+                  onChange={(e) => setExtraLongRateValue(e.target.value)}
+                  placeholder="same as LD"
+                />
+              </div>
             </div>
 
             <p className="text-xs text-text-muted">
-              Leave a rate blank to use the standard petrol rate. Drops a manager records
-              at clock-out are confirmed on Daily Approval and paid in cash on the Tuesday
-              sheet, on top of their salary.
+              Leave SD/LD blank to use the standard petrol rate. Leave MS/ML blank and the
+              extras are paid at this manager’s SD/LD rate — the way every payee was paid
+              before these two fields existed. Only managers can price the extras
+              separately; employees and cover drivers always pay misc at their base rate.
+              Drops a manager records at clock-out (or that you add via{" "}
+              <span className="text-text-subtle">Add manager entry</span>) are confirmed on
+              Daily Approval and paid in cash on the Tuesday sheet, on top of their salary.
             </p>
           </div>
         </Modal>

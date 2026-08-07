@@ -168,7 +168,9 @@ async function computeSummary(
     // manager's day carries the store they clocked in at.
     supabase
       .from("allowed_users")
-      .select("id, name, short_delivery_rate, long_delivery_rate")
+      .select(
+        "id, name, short_delivery_rate, long_delivery_rate, extra_short_delivery_rate, extra_long_delivery_rate",
+      )
       .eq("role", "manager"),
     supabase
       .from("manager_clock_events")
@@ -460,6 +462,10 @@ export async function generatePayout(input: {
       long_misc_count: line.long_misc_count,
       short_delivery_rate: line.short_delivery_rate,
       long_delivery_rate: line.long_delivery_rate,
+      // Snapshotted so a later rate change can't restate a paid week. Null on
+      // every non-manager line — they pay misc at the base rate (migration 040).
+      short_misc_rate: line.short_misc_rate ?? null,
+      long_misc_rate: line.long_misc_rate ?? null,
       delivery_wages: line.delivery_wages,
       total_payment: line.total_payment,
       is_paid: prior?.is_paid ?? false,

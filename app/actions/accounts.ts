@@ -170,6 +170,13 @@ export async function updateManagerWage(input: {
    */
   short_delivery_rate?: number | null;
   long_delivery_rate?: number | null;
+  /**
+   * Rates for the MISC drops beyond the normal round (migration 040). Null
+   * falls back to the base rate above — NOT to zero and not to the petrol
+   * rate — so clearing these restores the pre-040 pricing exactly.
+   */
+  extra_short_delivery_rate?: number | null;
+  extra_long_delivery_rate?: number | null;
 }): Promise<{ ok: true }> {
   await requireAdmin();
   const supabase = createServerSupabase();
@@ -198,6 +205,11 @@ export async function updateManagerWage(input: {
   };
   const shortRate = rate(input.short_delivery_rate, "Short delivery rate");
   const longRate = rate(input.long_delivery_rate, "Long delivery rate");
+  const extraShortRate = rate(
+    input.extra_short_delivery_rate,
+    "Misc short delivery rate",
+  );
+  const extraLongRate = rate(input.extra_long_delivery_rate, "Misc long delivery rate");
 
   const { error } = await supabase
     .from("allowed_users")
@@ -205,6 +217,8 @@ export async function updateManagerWage(input: {
       fixed_daily_wage: wage,
       short_delivery_rate: shortRate,
       long_delivery_rate: longRate,
+      extra_short_delivery_rate: extraShortRate,
+      extra_long_delivery_rate: extraLongRate,
     })
     .eq("id", acct.id);
   if (error) throw new Error(error.message);
@@ -217,6 +231,8 @@ export async function updateManagerWage(input: {
       fixed_daily_wage: wage,
       short_delivery_rate: shortRate,
       long_delivery_rate: longRate,
+      extra_short_delivery_rate: extraShortRate,
+      extra_long_delivery_rate: extraLongRate,
     },
   });
 

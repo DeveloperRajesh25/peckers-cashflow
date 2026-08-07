@@ -682,6 +682,9 @@ export type ManagerPayee = {
   name: string | null;
   short_delivery_rate?: number | null;
   long_delivery_rate?: number | null;
+  /** Misc-drop rates (migration 040). Null = use the base rate above. */
+  extra_short_delivery_rate?: number | null;
+  extra_long_delivery_rate?: number | null;
 };
 
 /**
@@ -736,8 +739,24 @@ export function buildManagerWageLines(
         ? Number(manager.long_delivery_rate)
         : DELIVERY_PETROL_RATE;
 
+    // Managers alone can price the extras differently (migration 040). The
+    // fallback is the BASE rate, not the petrol rate: an admin who never sets
+    // a misc rate must get the identical figure this produced before 040, so
+    // no already-approved week changes value on deploy.
+    const shortMiscRate =
+      manager.extra_short_delivery_rate != null
+        ? Number(manager.extra_short_delivery_rate)
+        : shortRate;
+    const longMiscRate =
+      manager.extra_long_delivery_rate != null
+        ? Number(manager.extra_long_delivery_rate)
+        : longRate;
+
     const deliveryWages = round2(
-      (shortDeliveries + shortMisc) * shortRate + (longDeliveries + longMisc) * longRate,
+      shortDeliveries * shortRate +
+        longDeliveries * longRate +
+        shortMisc * shortMiscRate +
+        longMisc * longMiscRate,
     );
     if (deliveryWages <= 0) continue;
 
@@ -757,6 +776,8 @@ export function buildManagerWageLines(
       long_misc_count: longMisc,
       short_delivery_rate: shortRate,
       long_delivery_rate: longRate,
+      short_misc_rate: shortMiscRate,
+      long_misc_rate: longMiscRate,
       delivery_wages: deliveryWages,
       total_payment: deliveryWages,
     });
