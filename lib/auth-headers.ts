@@ -1,9 +1,9 @@
 /**
  * Identity hand-off from middleware → server components.
  *
- * Middleware validates the session ONCE per request (auth.getUser() + the
- * allowed_users lookup) and stashes the result in these request headers so
- * protected pages can render without repeating those two network round-trips.
+ * Middleware validates the session ONCE per request (local JWT signature
+ * verification + the allowed_users lookup) and stashes the result in these
+ * request headers so protected pages can render without repeating that work.
  *
  * SECURITY MODEL:
  *  - These headers are ALWAYS stripped from the incoming request and re-set

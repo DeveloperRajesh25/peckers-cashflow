@@ -1,9 +1,9 @@
 "use client";
 
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 import * as React from "react";
 import { cn } from "@/lib/utils";
+import { NavLink } from "./NavLink";
 import { BOTTOM_NAV_FOR_PORTAL, NAV_FOR_PORTAL } from "./nav-config";
 import { CloseIcon, MoreIcon } from "@/components/ui/icons";
 import type { Portal } from "@/lib/types";
@@ -59,7 +59,7 @@ export function BottomNav({ portal }: { portal: Portal }) {
             const active = isActive(pathname, item.href);
             return (
               <li key={item.href}>
-                <Link
+                <NavLink
                   href={item.href}
                   className={cn(
                     "flex flex-col items-center justify-center gap-1 h-16 text-[11px] transition-colors",
@@ -76,7 +76,7 @@ export function BottomNav({ portal }: { portal: Portal }) {
                       active ? "bg-gold" : "bg-transparent",
                     )}
                   />
-                </Link>
+                </NavLink>
               </li>
             );
           })}
@@ -190,7 +190,7 @@ function MoreSheet({
                     {item.group}
                   </p>
                 )}
-                <Link
+                <NavLink
                   href={item.href}
                   onClick={onClose}
                   className={cn(
@@ -205,7 +205,7 @@ function MoreSheet({
                   )}
                   <Icon size={18} />
                   <span className="font-medium">{item.label}</span>
-                </Link>
+                </NavLink>
               </React.Fragment>
             );
           })}

@@ -38,6 +38,27 @@ function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + "/"));
 }
 
+/**
+ * Email out of an access token's payload WITHOUT verifying the signature.
+ *
+ * Used only to start the allowed_users lookup early so it overlaps signature
+ * verification instead of queueing behind it. The result is discarded unless
+ * the verified claims name the same address — see the check in `middleware`.
+ * Never treat this as an identity.
+ */
+function unverifiedEmailFromToken(token: string): string | null {
+  try {
+    const payload = token.split(".")[1];
+    if (!payload) return null;
+    const b64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64.padEnd(b64.length + ((4 - (b64.length % 4)) % 4), "=");
+    const email = JSON.parse(atob(padded))?.email;
+    return typeof email === "string" ? email : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function middleware(req: NextRequest) {
   // Clone the incoming headers and ALWAYS strip the identity headers, so a
   // client can never forge them — only the validated values we set below
@@ -88,33 +109,72 @@ export async function middleware(req: NextRequest) {
       },
     });
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const fetchAllowed = async (email: string) => {
+      const { data, error } = await supabase
+        .from("allowed_users")
+        .select("*")
+        .ilike("email", email)
+        .maybeSingle();
+      if (error) {
+        console.error("[Middleware] allowed_users query error:", error.message);
+      }
+      return (data ?? null) as Record<string, unknown> | null;
+    };
 
     const { pathname } = req.nextUrl;
     const isPublic = isPublicPath(pathname);
+    const notSignedIn = () =>
+      isPublic ? passThrough() : redirectTo(loginPathForArea(pathname));
 
-    // ---- not signed in ----
-    if (!user) {
-      if (isPublic) return passThrough();
-      return redirectTo(loginPathForArea(pathname));
-    }
+    // Reads (and refreshes, when due) the session from the cookie — no Auth
+    // round-trip of its own. The session's own user object is NOT trusted here;
+    // only the token string is used, and only the verified claims below decide
+    // who this is.
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session) return notSignedIn();
+
+    // getClaims() verifies the token's signature locally against the project's
+    // public JWKS via WebCrypto — no /auth/v1/user round-trip. The key set is
+    // cached process-wide by the SDK, so after the first request this is pure
+    // CPU. (On a project still signing with a symmetric HS* key the SDK falls
+    // back to a getUser() call, which is exactly the old behaviour.)
+    //
+    // Firing the whitelist read alongside it turns the two round-trips this
+    // middleware used to make on EVERY request — including all the router
+    // prefetches — into one.
+    const speculativeEmail = unverifiedEmailFromToken(session.access_token);
+    const [claims, speculativeAllowed] = await Promise.all([
+      // A bad signature comes back as an error, but an EXPIRED token throws a
+      // plain Error out of getClaims(). Both mean the same thing here, and both
+      // must land on the portal's own login page — letting the throw reach the
+      // outer catch would send an employee to the admin /login instead, and
+      // would bounce anyone sitting on a public page.
+      supabase.auth
+        .getClaims(session.access_token)
+        .then((r) => (r.error ? null : (r.data?.claims ?? null)))
+        .catch(() => null),
+      speculativeEmail ? fetchAllowed(speculativeEmail) : Promise.resolve(null),
+    ]);
+
+    if (!claims) return notSignedIn();
+
+    const userId = typeof claims.sub === "string" ? claims.sub : null;
+    const userEmail = typeof claims.email === "string" ? claims.email : null;
+    if (!userId) return notSignedIn();
 
     // ---- signed in: resolve whitelist + role ----
     let role: "admin" | "manager" | "employee" | "cover_driver" | null = null;
     let allowed: Record<string, unknown> | null = null;
-    if (user.email) {
-      const { data, error } = await supabase
-        .from("allowed_users")
-        .select("*")
-        .ilike("email", user.email)
-        .maybeSingle();
-
-      if (error) {
-        console.error("[Middleware] allowed_users query error:", error.message);
-      }
-      allowed = data ?? null;
+    if (userEmail) {
+      // The speculative read only counts if the verified claims name the same
+      // address it was issued for; otherwise redo it against the real one.
+      allowed =
+        speculativeEmail && speculativeEmail.toLowerCase() === userEmail.toLowerCase()
+          ? speculativeAllowed
+          : await fetchAllowed(userEmail);
       if (!allowed) {
         await supabase.auth.signOut();
         if (pathname !== "/access-denied") {
@@ -182,11 +242,11 @@ export async function middleware(req: NextRequest) {
 
     // ---- authenticated, whitelisted, correct portal ----
     // Hand the validated identity to the page so it doesn't repeat the
-    // auth.getUser() + allowed_users round-trips. (Stripped above, so these
-    // values are trustworthy on every matched route.)
-    if (user.email && allowed) {
-      requestHeaders.set(H_USER_ID, user.id);
-      requestHeaders.set(H_USER_EMAIL, user.email);
+    // verification + allowed_users lookup. (Stripped above, so these values are
+    // trustworthy on every matched route.)
+    if (userEmail && allowed) {
+      requestHeaders.set(H_USER_ID, userId);
+      requestHeaders.set(H_USER_EMAIL, userEmail);
       requestHeaders.set(H_ALLOWED, encodeIdentity(allowed));
     }
     return passThrough();

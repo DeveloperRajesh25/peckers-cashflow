@@ -1,10 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 import * as React from "react";
 import { cn } from "@/lib/utils";
 import { Logo } from "./Logo";
+import { NavLink } from "./NavLink";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { ChevronLeftIcon, ChevronRightIcon } from "@/components/ui/icons";
 import { NAV_FOR_PORTAL } from "./nav-config";
@@ -94,7 +94,7 @@ export function Sidebar({
                   {item.group}
                 </p>
               )}
-              <Link
+              <NavLink
                 href={item.href}
                 className={cn(
                   "group relative flex items-center gap-3 h-11 px-3 rounded-xl text-sm transition-colors",
@@ -109,7 +109,7 @@ export function Sidebar({
                 )}
                 <Icon size={collapsed ? 20 : 18} />
                 {!collapsed && <span className="font-medium">{item.label}</span>}
-              </Link>
+              </NavLink>
             </React.Fragment>
           );
         })}
