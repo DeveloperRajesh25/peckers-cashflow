@@ -206,8 +206,8 @@ export function mergeCoverDailyApproval(
       // the counts the payout will actually pay.
       row.short_deliveries = Number(a.short_deliveries) || 0;
       row.long_deliveries = Number(a.long_deliveries) || 0;
-      row.extra_short_deliveries = 0;
-      row.extra_long_deliveries = 0;
+      row.extra_short_deliveries = Number(a.extra_short_deliveries) || 0;
+      row.extra_long_deliveries = Number(a.extra_long_deliveries) || 0;
     } else {
       map.set(key, {
         cover_driver_id: a.cover_driver_id,
@@ -223,8 +223,10 @@ export function mergeCoverDailyApproval(
         manual_entry_reason: null,
         short_deliveries: Number(a.short_deliveries) || 0,
         long_deliveries: Number(a.long_deliveries) || 0,
-        extra_short_deliveries: 0,
-        extra_long_deliveries: 0,
+        extra_short_deliveries: Number(a.extra_short_deliveries) || 0,
+        extra_long_deliveries: Number(a.extra_long_deliveries) || 0,
+        // Reasons live on the clock event; an approval with no clocked day in
+        // range has none to show.
         extra_short_reason: null,
         extra_long_reason: null,
       });

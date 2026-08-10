@@ -797,6 +797,9 @@ export type CoverDriverPayRow = {
   hourly_rate_snapshot: number | string;
   short_deliveries: number | string;
   long_deliveries: number | string;
+  /** Beyond the normal round, snapshotted separately since migration 041. */
+  extra_short_deliveries: number | string;
+  extra_long_deliveries: number | string;
   short_rate_snapshot: number | string | null;
   long_rate_snapshot: number | string | null;
   approved: boolean;
@@ -828,6 +831,8 @@ export function buildCoverDriverWageLines(
       rate: number;
       short: number;
       long: number;
+      shortMisc: number;
+      longMisc: number;
       shortRate: number;
       longRate: number;
     }
@@ -841,6 +846,8 @@ export function buildCoverDriverWageLines(
     const rate = Number(r.hourly_rate_snapshot) || 0;
     const short = Math.max(0, Math.round(Number(r.short_deliveries) || 0));
     const long = Math.max(0, Math.round(Number(r.long_deliveries) || 0));
+    const shortMisc = Math.max(0, Math.round(Number(r.extra_short_deliveries) || 0));
+    const longMisc = Math.max(0, Math.round(Number(r.extra_long_deliveries) || 0));
     const shortRate = Number(r.short_rate_snapshot) || 0;
     const longRate = Number(r.long_rate_snapshot) || 0;
 
@@ -850,12 +857,16 @@ export function buildCoverDriverWageLines(
       rate,
       short: 0,
       long: 0,
+      shortMisc: 0,
+      longMisc: 0,
       shortRate,
       longRate,
     };
     acc.hours += hours;
     acc.short += short;
     acc.long += long;
+    acc.shortMisc += shortMisc;
+    acc.longMisc += longMisc;
     // Rates are snapshot per day. If a rate changed mid-week the later day
     // wins for display, but the money below is summed per day so the total
     // stays correct either way.
@@ -873,8 +884,10 @@ export function buildCoverDriverWageLines(
     const cash =
       (Number(r.total_hours_worked) || 0) * (Number(r.hourly_rate_snapshot) || 0);
     const delivery =
-      (Number(r.short_deliveries) || 0) * (Number(r.short_rate_snapshot) || 0) +
-      (Number(r.long_deliveries) || 0) * (Number(r.long_rate_snapshot) || 0);
+      ((Number(r.short_deliveries) || 0) + (Number(r.extra_short_deliveries) || 0)) *
+        (Number(r.short_rate_snapshot) || 0) +
+      ((Number(r.long_deliveries) || 0) + (Number(r.extra_long_deliveries) || 0)) *
+        (Number(r.long_rate_snapshot) || 0);
     const acc = moneyByDriver.get(r.cover_driver_id) ?? { cash: 0, delivery: 0 };
     acc.cash += cash;
     acc.delivery += delivery;
@@ -900,10 +913,8 @@ export function buildCoverDriverWageLines(
       cash_wage: cashWage,
       short_deliveries_count: acc.short,
       long_deliveries_count: acc.long,
-      // Cover drivers record deliveries as a single count per type; there is no
-      // separate "miscellaneous" round to split out.
-      short_misc_count: 0,
-      long_misc_count: 0,
+      short_misc_count: acc.shortMisc,
+      long_misc_count: acc.longMisc,
       short_delivery_rate: acc.shortRate,
       long_delivery_rate: acc.longRate,
       delivery_wages: deliveryWages,

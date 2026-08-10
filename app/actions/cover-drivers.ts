@@ -7,7 +7,6 @@ import { writeAudit } from "./audit";
 import { buildLoginEmail } from "@/lib/credentials";
 import { generatePassword, uniqueUsername } from "@/lib/provisioning";
 import { clockedHours } from "@/lib/utils";
-import { totalDeliveries } from "@/lib/cover-driver-hours";
 import {
   normaliseDeliveryInput,
   type DeliveryInput,
@@ -352,12 +351,21 @@ export async function approveCoverDriverDay(input: {
     if (error) throw new Error(error.message);
   }
 
-  const shortTotal = corrected
-    ? (corrected.short ?? 0) + corrected.extraShort
-    : totalDeliveries(event.short_deliveries_count, event.extra_short_deliveries);
-  const longTotal = corrected
-    ? (corrected.long ?? 0) + corrected.extraLong
-    : totalDeliveries(event.long_deliveries_count, event.extra_long_deliveries);
+  // The round and the extras are snapshotted SEPARATELY (migration 041). Folding
+  // them into one figure paid the same but destroyed the SD/LD/MS/ML breakdown,
+  // and Daily Approval then read the total back as the base count.
+  const shortBase = corrected
+    ? (corrected.short ?? 0)
+    : Number(event.short_deliveries_count) || 0;
+  const longBase = corrected
+    ? (corrected.long ?? 0)
+    : Number(event.long_deliveries_count) || 0;
+  const extraShort = corrected
+    ? corrected.extraShort
+    : Number(event.extra_short_deliveries) || 0;
+  const extraLong = corrected
+    ? corrected.extraLong
+    : Number(event.extra_long_deliveries) || 0;
 
   const payload = {
     cover_driver_id: input.cover_driver_id,
@@ -365,8 +373,10 @@ export async function approveCoverDriverDay(input: {
     work_date: input.work_date,
     total_hours_worked: hours,
     hourly_rate_snapshot: Number(driver.hourly_cash_rate),
-    short_deliveries: shortTotal,
-    long_deliveries: longTotal,
+    short_deliveries: shortBase,
+    long_deliveries: longBase,
+    extra_short_deliveries: extraShort,
+    extra_long_deliveries: extraLong,
     short_rate_snapshot: driver.short_delivery_rate,
     long_rate_snapshot: driver.long_delivery_rate,
     source: "clocked" as const,

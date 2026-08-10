@@ -330,8 +330,11 @@ export type CoverDriverHoursComputed = {
   work_date: string;
   total_hours_worked: number;
   hourly_rate_snapshot: number;
+  /** The normal round. Extras are snapshotted separately (migration 041). */
   short_deliveries: number;
   long_deliveries: number;
+  extra_short_deliveries: number;
+  extra_long_deliveries: number;
   short_rate_snapshot: number | null;
   long_rate_snapshot: number | null;
   hours_pay: number;

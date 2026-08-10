@@ -157,7 +157,7 @@ async function computeSummary(
     supabase
       .from("cover_driver_hours_computed")
       .select(
-        "cover_driver_id, driver_name, store_id, work_date, total_hours_worked, hourly_rate_snapshot, short_deliveries, long_deliveries, short_rate_snapshot, long_rate_snapshot, approved",
+        "cover_driver_id, driver_name, store_id, work_date, total_hours_worked, hourly_rate_snapshot, short_deliveries, long_deliveries, extra_short_deliveries, extra_long_deliveries, short_rate_snapshot, long_rate_snapshot, approved",
       )
       .eq("store_id", storeId)
       .eq("approved", true)
