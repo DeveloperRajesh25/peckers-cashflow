@@ -188,6 +188,8 @@ type ClockInInput = {
   latitude: number;
   longitude: number;
   accuracy?: number | null;
+  /** Age of the fix in ms — see ReportedFix. Stale positions are refused. */
+  fix_age_ms: number | null;
 };
 
 export async function coverDriverClockIn(input: ClockInInput): Promise<ActionResult> {
@@ -200,12 +202,12 @@ async function performClockIn(input: ClockInInput) {
 
   // Cover drivers can be called to either store, so the store they're standing
   // in is the store the day's work and pay are attributed to.
-  const detected = await detectStoreForLocation(
-    supabase,
-    input.latitude,
-    input.longitude,
-    input.accuracy,
-  );
+  const detected = await detectStoreForLocation(supabase, {
+    lat: input.latitude,
+    lng: input.longitude,
+    accuracy: input.accuracy,
+    ageMs: input.fix_age_ms,
+  });
 
   const today = todayISO();
   const { data: existing } = await supabase
@@ -286,13 +288,12 @@ async function performClockOut(input: ClockOutInput) {
   // Clock out at the store they clocked IN at — that's where the day's work is
   // recorded. Standing at another store still signs the day off rather than
   // stranding them clocked in (see verifyGeofenceForClockOut).
-  await verifyGeofenceForClockOut(
-    supabase,
-    existing.store_id,
-    input.latitude,
-    input.longitude,
-    input.accuracy,
-  );
+  await verifyGeofenceForClockOut(supabase, existing.store_id, {
+    lat: input.latitude,
+    lng: input.longitude,
+    accuracy: input.accuracy,
+    ageMs: input.fix_age_ms,
+  });
 
   const shortMissing =
     input.short_deliveries_count == null || Number.isNaN(input.short_deliveries_count);

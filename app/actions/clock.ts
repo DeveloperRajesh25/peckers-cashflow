@@ -304,19 +304,19 @@ function revalidateClockPaths() {
   revalidatePath("/manager/cash-flow/payout");
 }
 
-export async function clockIn(input: {
+type ClockInInput = {
   latitude: number;
   longitude: number;
   accuracy?: number | null;
-}): Promise<ActionResult> {
+  /** Age of the fix in ms — see ReportedFix. Stale positions are refused. */
+  fix_age_ms: number | null;
+};
+
+export async function clockIn(input: ClockInInput): Promise<ActionResult> {
   return asResult(() => performClockIn(input));
 }
 
-async function performClockIn(input: {
-  latitude: number;
-  longitude: number;
-  accuracy?: number | null;
-}) {
+async function performClockIn(input: ClockInInput) {
   const user = await requireAllowed();
   const supabase = createServerSupabase();
 
@@ -328,12 +328,16 @@ async function performClockIn(input: {
 
   // Staff can work at any store, not only their home one. Detect which store
   // they're physically standing in from their location; that store is where the
-  // day's work (and wages) are attributed. Also verifies they're in range.
+  // day's work (and wages) are attributed. Also verifies they're in range, and
+  // that the fix is recent enough to prove where they are NOW.
   const detected = await detectStoreForLocation(
     supabase,
-    input.latitude,
-    input.longitude,
-    input.accuracy,
+    {
+      lat: input.latitude,
+      lng: input.longitude,
+      accuracy: input.accuracy,
+      ageMs: input.fix_age_ms,
+    },
     { actorEmail: user.email, employeeId: employee.id, action: "clock_in" },
   );
   const workedStoreId = detected.id;
@@ -465,6 +469,8 @@ type ClockOutInput = {
   latitude: number;
   longitude: number;
   accuracy?: number | null;
+  /** Age of the fix in ms — see ReportedFix. Stale positions are refused. */
+  fix_age_ms: number | null;
   short_deliveries_count?: number | null;
   long_deliveries_count?: number | null;
   extra_short_deliveries?: number | null;
@@ -523,9 +529,12 @@ async function performClockOut(input: ClockOutInput) {
   const { atStore } = await verifyGeofenceForClockOut(
     supabase,
     session.store_id ?? existing.store_id,
-    input.latitude,
-    input.longitude,
-    input.accuracy,
+    {
+      lat: input.latitude,
+      lng: input.longitude,
+      accuracy: input.accuracy,
+      ageMs: input.fix_age_ms,
+    },
     { actorEmail: user.email, employeeId: employee.id, action: "clock_out" },
   );
 

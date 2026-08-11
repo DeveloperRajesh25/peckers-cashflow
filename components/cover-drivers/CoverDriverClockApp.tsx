@@ -23,12 +23,11 @@ import {
   formatGBP,
   formatHoursMinsWords,
   formatTimeOnly,
-  haversineMeters,
-  isWithinGeofence,
   startOfISOWeek,
   toISODate,
   todayISO,
 } from "@/lib/utils";
+import { rankStoresByDistance, useGeoFix } from "@/lib/use-geo-fix";
 import type { CoverDriver, CoverDriverClockEvent, Store } from "@/lib/types";
 
 type Props = {
@@ -39,12 +38,6 @@ type Props = {
   weekClocks?: CoverDriverClockEvent[];
 };
 
-type GeoState =
-  | { status: "idle" }
-  | { status: "loading" }
-  | { status: "ok"; lat: number; lng: number; accuracy: number }
-  | { status: "denied" | "error"; message: string };
-
 export function CoverDriverClockApp({
   driver,
   stores,
@@ -53,7 +46,6 @@ export function CoverDriverClockApp({
 }: Props) {
   const router = useRouter();
   const toast = useToast();
-  const [geo, setGeo] = React.useState<GeoState>({ status: "idle" });
   const [busy, setBusy] = React.useState(false);
   const [shortDeliveries, setShortDeliveries] = React.useState<string>(
     todayClock?.short_deliveries_count?.toString() ?? "",
@@ -96,64 +88,19 @@ export function CoverDriverClockApp({
   const clockedOut = !!todayClock?.clock_out_at;
   const currentPhase: "in" | "out" | "done" = clockedOut ? "done" : clockedIn ? "out" : "in";
 
-  const requestLocation = React.useCallback(() => {
-    setGeo({ status: "loading" });
-    if (typeof navigator === "undefined" || !navigator.geolocation) {
-      setGeo({ status: "error", message: "Geolocation not supported by this device." });
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setGeo({
-          status: "ok",
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-        });
-      },
-      (err) => {
-        if (err.code === err.PERMISSION_DENIED) {
-          setGeo({
-            status: "denied",
-            message:
-              "Location permission denied. Enable it in your browser settings, then tap Retry.",
-          });
-        } else {
-          setGeo({
-            status: "error",
-            message: err.message || "Could not get your location. Tap Retry.",
-          });
-        }
-      },
-      { enableHighAccuracy: true, timeout: 12_000, maximumAge: 30_000 },
-    );
-  }, []);
+  const { geo, refresh: requestLocation, acquireForSubmit } = useGeoFix({
+    enabled: locatedStores.length > 0,
+    // A resumed tab still renders the day it was opened on, so re-fetch rather
+    // than let a cover driver clock against yesterday's screen.
+    onResume: () => {
+      if (!busy) router.refresh();
+    },
+  });
 
-  // Capture location on open so the clock button is ready immediately (this
-  // also triggers the browser's permission prompt once).
-  React.useEffect(() => {
-    if (locatedStores.length > 0) requestLocation();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const storeDistances = React.useMemo(() => {
-    if (geo.status !== "ok") return [] as { store: Store; distance: number; inRange: boolean }[];
-    return locatedStores
-      .map((s) => {
-        const distance = haversineMeters(
-          Number(s.latitude),
-          Number(s.longitude),
-          geo.lat,
-          geo.lng,
-        );
-        return {
-          store: s,
-          distance,
-          inRange: isWithinGeofence(distance, s.geofence_radius_m, geo.accuracy),
-        };
-      })
-      .sort((a, b) => a.distance - b.distance);
-  }, [geo, locatedStores]);
+  const storeDistances = React.useMemo(
+    () => (geo.status === "ok" ? rankStoresByDistance(locatedStores, geo) : []),
+    [geo, locatedStores],
+  );
 
   // Clocking out is fixed to the store they clocked IN at; clocking in targets
   // the nearest store they're actually within range of.
@@ -202,22 +149,27 @@ export function CoverDriverClockApp({
       toast.error("Capture your location first.");
       return;
     }
-    if (!inRange || !targetStore) {
-      toast.error("You're not within range of a store yet.");
-      return;
-    }
     setBusy(true);
     try {
+      // Captured at the press, so a tab left open since the last cover shift
+      // can't clock in on the store it was opened at.
+      const fix = await acquireForSubmit();
+      const detected = rankStoresByDistance(locatedStores, fix).find((s) => s.inRange);
+      if (!detected) {
+        toast.error("You're not within range of a store. Move closer and try again.");
+        return;
+      }
       const res = await coverDriverClockIn({
-        latitude: geo.lat,
-        longitude: geo.lng,
-        accuracy: geo.accuracy,
+        latitude: fix.lat,
+        longitude: fix.lng,
+        accuracy: fix.accuracy,
+        fix_age_ms: fix.ageMs,
       });
       if (!res.ok) {
         toast.error(res.error);
         return;
       }
-      toast.success(`Clocked in at ${targetStore.name}. Have a good shift!`);
+      toast.success(`Clocked in at ${detected.store.name}. Have a good shift!`);
       router.refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
@@ -245,10 +197,12 @@ export function CoverDriverClockApp({
     }
     setBusy(true);
     try {
+      const fix = await acquireForSubmit();
       const res = await coverDriverClockOut({
-        latitude: geo.lat,
-        longitude: geo.lng,
-        accuracy: geo.accuracy,
+        latitude: fix.lat,
+        longitude: fix.lng,
+        accuracy: fix.accuracy,
+        fix_age_ms: fix.ageMs,
         short_deliveries_count: Number(shortDeliveries) || 0,
         long_deliveries_count: Number(longDeliveries) || 0,
         extra_short_deliveries: Number(extraShort) || 0,

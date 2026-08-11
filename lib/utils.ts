@@ -495,6 +495,34 @@ export function isWithinGeofence(
 }
 
 /**
+ * A location fix is a PERISHABLE credential, not a permanent one.
+ *
+ * A tab left open overnight kept its fix forever: someone who clocked out at
+ * one store and re-opened the same tab at another the next morning submitted
+ * yesterday's coordinates, and the geofence — checking them faithfully — put
+ * the whole day at the wrong store. These four thresholds are what stop that,
+ * and their ORDER is the invariant:
+ *
+ *   REUSE (15s) < STALE (90s) < MAX_AGE (120s)
+ *
+ * so a fix accepted at the button press can never be old enough for the server
+ * to refuse by the time it lands, even on a slow connection.
+ */
+/** Server: refuse any fix reported older than this. The backstop — a client
+ *  that skips every check below still cannot clock in on a stale position. */
+export const MAX_FIX_AGE_MS = 120_000;
+/** Client: past this the fix stops being shown as current and is re-acquired. */
+export const FIX_STALE_AFTER_MS = 90_000;
+/** Client: how often the staleness check runs while the page is visible. */
+export const FIX_STALENESS_CHECK_MS = 30_000;
+/** Client: at the button press, reuse the cached fix only if it is this fresh —
+ *  otherwise acquire a new one before submitting. Nobody travels far in 15s. */
+export const FIX_REUSE_AT_PRESS_MS = 15_000;
+/** Client: returning to the tab within this window is a blink, not a journey,
+ *  so the fix is left alone. Beyond it, the fix is dropped and re-acquired. */
+export const FIX_RESUME_GRACE_MS = 10_000;
+
+/**
  * Group an array of clock_events into per-employee per-week totals.
  * employeeMap keys are employee id, values carry name + rates for wage calc.
  */

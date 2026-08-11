@@ -12,13 +12,8 @@ import { ClockIcon } from "@/components/ui/icons";
 import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import { managerClockIn, managerClockOut } from "@/app/actions/manager-clock";
 import { switchStore } from "@/app/actions/store-switch";
-import { getBestPosition, isPermissionDenied } from "@/lib/geolocation";
-import {
-  formatTimeOnly,
-  haversineMeters,
-  isWithinGeofence,
-  liveDayWorkedHours,
-} from "@/lib/utils";
+import { rankStoresByDistance, useGeoFix } from "@/lib/use-geo-fix";
+import { formatTimeOnly, liveDayWorkedHours } from "@/lib/utils";
 import type { ManagerClockEvent, ManagerClockSession, Store } from "@/lib/types";
 
 type Props = {
@@ -36,12 +31,6 @@ type Props = {
   todaySessions?: ManagerClockSession[];
 };
 
-type GeoState =
-  | { status: "idle" }
-  | { status: "loading" }
-  | { status: "ok"; lat: number; lng: number; accuracy: number; distance: number | null }
-  | { status: "denied" | "error"; message: string };
-
 export function ManagerClockCard({
   managerName,
   store,
@@ -51,7 +40,6 @@ export function ManagerClockCard({
 }: Props) {
   const router = useRouter();
   const toast = useToast();
-  const [geo, setGeo] = React.useState<GeoState>({ status: "idle" });
   const [busy, setBusy] = React.useState(false);
   const [switching, setSwitching] = React.useState(false);
   // Clock-out asks about drops first. Null = not asking; "ask" = the yes/no
@@ -66,71 +54,30 @@ export function ManagerClockCard({
 
   const storeConfigured = store?.latitude != null && store?.longitude != null;
 
-  const requestLocation = React.useCallback(() => {
-    setGeo({ status: "loading" });
-    // Converge on a precise GPS fix rather than trusting the first coarse
-    // (Wi-Fi/network) reading, so the distance/in-range verdict is trustworthy.
-    getBestPosition({ desiredAccuracyM: 30, maxWaitMs: 12_000 })
-      .then((fix) => {
-        const distance =
-          store?.latitude != null && store?.longitude != null
-            ? haversineMeters(
-                Number(store.latitude),
-                Number(store.longitude),
-                fix.lat,
-                fix.lng,
-              )
-            : null;
-        setGeo({
-          status: "ok",
-          lat: fix.lat,
-          lng: fix.lng,
-          accuracy: fix.accuracy,
-          distance,
-        });
-      })
-      .catch((err: unknown) => {
-        if (isPermissionDenied(err)) {
-          setGeo({
-            status: "denied",
-            message: "Location permission denied. Enable it in your browser settings, then tap Retry.",
-          });
-        } else {
-          setGeo({
-            status: "error",
-            message: err instanceof Error ? err.message : "Could not get your location. Tap Retry.",
-          });
-        }
-      });
-  }, [store?.latitude, store?.longitude]);
+  const { geo, refresh: requestLocation, acquireForSubmit } = useGeoFix({
+    enabled: storeConfigured,
+    // A card left open on a backgrounded tab still shows the day it rendered on.
+    onResume: () => {
+      if (!busy) router.refresh();
+    },
+  });
 
-  React.useEffect(() => {
-    if (storeConfigured) requestLocation();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const inRange =
-    geo.status === "ok" &&
-    store?.geofence_radius_m != null &&
-    geo.distance != null &&
-    isWithinGeofence(geo.distance, store.geofence_radius_m, geo.accuracy);
+  // Ranked against the store the app is SET to. Kept separate from the sweep of
+  // every store below so the status line still reads correctly when allStores
+  // wasn't passed.
+  const atActiveStore = React.useMemo(
+    () => (geo.status === "ok" && store ? rankStoresByDistance([store], geo)[0] ?? null : null),
+    [geo, store],
+  );
+  const distanceToStore = atActiveStore?.distance ?? null;
+  const inRange = !!atActiveStore?.inRange;
 
   // Which store is the manager physically standing in? Nearest one whose
   // geofence contains their position. Used to nudge them to switch when they're
   // at a store other than the one the app is currently set to.
   const detectedStore = React.useMemo(() => {
     if (geo.status !== "ok" || !allStores?.length) return null;
-    const ranked = allStores
-      .filter((s) => s.latitude != null && s.longitude != null)
-      .map((s) => ({
-        store: s,
-        distance: haversineMeters(Number(s.latitude), Number(s.longitude), geo.lat, geo.lng),
-      }))
-      .filter(({ store: s, distance }) =>
-        isWithinGeofence(distance, s.geofence_radius_m ?? 250, geo.accuracy),
-      )
-      .sort((a, b) => a.distance - b.distance);
-    return ranked[0]?.store ?? null;
+    return rankStoresByDistance(allStores, geo).find((r) => r.inRange)?.store ?? null;
   }, [geo, allStores]);
 
   const atDifferentStore = detectedStore != null && store != null && detectedStore.id !== store.id;
@@ -233,7 +180,16 @@ export function ManagerClockCard({
     }
     setBusy(true);
     try {
-      const payload = { latitude: geo.lat, longitude: geo.lng, accuracy: geo.accuracy };
+      // Taken at the press, not at page load — and after the deliveries modal
+      // rather than before it, so time spent filling the counts in can't age
+      // the position out.
+      const fix = await acquireForSubmit();
+      const payload = {
+        latitude: fix.lat,
+        longitude: fix.lng,
+        accuracy: fix.accuracy,
+        fix_age_ms: fix.ageMs,
+      };
       const res =
         phase === "out"
           ? await managerClockOut({ ...payload, deliveries })
@@ -329,8 +285,8 @@ export function ManagerClockCard({
                   {geo.status === "loading"
                     ? "Getting your location…"
                     : geo.status === "ok"
-                      ? geo.distance != null
-                        ? `${Math.round(geo.distance)}m from ${store?.name ?? "store"} · ±${Math.round(geo.accuracy)}m GPS accuracy`
+                      ? distanceToStore != null
+                        ? `${Math.round(distanceToStore)}m from ${store?.name ?? "store"} · ±${Math.round(geo.accuracy)}m GPS accuracy`
                         : "No store location configured."
                       : geo.status === "denied" || geo.status === "error"
                         ? geo.message

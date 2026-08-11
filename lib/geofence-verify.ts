@@ -1,16 +1,59 @@
 // =============================================================
 // Shared server-side geofence check. Reads store coordinates + radius and throws
-// a user-facing error if the reported position is out of range. Used by crew,
-// manager and cover driver clock actions so they agree on the verdict.
+// a user-facing error if the reported position is out of range OR out of date.
+// Used by crew, manager and cover driver clock actions so they agree on the
+// verdict.
 //
 //   detectStoreForLocation      clocking IN — which store are they standing in?
 //   verifyGeofenceForClockOut   clocking OUT — the shift's store, or any store
+//
+// Both take a ReportedFix and check its freshness FIRST: an in-range verdict on
+// a position captured hours ago is worse than no verdict at all, because it
+// attributes the whole day to the wrong store.
 //
 // Takes the caller's Supabase client so RLS runs under the caller's session.
 // =============================================================
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { haversineMeters, isWithinGeofence } from "./utils";
+import { haversineMeters, isWithinGeofence, MAX_FIX_AGE_MS } from "./utils";
+
+/**
+ * A reported position PLUS how long ago it was captured.
+ *
+ * The age is the reason this is an object rather than loose lat/lng arguments:
+ * every clock path must supply it, and a positional parameter of the same type
+ * as `accuracy` could be swapped for it without the compiler noticing.
+ */
+export type ReportedFix = {
+  lat: number;
+  lng: number;
+  /** GPS ±metres, if the device reported it. */
+  accuracy?: number | null;
+  /**
+   * Milliseconds between capturing the fix and submitting it, measured on the
+   * client's MONOTONIC clock (performance.now), so a device clock correction or
+   * timezone change cannot fabricate a fresh-looking age. Null means the client
+   * did not say — which is refused, not trusted.
+   */
+  ageMs: number | null;
+};
+
+/**
+ * Refuse a position that is too old to prove where someone is standing NOW.
+ *
+ * Geolocation is client-asserted either way, so this does not pretend to be
+ * tamper-proof — it closes the ACCIDENT: a backgrounded tab submitting the fix
+ * it captured hours ago at a different store. A missing age is refused rather
+ * than waved through, which is deliberate: the tabs already open at deploy time
+ * are exactly the ones carrying a stale fix.
+ */
+export function assertFreshFix(ageMs: number | null | undefined): void {
+  if (ageMs == null || !Number.isFinite(ageMs) || ageMs < 0 || ageMs > MAX_FIX_AGE_MS) {
+    throw new Error(
+      "Your location check is out of date. Tap Refresh to check your location again, then clock in or out.",
+    );
+  }
+}
 
 /** Who/what to attribute a logged geofence failure to. Optional everywhere —
  *  omitting it just skips logging (e.g. call sites that don't have an actor
@@ -125,17 +168,16 @@ async function checkGeofenceAtStore(
 export async function verifyGeofenceForClockOut(
   supabase: SupabaseClient,
   storeId: string | null,
-  lat: number,
-  lng: number,
-  accuracy?: number | null,
+  fix: ReportedFix,
   logCtx?: GeofenceLogContext,
 ): Promise<{ distance: number; atStore: DetectedStore | null }> {
+  assertFreshFix(fix.ageMs);
   if (storeId) {
-    const check = await checkGeofenceAtStore(supabase, storeId, lat, lng, accuracy);
+    const check = await checkGeofenceAtStore(supabase, storeId, fix.lat, fix.lng, fix.accuracy);
     if (check?.inRange) return { distance: check.distance, atStore: null };
   }
   // Throws its own distance-aware error (and logs it) when they're at no store.
-  const detected = await detectStoreForLocation(supabase, lat, lng, accuracy, logCtx);
+  const detected = await detectStoreForLocation(supabase, fix, logCtx);
   return { distance: detected.distance, atStore: detected };
 }
 
@@ -156,11 +198,11 @@ export type DetectedStore = {
  */
 export async function detectStoreForLocation(
   supabase: SupabaseClient,
-  lat: number,
-  lng: number,
-  accuracy?: number | null,
+  fix: ReportedFix,
   logCtx?: GeofenceLogContext,
 ): Promise<DetectedStore> {
+  assertFreshFix(fix.ageMs);
+  const { lat, lng, accuracy } = fix;
   const { data: stores } = await supabase
     .from("stores")
     .select("id, name, latitude, longitude, geofence_radius_m");

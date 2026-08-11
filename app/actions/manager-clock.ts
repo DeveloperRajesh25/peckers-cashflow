@@ -66,6 +66,8 @@ type ClockInput = {
   latitude: number;
   longitude: number;
   accuracy?: number | null;
+  /** Age of the fix in ms — see ReportedFix. Stale positions are refused. */
+  fix_age_ms: number | null;
 };
 
 /**
@@ -110,9 +112,12 @@ async function performManagerClockIn(input: ClockInput) {
   // attributes each shift to the store actually worked).
   const detected = await detectStoreForLocation(
     supabase,
-    input.latitude,
-    input.longitude,
-    input.accuracy,
+    {
+      lat: input.latitude,
+      lng: input.longitude,
+      accuracy: input.accuracy,
+      ageMs: input.fix_age_ms,
+    },
     { actorEmail: user.email, managerId, action: "clock_in" },
   );
   if (detected.id !== storeId) {
@@ -258,9 +263,12 @@ async function performManagerClockOut(input: ManagerClockOutInput) {
   await verifyGeofenceForClockOut(
     supabase,
     clockedStoreId,
-    input.latitude,
-    input.longitude,
-    input.accuracy,
+    {
+      lat: input.latitude,
+      lng: input.longitude,
+      accuracy: input.accuracy,
+      ageMs: input.fix_age_ms,
+    },
     { actorEmail: user.email, managerId, action: "clock_out" },
   );
 

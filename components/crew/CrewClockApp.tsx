@@ -12,13 +12,10 @@ import { clockIn, clockOut, updateDeliveryCount } from "@/app/actions/clock";
 import {
   WEEKDAY_LONG,
   addDays,
-  clockedHours,
   formatDDMMYYYY,
   formatHoursMinsWords,
   formatShiftRange,
   formatTimeOnly,
-  haversineMeters,
-  isWithinGeofence,
   liveDayWorkedHours,
   resolvedDayHours,
   startOfISOWeek,
@@ -26,7 +23,7 @@ import {
   todayISO,
   weekdayIndex,
 } from "@/lib/utils";
-import { getBestPosition, isPermissionDenied } from "@/lib/geolocation";
+import { rankStoresByDistance, useGeoFix } from "@/lib/use-geo-fix";
 import { ClockReminderOptIn } from "@/components/crew/ClockReminderOptIn";
 import { savePushSubscription, deletePushSubscription, sendTestPush } from "@/app/actions/push";
 import { ClockIcon } from "@/components/ui/icons";
@@ -60,12 +57,6 @@ type Props = {
  */
 const RECLOCK_CONFIRM_WINDOW_MS = 5 * 60_000;
 
-type GeoState =
-  | { status: "idle" }
-  | { status: "loading" }
-  | { status: "ok"; lat: number; lng: number; accuracy: number }
-  | { status: "denied" | "error"; message: string };
-
 export function CrewClockApp({
   employee,
   stores,
@@ -77,7 +68,6 @@ export function CrewClockApp({
 }: Props) {
   const router = useRouter();
   const toast = useToast();
-  const [geo, setGeo] = React.useState<GeoState>({ status: "idle" });
   const [busy, setBusy] = React.useState(false);
   // Delivery counts belong to the shift being worked, not the day (migration
   // 033), so these seed from the OPEN SESSION — never from the day header,
@@ -240,55 +230,21 @@ export function CrewClockApp({
   const currentPhase: "in" | "out" = clockedIn ? "out" : "in";
   const finishedShiftToday = !clockedIn && (completedTodayCount > 0 || !!todayClock?.clock_out_at);
 
-  const requestLocation = React.useCallback(() => {
-    setGeo({ status: "loading" });
-    // Wait for the GPS to converge instead of trusting the first (often coarse
-    // Wi-Fi/network) fix, so the in-range verdict reflects real precise position.
-    getBestPosition({ desiredAccuracyM: 30, maxWaitMs: 12_000 })
-      .then((fix) => {
-        setGeo({ status: "ok", lat: fix.lat, lng: fix.lng, accuracy: fix.accuracy });
-      })
-      .catch((err: unknown) => {
-        if (isPermissionDenied(err)) {
-          setGeo({
-            status: "denied",
-            message: "Location permission denied. Enable it in your browser settings, then tap Retry.",
-          });
-        } else {
-          setGeo({
-            status: "error",
-            message: err instanceof Error ? err.message : "Could not get your location. Tap Retry.",
-          });
-        }
-      });
-  }, []);
-
-  // Capture location automatically when the page opens so the clock button is
-  // ready immediately (it triggers the browser's permission prompt once).
-  React.useEffect(() => {
-    if (locatedStores.length > 0) requestLocation();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const { geo, refresh: requestLocation, acquireForSubmit } = useGeoFix({
+    enabled: locatedStores.length > 0,
+    // A tab backgrounded overnight renders yesterday's date, shift and hours
+    // until the server data is re-fetched. Skipped mid-submit so a refresh can't
+    // land on top of a clock action.
+    onResume: () => {
+      if (!busy) router.refresh();
+    },
+  });
 
   // Distance to every clockable store from the current position, nearest first.
-  const storeDistances = React.useMemo(() => {
-    if (geo.status !== "ok") return [] as { store: Store; distance: number; inRange: boolean }[];
-    return locatedStores
-      .map((s) => {
-        const distance = haversineMeters(
-          Number(s.latitude),
-          Number(s.longitude),
-          geo.lat,
-          geo.lng,
-        );
-        return {
-          store: s,
-          distance,
-          inRange: isWithinGeofence(distance, s.geofence_radius_m, geo.accuracy),
-        };
-      })
-      .sort((a, b) => a.distance - b.distance);
-  }, [geo, locatedStores]);
+  const storeDistances = React.useMemo(
+    () => (geo.status === "ok" ? rankStoresByDistance(locatedStores, geo) : []),
+    [geo, locatedStores],
+  );
 
   // The store this clock action applies to:
   //  - clocking out: the store they clocked IN at (fixed for the shift).
@@ -325,13 +281,10 @@ export function CrewClockApp({
       toast.error("Capture your location first.");
       return;
     }
-    if (!inRange || !targetStore) {
-      toast.error("You're not within range of a store yet.");
-      return;
-    }
     // Clocking back in is one tap, which also makes it one mis-tap. Only asks
     // when the clock-out was moments ago — a genuine second shift starts hours
-    // later and is never interrupted.
+    // later and is never interrupted. Asked BEFORE the fix is taken: a blocking
+    // dialog left sitting open would age the position out from under us.
     if (
       lastClockOutAt &&
       Date.now() - new Date(lastClockOutAt).getTime() < RECLOCK_CONFIRM_WINDOW_MS &&
@@ -343,12 +296,27 @@ export function CrewClockApp({
     }
     setBusy(true);
     try {
-      const res = await clockIn({ latitude: geo.lat, longitude: geo.lng, accuracy: geo.accuracy });
+      // The position submitted is captured HERE, not when the page opened. A tab
+      // reopened the next morning at a different store must not clock in on the
+      // fix it took at the last one — which is exactly how a Hitchin shift once
+      // landed on Stevenage.
+      const fix = await acquireForSubmit();
+      const detected = rankStoresByDistance(locatedStores, fix).find((s) => s.inRange);
+      if (!detected) {
+        toast.error("You're not within range of a store. Move closer and try again.");
+        return;
+      }
+      const res = await clockIn({
+        latitude: fix.lat,
+        longitude: fix.lng,
+        accuracy: fix.accuracy,
+        fix_age_ms: fix.ageMs,
+      });
       if (!res.ok) {
         toast.error(res.error);
         return;
       }
-      toast.success(`Clocked in at ${targetStore.name}. Have a good shift!`);
+      toast.success(`Clocked in at ${detected.store.name}. Have a good shift!`);
       router.refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
@@ -376,10 +344,14 @@ export function CrewClockApp({
     }
     setBusy(true);
     try {
+      // Same rule as clocking in: the fix that decides where this shift is
+      // signed off is taken at the press, not at page load.
+      const fix = await acquireForSubmit();
       const res = await clockOut({
-        latitude: geo.lat,
-        longitude: geo.lng,
-        accuracy: geo.accuracy,
+        latitude: fix.lat,
+        longitude: fix.lng,
+        accuracy: fix.accuracy,
+        fix_age_ms: fix.ageMs,
         short_deliveries_count: isDriver ? Number(shortDeliveries) || 0 : null,
         long_deliveries_count: isDriver ? Number(longDeliveries) || 0 : null,
         extra_short_deliveries: isDriver ? Number(extraShort) || 0 : null,
