@@ -9,6 +9,7 @@ import {
   formatDDMMYYYY,
   londonHHMM,
   parseISODate,
+  roundHoursToMinute,
   startOfISOWeek,
   timeToMinutes,
   toISODate,
@@ -226,7 +227,7 @@ async function stampAutoShiftWindow(
       .from("rota_shifts")
       .update({
         end_time: endHHMM,
-        scheduled_hours: Math.round(workedHours * 100) / 100,
+        scheduled_hours: roundHoursToMinute(workedHours),
       })
       .eq("id", shift.id);
   } catch (err) {

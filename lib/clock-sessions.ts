@@ -25,11 +25,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ClockSession } from "@/lib/types";
-
-/** Round to 2dp the same way every money/hours path in the app does. */
-function round2(n: number): number {
-  return Math.round((Number(n) || 0) * 100) / 100;
-}
+import { roundHoursToMinute } from "@/lib/utils";
 
 function sessionHours(s: { clock_in_at: string; clock_out_at: string | null }): number {
   if (!s.clock_out_at) return 0;
@@ -241,7 +237,9 @@ export function deriveDayHeader(
 
   const completed = sessions.filter((s) => s.clock_out_at);
   const open = sessions.some((s) => !s.clock_out_at);
-  const workedHours = round2(completed.reduce((sum, s) => sum + sessionHours(s), 0));
+  const workedHours = roundHoursToMinute(
+    completed.reduce((sum, s) => sum + sessionHours(s), 0),
+  );
 
   // Where they are NOW (the open shift), else where they were last. By clock
   // time, never insertion order — a forgotten morning entered after the evening
@@ -273,7 +271,7 @@ export function deriveDayHeader(
   // completed ones. An unapproved OPEN shift is not outstanding work — it is
   // work still happening.
   const approved = completed.filter((s) => s.hours_approved);
-  const approvedHours = round2(
+  const approvedHours = roundHoursToMinute(
     approved.reduce(
       (sum, s) =>
         sum + (s.approved_hours != null ? Number(s.approved_hours) || 0 : sessionHours(s)),
@@ -487,8 +485,11 @@ export async function approveDaySessions(
       const isLast = i === pending.length - 1;
       // Everything left over goes on the final shift so the day totals exactly.
       const share = isLast ? remaining : Math.min(remaining, sessionHours(s));
-      approvedHours = round2(share);
-      remaining = round2(Math.max(0, remaining - share));
+      approvedHours = roundHoursToMinute(share);
+      // Deduct what was actually STORED, not the raw share — subtracting the
+      // pre-rounded figure leaves a sliver behind on every shift, and the day
+      // then fails to add up to the total the manager typed.
+      remaining = roundHoursToMinute(Math.max(0, remaining - approvedHours));
     }
     await setSessionApproval(supabase, s.id, {
       approved: true,

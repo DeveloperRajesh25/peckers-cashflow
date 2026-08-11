@@ -255,6 +255,23 @@ export function formatHoursMinsWords(hours: number | null | undefined): string {
  * silent wrong value would misprice a wage line. The caller still sends a
  * real decimal hours number to the existing (unchanged) approval/log actions.
  */
+/**
+ * Hours, quantised to a whole MINUTE — the unit every screen actually displays.
+ *
+ * Use this for HOURS. `round2` is for MONEY, where 2dp is a penny and exact.
+ * For hours 2dp is 36 seconds, which cannot represent a minute at all: a day
+ * held a value the display had to round, and a week summed seven of those
+ * hidden fractions, so Daily Approval, the Weekly Log and the payout each
+ * showed a different total for the same week (migration 042).
+ *
+ * Quantising at every write makes the stored value exactly what is shown, so a
+ * total is the sum of its parts however it is arrived at. The stored decimal is
+ * only the transport — 7h10m is 430 minutes, carried as 7.1667.
+ */
+export function roundHoursToMinute(hours: number | null | undefined): number {
+  return Math.round((Number(hours) || 0) * 60) / 60;
+}
+
 export function parseHoursMinsInput(text: string): number | null {
   const trimmed = String(text ?? "").trim();
   if (!trimmed) return null;
@@ -567,7 +584,7 @@ export function groupClockEventsByWeek(
         employee_id: empId,
         employee_name: emp?.name ?? "—",
         week_start_date: weekStart,
-        total_hours: Math.round(data.hours * 100) / 100,
+        total_hours: roundHoursToMinute(data.hours),
         event_count: data.count,
         hourly_ni_rate: emp?.hourly_ni_rate ?? null,
         hourly_rate: emp?.hourly_rate ?? 0,
@@ -639,7 +656,7 @@ export function mapClockEventsToDaily(
       employee_name: employeeMap.get(ce.employee_id)?.name ?? "—",
       event_date: ce.event_date,
       store_id: ce.store_id ?? null,
-      clocked_hours: Math.round(dayWorkedHours(ce) * 100) / 100,
+      clocked_hours: roundHoursToMinute(dayWorkedHours(ce)),
       sessions: (ce.id ? sessionsByEventId?.get(ce.id) : undefined) ?? [],
       hours_approved: !!ce.hours_approved,
       approved_hours:

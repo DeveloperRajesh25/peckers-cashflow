@@ -12,7 +12,7 @@
 // =============================================================
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { addDays, parseISODate, toISODate } from "@/lib/utils";
+import { addDays, parseISODate, roundHoursToMinute, toISODate } from "@/lib/utils";
 
 export async function employeeNiRate(
   supabase: SupabaseClient,
@@ -55,13 +55,12 @@ export async function rollupApprovedWeek(
     .gte("event_date", week_start_date)
     .lte("event_date", weekEnd);
 
-  const total =
-    Math.round(
-      (days ?? []).reduce(
-        (s, d) => s + (d.approved_hours != null ? Number(d.approved_hours) : 0),
-        0,
-      ) * 100,
-    ) / 100;
+  const total = roundHoursToMinute(
+    (days ?? []).reduce(
+      (s, d) => s + (d.approved_hours != null ? Number(d.approved_hours) : 0),
+      0,
+    ),
+  );
 
   const { data: existing } = await supabase
     .from("employee_hours")

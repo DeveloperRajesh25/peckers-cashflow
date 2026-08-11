@@ -10,6 +10,7 @@ import {
   dayWorkedHours,
   formatHoursMinsWords,
   parseISODate,
+  roundHoursToMinute,
   startOfISOWeek,
   toISODate,
 } from "@/lib/utils";
@@ -431,7 +432,7 @@ export async function approveClockedHours(input: {
     (sum, ev) => sum + dayWorkedHours(ev),
     0,
   );
-  const clockedTotal = Math.round(clockedHours * 100) / 100;
+  const clockedTotal = roundHoursToMinute(clockedHours);
   if (clockedTotal <= 0) {
     throw new Error("No completed clock-in/out sessions to approve for this week.");
   }
@@ -605,7 +606,7 @@ export async function approveDailyHours(input: {
 
   // Summed shifts, so a day worked 09:00–13:00 and 17:00–21:00 approves at 8h
   // rather than the 12h the first-in-to-last-out span would suggest.
-  const rawHours = Math.round(dayWorkedHours(ce) * 100) / 100;
+  const rawHours = roundHoursToMinute(dayWorkedHours(ce));
   const hasOverride =
     input.override_hours != null && !isNaN(Number(input.override_hours));
   const approvedHours = hasOverride ? Number(input.override_hours) : rawHours;
@@ -879,7 +880,7 @@ export async function setShiftApproval(input: {
     if (!Number.isFinite(h) || h <= 0 || h > 24) {
       throw new Error("Hours must be between 0 and 24.");
     }
-    approvedHours = Math.round(h * 100) / 100;
+    approvedHours = roundHoursToMinute(h);
   }
 
   await setSessionApproval(supabase, session.id, {
@@ -937,7 +938,7 @@ export async function approveDailyHoursForDate(input: {
     // A null clock_out_at also means "a shift is still open", so anyone mid-way
     // through a split day is skipped rather than approved at half their hours.
     if (!e.clock_in_at || !e.clock_out_at) continue;
-    const rawHours = Math.round(dayWorkedHours(e) * 100) / 100;
+    const rawHours = roundHoursToMinute(dayWorkedHours(e));
     if (rawHours <= 0) continue;
 
     // No day total is passed: a bulk approve confirms what was clocked, so each

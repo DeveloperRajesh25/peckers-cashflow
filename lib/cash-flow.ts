@@ -24,10 +24,13 @@ import {
   addDays,
   parseISODate,
   resolvedDayHours,
+  roundHoursToMinute,
   startOfISOWeek,
   toISODate,
 } from "./utils";
 
+/** MONEY, to the penny. For HOURS use roundHoursToMinute — 2dp is 36 seconds,
+ *  which cannot hold a whole minute (migration 042). */
 export function round2(n: number): number {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
@@ -107,7 +110,7 @@ export function splitHours(
   const limit = Math.max(0, Number(bankLimit) || 0);
   const bankHours = Math.min(total, limit);
   const cashHours = Math.max(total - limit, 0);
-  return { bankHours: round2(bankHours), cashHours: round2(cashHours) };
+  return { bankHours: roundHoursToMinute(bankHours), cashHours: roundHoursToMinute(cashHours) };
 }
 
 /**
@@ -131,7 +134,7 @@ export function splitHoursForEmployee(
   totalHours: number,
 ): { bankHours: number; cashHours: number } {
   if (!worksForCash(emp)) {
-    return { bankHours: round2(Math.max(0, Number(totalHours) || 0)), cashHours: 0 };
+    return { bankHours: roundHoursToMinute(Math.max(0, Number(totalHours) || 0)), cashHours: 0 };
   }
   return splitHours(totalHours, emp.bank_weekly_hours_limit ?? 20);
 }
@@ -442,7 +445,7 @@ export function aggregateWorked(
   for (const id of Array.from(ids)) {
     const hours = clockHours.has(id) ? clockHours.get(id)! : scheduledHours.get(id) ?? 0;
     result.set(id, {
-      hours: round2(hours),
+      hours: roundHoursToMinute(hours),
       shortDeliveries: shortDeliveries.get(id) ?? 0,
       longDeliveries: longDeliveries.get(id) ?? 0,
     });
@@ -597,7 +600,7 @@ export function buildWageLinesForStore(
   for (const emp of employees) {
     const empClocks = clocksByEmp.get(emp.id) ?? [];
     const days = resolveWorkingDays(empClocks);
-    const cashHours = round2(cashHoursAtStore(days, storeId, emp));
+    const cashHours = roundHoursToMinute(cashHoursAtStore(days, storeId, emp));
 
     // Deliveries come from the APPROVED columns on the clock rows AT this store
     // (migration 035) — drops a driver logged but nobody has signed off are on
@@ -908,7 +911,7 @@ export function buildCoverDriverWageLines(
       is_cover_driver: true,
       employee_name: acc.name,
       role: "Cover Driver",
-      cash_hours: round2(acc.hours),
+      cash_hours: roundHoursToMinute(acc.hours),
       cash_rate: acc.rate,
       cash_wage: cashWage,
       short_deliveries_count: acc.short,
