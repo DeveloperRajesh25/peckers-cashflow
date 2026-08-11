@@ -41,6 +41,10 @@ export type ManualEntryCandidate = {
    * treats every one of them as such regardless of this flag.
    */
   is_driver?: boolean;
+  /** Their HOME store — what the store picker defaults to. */
+  store_id?: string | null;
+  /** Store of the shifts already recorded that day, for the mixed-day warning. */
+  existing_store_id?: string | null;
 };
 
 const REASON_PRESETS = [
@@ -55,6 +59,7 @@ export function ManualClockEntryModal({
   eventDate,
   requireClockOut = false,
   title,
+  stores,
   onClose,
   onSaved,
 }: {
@@ -64,11 +69,19 @@ export function ManualClockEntryModal({
   /** Daily Approval: the day is over, so both times are needed. */
   requireClockOut?: boolean;
   title?: string;
+  /**
+   * Offers the "store worked" picker. Passed only where the actor may choose —
+   * admins on Daily Approval. A manager is held to their own store server-side,
+   * and the Live board is already scoped to the store being looked at, so
+   * neither gets a picker. Cover drivers belong to one store and never do.
+   */
+  stores?: Array<{ id: string; name: string }>;
   onClose: () => void;
   onSaved: () => void;
 }) {
   const toast = useToast();
   const [personId, setPersonId] = React.useState("");
+  const [storeId, setStoreId] = React.useState("");
   const [inTime, setInTime] = React.useState("");
   const [outTime, setOutTime] = React.useState("");
   const [preset, setPreset] = React.useState<string>(REASON_PRESETS[0]);
@@ -99,7 +112,25 @@ export function ManualClockEntryModal({
     if (!selected) return;
     setInTime(selected.scheduled_start?.slice(0, 5) ?? "");
     if (requireClockOut) setOutTime(selected.scheduled_end?.slice(0, 5) ?? "");
+    // Their home store, or wherever the day's existing shifts already sit —
+    // covering elsewhere is the exception, so it stays a deliberate change.
+    setStoreId(selected.existing_store_id ?? selected.store_id ?? "");
   }, [selected, requireClockOut]);
+
+  const showStorePicker = mode === "employee" && !!stores && stores.length > 1;
+  const awayFromHome =
+    showStorePicker && !!storeId && !!selected?.store_id && storeId !== selected.store_id;
+  // A day carries ONE store (deriveDayHeader takes the latest shift's), and the
+  // payout bills the whole day to it. So adding a shift at another store does
+  // not split the day — it moves all of it, including hours already recorded.
+  const movesExistingDay =
+    showStorePicker &&
+    !!storeId &&
+    !!selected?.existing_shifts &&
+    !!selected.existing_store_id &&
+    selected.existing_store_id !== storeId;
+  const storeNameOf = (id: string | null | undefined) =>
+    stores?.find((s) => s.id === id)?.name ?? "another store";
 
   const reason = preset === "Other" ? otherReason.trim() : preset;
 
@@ -127,6 +158,7 @@ export function ManualClockEntryModal({
   const canSave =
     !!personId &&
     !!inTime &&
+    (!showStorePicker || !!storeId) &&
     (!requireClockOut || !!outTime) &&
     !sameTime &&
     !notYetWorked &&
@@ -150,6 +182,7 @@ export function ManualClockEntryModal({
   async function save() {
     setError(null);
     if (!personId) return setError("Pick who this is for.");
+    if (showStorePicker && !storeId) return setError("Pick the store they worked at.");
     if (!inTime) return setError("Enter the clock-in time.");
     if (requireClockOut && !outTime) return setError("Enter the clock-out time.");
     if (!reason) return setError("Give a reason.");
@@ -172,6 +205,9 @@ export function ManualClockEntryModal({
               clock_out_time: outTime || null,
               reason,
               deliveries,
+              // Omitted where there's no picker, which leaves the server on its
+              // existing default rather than asserting a store from the UI.
+              store_id: showStorePicker ? storeId : undefined,
             })
           : await upsertManualCoverDriverClockEntry({
               cover_driver_id: personId,
@@ -248,6 +284,48 @@ export function ManualClockEntryModal({
                 {selected.existing_shifts > 1 ? "s" : ""} recorded that day. This adds
                 another — the times must not overlap one already recorded.
               </p>
+            )}
+
+            {/* Staff cover across stores, so where they worked is a fact only
+                the person recording it knows — and it decides which store's
+                Tuesday payout pays the day. */}
+            {showStorePicker && (
+              <>
+                <Select
+                  label="Store worked *"
+                  value={storeId}
+                  onChange={(e) => setStoreId(e.target.value)}
+                  disabled={!selected}
+                >
+                  <option value="">Select…</option>
+                  {stores!.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.id === selected?.store_id ? `${s.name} — home store` : s.name}
+                    </option>
+                  ))}
+                </Select>
+
+                {awayFromHome && (
+                  <p className="text-xs text-text-muted bg-bg border border-border rounded-xl px-3 py-2 -mt-1">
+                    {selected?.name} is based at {storeNameOf(selected?.store_id)}, so this
+                    day is <span className="text-text-primary">covering</span>. It goes on{" "}
+                    {storeNameOf(storeId)}&apos;s Tuesday payout, and every hour is paid in
+                    cash — hours away from the home store don&apos;t count towards their
+                    weekly NI allowance.
+                  </p>
+                )}
+
+                {movesExistingDay && (
+                  <p className="text-xs text-warning bg-warning/10 border border-warning/30 rounded-xl px-3 py-2 -mt-1">
+                    That day already has shifts recorded at{" "}
+                    {storeNameOf(selected?.existing_store_id)}. A day can only belong to one
+                    store, so saving this will move the WHOLE day — including the hours
+                    already there — onto {storeNameOf(storeId)}&apos;s payout. Record it at{" "}
+                    {storeNameOf(selected?.existing_store_id)} instead if that isn&apos;t
+                    what you want.
+                  </p>
+                )}
+              </>
             )}
 
             <div className="grid grid-cols-2 gap-3">

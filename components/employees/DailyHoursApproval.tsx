@@ -324,6 +324,7 @@ export function DailyHoursApproval({
   todayISO,
   showStore,
   employees = [],
+  canChooseStore = false,
   coverDrivers = [],
   managers = [],
   onManualSaved,
@@ -344,7 +345,18 @@ export function DailyHoursApproval({
   todayISO: string;
   showStore: boolean;
   /** Active roster, for the "someone forgot to clock in" picker. */
-  employees?: Array<{ id: string; name: string; is_driver?: boolean }>;
+  employees?: Array<{
+    id: string;
+    name: string;
+    is_driver?: boolean;
+    /** Home store — the missed-entry store picker defaults to it. */
+    store_id?: string | null;
+  }>;
+  /**
+   * Lets a missed entry be booked to a store other than the employee's own —
+   * admins only. A manager is held to their own store server-side either way.
+   */
+  canChooseStore?: boolean;
   coverDrivers?: Array<{ id: string; name: string }>;
   /** Manager accounts, for recording drops a manager covered off the clock. */
   managers?: Array<{ id: string; name: string }>;
@@ -553,9 +565,11 @@ export function DailyHoursApproval({
   // a window overlapping one already recorded.
   const manualCandidates = React.useMemo(() => {
     const shiftsThatDay = new Map<string, number>();
+    const storeThatDay = new Map<string, string | null>();
     for (const s of summaries) {
       if (s.event_date !== selectedDate) continue;
       shiftsThatDay.set(s.employee_id, Math.max(1, s.sessions.length));
+      storeThatDay.set(s.employee_id, s.store_id);
     }
     return employees
       .map((e) => ({
@@ -563,6 +577,8 @@ export function DailyHoursApproval({
         name: e.name,
         is_driver: e.is_driver,
         existing_shifts: shiftsThatDay.get(e.id) ?? 0,
+        store_id: e.store_id ?? null,
+        existing_store_id: storeThatDay.get(e.id) ?? null,
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [employees, summaries, selectedDate]);
@@ -1368,6 +1384,7 @@ export function DailyHoursApproval({
           candidates={
             showAddMissed === "cover_driver" ? coverManualCandidates : manualCandidates
           }
+          stores={canChooseStore ? stores : undefined}
           requireClockOut
           title={
             showAddMissed === "cover_driver"

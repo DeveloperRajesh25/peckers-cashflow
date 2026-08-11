@@ -437,11 +437,16 @@ export function EmployeesView({
           stores={stores}
           todayISO={todayISO}
           showStore={showStore}
+          canChooseStore={!lockToStore}
           employees={employees
             .filter(
               (e) =>
                 e.employment_status === "active" &&
-                (storeFilter === "all" || e.store_id === storeFilter),
+                // An admin picking the store must be able to reach someone based
+                // elsewhere — recording a Stevenage employee's day at Hitchin is
+                // the entire point, and the store filter would hide them. A
+                // manager stays scoped exactly as before.
+                (lockToStore ? storeFilter === "all" || e.store_id === storeFilter : true),
             )
             // is_driver decides whether the missed-entry card offers the
             // delivery boxes — a kitchen shift has no drops to record.
@@ -449,6 +454,7 @@ export function EmployeesView({
               id: e.id,
               name: e.name,
               is_driver: hasRole(e.position, "Driver"),
+              store_id: e.store_id,
             }))}
           coverDrivers={visibleCoverDrivers
             .filter((d) => d.is_active)

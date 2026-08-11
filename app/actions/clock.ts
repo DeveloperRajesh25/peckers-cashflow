@@ -872,6 +872,15 @@ export type ManualClockEntryInput = {
    * explicit zero — the distinction the "No deliveries" warning relies on.
    */
   deliveries?: DeliveryInput | null;
+  /**
+   * The store the work is attributed to. NOT a lookup — staff cross-cover, so
+   * where someone worked is a fact only the person recording it knows, and it
+   * decides which store's Tuesday payout pays the day AND whether the hours are
+   * NI or fully cash (see cashHoursFromStoreTotal). Omitted keeps the previous
+   * default: the manager's active store, or the employee's home store for an
+   * admin. Admin-only — a manager is held to their own store below.
+   */
+  store_id?: string | null;
 };
 
 export async function upsertManualClockEntry(
@@ -902,14 +911,31 @@ async function performManualClockEntry(input: ManualClockEntryInput) {
     throw new Error(`${employee.name} is not an active employee.`);
   }
 
-  // The work is attributed to the store the manager is running — that's where
-  // they saw the person. Admins fall back to the employee's home store.
-  const storeId =
+  // Where the work happened. Defaults to the store the manager is running —
+  // that's where they saw the person — or the employee's home store for an
+  // admin. But the default is only a default: a Stevenage employee who covered
+  // a day at Hitchin is paid by HITCHIN's sheet, and their hours there are fully
+  // cash rather than counting against their home NI allowance. An admin says so
+  // explicitly; assertClockEntryStore still holds a manager to their own store,
+  // so nobody can write hours onto a sheet they don't run.
+  const defaultStoreId =
     user.allowed!.role === "manager"
       ? resolveActiveStoreId(user.allowed) ?? employee.store_id
       : employee.store_id;
+  const storeId = input.store_id ?? defaultStoreId;
   if (!storeId) throw new Error("That employee has no store assigned.");
   assertClockEntryStore(user, storeId);
+
+  // A client-supplied id is checked against the real roster before any row is
+  // written against it.
+  if (input.store_id) {
+    const { data: store } = await supabase
+      .from("stores")
+      .select("id")
+      .eq("id", input.store_id)
+      .maybeSingle();
+    if (!store) throw new Error("That store no longer exists.");
+  }
 
   const clockInAt = londonWallClockToUtc(input.event_date, input.clock_in_time);
   if (isNaN(clockInAt.getTime())) throw new Error("Clock-in time is not valid.");
@@ -1106,6 +1132,11 @@ async function performManualClockEntry(input: ManualClockEntryInput) {
       clock_in_at: clockInAt.toISOString(),
       clock_out_at: clockOutAt?.toISOString() ?? null,
       reason: input.reason.trim(),
+      store_id: storeId,
+      // Flagged so a day booked away from the employee's home store — which
+      // moves it to another store's payout and pays it fully in cash — is
+      // findable in the audit log rather than inferred from the store id.
+      away_from_home_store: storeId !== employee.store_id,
       ...(deliveries
         ? {
             deliveries: {
