@@ -80,24 +80,54 @@ export function createServerSupabase() {
 }
 
 // React's cache() dedupes within a single request, so layout + page no longer
-// double-call Supabase for the same session lookup.
+// double-call Supabase for the same session lookup. NOTE that a server action
+// is its own request — the cache does NOT carry over from the page render that
+// preceded it, so every action pays this in full. That is what makes the cost
+// of the verification below worth caring about.
 export const getSessionUser = cache(async () => {
   try {
     const supabase = createServerSupabase();
+
+    // Reads (and refreshes, when due) the session from the cookie — no Auth
+    // round-trip of its own. The session's own user object is NOT trusted here;
+    // only the token string is used, and only the verified claims below decide
+    // who this is.
     const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user || !user.email) return null;
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return null;
+
+    // getClaims() verifies the token's signature locally against the project's
+    // public JWKS via WebCrypto — no /auth/v1/user round-trip. Measured against
+    // this project in Update 104: the getUser() call this replaces costs
+    // 205–403 ms, local verification 0.5–0.9 ms. The SDK caches the key set
+    // process-wide, so after the first call this is pure CPU. (On a project
+    // signing with a symmetric HS* key the SDK falls back to getUser(), which
+    // is exactly the old behaviour — this can only be as slow as it was.)
+    //
+    // A bad signature comes back as an error, but an EXPIRED token throws a
+    // plain Error out of getClaims(). Both mean "not signed in" here, and the
+    // throw must not reach the outer catch, which reserves that path for
+    // genuine connectivity failures.
+    const claims = await supabase.auth
+      .getClaims(session.access_token)
+      .then((r) => (r.error ? null : (r.data?.claims ?? null)))
+      .catch(() => null);
+    if (!claims) return null;
+
+    const id = typeof claims.sub === "string" ? claims.sub : null;
+    const email = typeof claims.email === "string" ? claims.email : null;
+    if (!id || !email) return null;
 
     const { data: allowed } = await supabase
       .from("allowed_users")
       .select("*")
-      .ilike("email", user.email)
+      .ilike("email", email)
       .maybeSingle();
 
     return {
-      id: user.id,
-      email: user.email,
+      id,
+      email,
       allowed: allowed ?? null,
     };
   } catch (err) {
