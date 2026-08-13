@@ -11,9 +11,9 @@ import { TrashIcon, ClockIcon, CheckIcon } from "@/components/ui/icons";
 import { deleteEmployeeHours, approveClockedHours } from "@/app/actions/employees";
 import type {
   ClockWeeklySummary,
-  Employee,
   EmployeeHoursComputed,
   EmployeeHoursSource,
+  EmployeeSummary,
 } from "@/lib/types";
 import {
   cn,
@@ -118,7 +118,7 @@ export function HoursTable({
   onApproved,
   hideApprove = false,
 }: {
-  employees: Employee[];
+  employees: EmployeeSummary[];
   rows: EmployeeHoursComputed[];
   clockSummaries?: ClockWeeklySummary[];
   onDeleted: (deletedId: string) => void;

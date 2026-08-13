@@ -42,6 +42,7 @@ import type {
   CoverDriverShift,
   ManagerClockEvent,
   ManagerShift,
+  RotaHistoryShift,
   RotaShift,
   ShiftPreset,
   Store,
@@ -59,7 +60,10 @@ function presetShort(t: ShiftPreset | null): string | null {
 type Props = {
   stores: Store[];
   employees: Employee[];
+  /** Bookings inside the visible range only. */
   shifts: RotaShift[];
+  /** The 4 weeks before the range, for the rolling average — never rendered. */
+  historyShifts?: RotaHistoryShift[];
   clocks: ClockEvent[];
   weeklyDeliveries: WeeklyDelivery[];
   schedules?: EmployeeScheduleDay[];
@@ -86,6 +90,7 @@ export function RotaView({
   stores,
   employees,
   shifts,
+  historyShifts = [],
   clocks,
   weeklyDeliveries,
   schedules = [],
@@ -441,11 +446,14 @@ export function RotaView({
     return m;
   }, [clocks, weekDays]);
 
-  // 4-week rolling avg per employee (across all stores) using prior weeks
+  // 4-week rolling avg per employee (across all stores) using prior weeks.
+  // History rows arrive separately from the visible range's bookings but feed
+  // the same week buckets, oldest first so `slice(-4)` takes the latest four.
   const fourWkAvg = React.useMemo(() => {
     const result = new Map<string, number>();
+    const allShifts: RotaHistoryShift[] = [...historyShifts, ...shifts];
     for (const emp of employees) {
-      const empShifts = shifts.filter(
+      const empShifts = allShifts.filter(
         (s) => s.employee_id === emp.id && !s.is_day_off,
       );
       const byWeek = new Map<string, number>();
@@ -462,7 +470,7 @@ export function RotaView({
       result.set(emp.id, avg);
     }
     return result;
-  }, [shifts, employees, weekStart]);
+  }, [shifts, historyShifts, employees, weekStart]);
 
   // Navigate by pushing the range to the URL; the server page re-fetches the
   // shifts/clocks for whatever range is requested.

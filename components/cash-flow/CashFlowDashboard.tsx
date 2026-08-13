@@ -10,6 +10,7 @@ import {
   ListIcon,
   WalletIcon,
 } from "@/components/ui/icons";
+import { loadStoreCashView } from "@/app/actions/cash-flow";
 import { formatDDMMYYYY, formatGBP, formatTimeOnly, weekLabel, parseISODate } from "@/lib/utils";
 import type { PrePaymentSummary } from "@/lib/types";
 import type { RunningBalanceRow } from "@/lib/cash-flow";
@@ -84,17 +85,58 @@ function PageLink({
 }
 
 export function CashFlowDashboard({
+  stores,
   views,
   weekStart,
   basePath,
 }: {
+  /** Every store — the tabs are driven by this, NOT by what has loaded. */
+  stores: { id: string; name: string }[];
+  /** The store the page opened on. Others arrive from loadStoreCashView. */
   views: StoreCashView[];
   weekStart: string;
   basePath: string;
 }) {
-  const [activeId, setActiveId] = React.useState(views[0]?.store.id ?? "");
+  const [activeId, setActiveId] = React.useState(
+    views[0]?.store.id ?? stores[0]?.id ?? "",
+  );
+  // Keyed by store AND week — stepping to another week must not serve the
+  // previous week's figures back for a store already in the map.
+  const [loaded, setLoaded] = React.useState<Map<string, StoreCashView>>(() => {
+    const seed = new Map<string, StoreCashView>();
+    for (const v of views) seed.set(`${v.store.id}:${weekStart}`, v);
+    return seed;
+  });
+  const [loading, setLoading] = React.useState(false);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
+
+  const activeKey = `${activeId}:${weekStart}`;
+  const activeView = loaded.get(activeKey);
+
+  React.useEffect(() => {
+    if (!activeId || loaded.has(activeKey)) return;
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+    loadStoreCashView({ store_id: activeId, week_start: weekStart })
+      .then((view) => {
+        if (!cancelled) setLoaded((prev) => new Map(prev).set(activeKey, view));
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setLoadError(err instanceof Error ? err.message : "Failed to load this store");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId, activeKey, weekStart, loaded]);
+
   // Each store is a separate business — show one at a time, never combined.
-  const shown = views.length > 1 ? views.filter((v) => v.store.id === activeId) : views;
+  const shown = activeView ? [activeView] : [];
 
   return (
     <div className="flex flex-col gap-6">
@@ -102,25 +144,42 @@ export function CashFlowDashboard({
         <p className="text-sm text-text-muted">
           Week of {weekLabel(parseISODate(weekStart))}
         </p>
-        {views.length > 1 && (
+        {stores.length > 1 && (
           <div className="flex gap-2 flex-wrap">
-            {views.map((v) => (
+            {stores.map((s) => (
               <button
-                key={v.store.id}
-                onClick={() => setActiveId(v.store.id)}
+                key={s.id}
+                onClick={() => setActiveId(s.id)}
                 className={
                   "px-4 h-9 rounded-xl border text-sm font-medium transition-colors " +
-                  (v.store.id === activeId
+                  (s.id === activeId
                     ? "bg-gold text-black border-gold"
                     : "bg-surface text-text-primary border-border hover:bg-surface-hover")
                 }
               >
-                {v.store.name}
+                {s.name}
               </button>
             ))}
           </div>
         )}
       </div>
+
+      {loadError && (
+        <Card className="border-danger/40">
+          <p className="text-sm text-danger">
+            Couldn&apos;t load this store&apos;s cash flow — {loadError}. Nothing below is
+            trustworthy for this store; reload before acting on it.
+          </p>
+        </Card>
+      )}
+
+      {!loadError && !activeView && (
+        <Card>
+          <p className="text-sm text-text-muted">
+            {loading ? "Loading…" : "No cash flow to show for this store."}
+          </p>
+        </Card>
+      )}
 
       {shown.map((v) => {
         const draw = v.summary.post_office_draw;

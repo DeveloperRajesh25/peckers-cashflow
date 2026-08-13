@@ -2,7 +2,8 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { createServerSupabase, requireRole } from "@/lib/supabase-server";
 import { resolveActiveStoreId } from "@/lib/types";
 import { AlertsView } from "@/components/alerts/AlertsView";
-import type { Employee, Store, SystemAlert } from "@/lib/types";
+import { listAlerts } from "@/app/actions/alerts";
+import type { Employee, Store } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -11,14 +12,8 @@ export default async function ManagerAlertsPage() {
   const storeId = resolveActiveStoreId(user.allowed) ?? "";
   const supabase = createServerSupabase();
 
-  const [alertsRes, storesRes, employeesRes] = await Promise.all([
-    supabase
-      .from("alerts")
-      .select("*")
-      .eq("store_id", storeId)
-      .order("resolved")
-      .order("created_at", { ascending: false })
-      .limit(200),
+  const [firstPage, storesRes, employeesRes] = await Promise.all([
+    listAlerts({ page: 1, storeId, includeResolved: false }),
     supabase.from("stores").select("*").eq("id", storeId),
     supabase
       .from("employees")
@@ -34,7 +29,7 @@ export default async function ManagerAlertsPage() {
         description="Warnings for your store: hours variance, deliveries, late or missing clock-ins."
       />
       <AlertsView
-        initialAlerts={(alertsRes.data ?? []) as SystemAlert[]}
+        initialPage={firstPage}
         stores={(storesRes.data ?? []) as Store[]}
         employees={(employeesRes.data ?? []) as Employee[]}
       />

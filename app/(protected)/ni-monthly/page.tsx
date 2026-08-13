@@ -9,11 +9,12 @@ export default async function NiMonthlyPage() {
   await requireRole(["admin"]);
   const supabase = createServerSupabase();
 
-  const [{ data: stores }, rows, manualRows] = await Promise.all([
-    supabase.from("stores").select("id, name").order("name"),
-    loadNiRows(),
-    loadManualNiRows(),
-  ]);
+  const { data: stores } = await supabase.from("stores").select("id, name").order("name");
+  // Only the tab that opens first — NiMonthlyView fetches the other stores on switch.
+  const firstStoreId = stores?.[0]?.id ?? null;
+  const [rows, manualRows] = firstStoreId
+    ? await Promise.all([loadNiRows(firstStoreId), loadManualNiRows(firstStoreId)])
+    : [[], []];
 
   return (
     <>

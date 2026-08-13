@@ -180,6 +180,23 @@ export type Employee = {
   long_delivery_rate: number | null;
 };
 
+/**
+ * The employee columns the Daily Approval and Weekly Log tabs read. The full
+ * row — bank details, DOB, contact email — is only ever rendered on the
+ * Employees (cards) tab, so it is fetched when that tab is opened.
+ */
+export type EmployeeSummary = Pick<
+  Employee,
+  | "id"
+  | "name"
+  | "position"
+  | "store_id"
+  | "employment_status"
+  | "is_active"
+  | "hourly_rate"
+  | "hourly_ni_rate"
+>;
+
 /** Parse pipe-delimited positions string into array. */
 export function parsePositions(positionStr: string | null): EmployeePosition[] {
   if (!positionStr) return [];
@@ -436,6 +453,16 @@ export type RotaShift = {
   created_by: string | null;
   updated_by: string | null;
 };
+
+/**
+ * A prior-weeks shift, carrying only what the Rota's 4-week rolling average
+ * reads. The average spans every store, so the history can't be store-scoped —
+ * narrowing the columns is what keeps it off the critical path instead.
+ */
+export type RotaHistoryShift = Pick<
+  RotaShift,
+  "employee_id" | "shift_date" | "scheduled_hours" | "is_day_off"
+>;
 
 /**
  * One day of an employee's recurring weekly schedule template.

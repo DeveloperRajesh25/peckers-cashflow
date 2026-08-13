@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
 import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -9,7 +8,11 @@ import { Modal } from "@/components/ui/Modal";
 import { Input, Select } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { DownloadIcon, PlusIcon, TrashIcon } from "@/components/ui/icons";
-import { addManualNiRecord, deleteManualNiRecord } from "@/app/actions/ni";
+import {
+  addManualNiRecord,
+  deleteManualNiRecord,
+  loadNiForStore,
+} from "@/app/actions/ni";
 import { downloadCSV, formatGBP, formatGBPPlain, toCSV } from "@/lib/utils";
 import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 
@@ -32,6 +35,9 @@ export type ManualNiRow = NiRow & { id: string; manual: true };
 
 type StoreOpt = { id: string; name: string };
 
+/** One store's NI figures. The page ships the first store's; the rest arrive on switch. */
+type StoreSlice = { rows: NiRow[]; manualRows: ManualNiRow[] };
+
 function monthLabel(key: string): string {
   const [y, m] = key.split("-").map(Number);
   return new Date(y, m - 1, 1).toLocaleDateString("en-GB", {
@@ -51,6 +57,7 @@ export function NiMonthlyView({
   stores,
   isAdmin,
 }: {
+  /** The FIRST store's rows only — other stores are fetched on tab switch. */
   rows: NiRow[];
   /** Persisted hand-added NI lines (synced across admin + manager dashboards). */
   manualRows: ManualNiRow[];
@@ -58,9 +65,16 @@ export function NiMonthlyView({
   isAdmin: boolean;
 }) {
   const toast = useToast();
-  const router = useRouter();
   const [activeStoreId, setActiveStoreId] = React.useState(stores[0]?.id ?? "");
   const activeStore = stores.find((s) => s.id === activeStoreId) ?? stores[0];
+
+  const [slices, setSlices] = React.useState<Map<string, StoreSlice>>(() => {
+    const seed = new Map<string, StoreSlice>();
+    if (stores[0]?.id) seed.set(stores[0].id, { rows, manualRows });
+    return seed;
+  });
+  const [loading, setLoading] = React.useState(false);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
 
   // Hand-added rows for an off-system NI line in the summary. These are now
   // persisted (manual_ni_records) so they survive refreshes and show for every
@@ -68,9 +82,50 @@ export function NiMonthlyView({
   const [adding, setAdding] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
 
+  const activeSlice = activeStore ? slices.get(activeStore.id) : undefined;
+
+  React.useEffect(() => {
+    if (!activeStore || slices.has(activeStore.id)) return;
+    const storeId = activeStore.id;
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
+    loadNiForStore(storeId)
+      .then((slice) => {
+        if (!cancelled) setSlices((prev) => new Map(prev).set(storeId, slice));
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setLoadError(err instanceof Error ? err.message : "Failed to load NI figures");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeStore, slices]);
+
+  /** Drop and re-pull one store's slice — a manual row changed it. */
+  async function reloadStore(storeId: string) {
+    try {
+      const slice = await loadNiForStore(storeId);
+      setSlices((prev) => new Map(prev).set(storeId, slice));
+      setLoadError(null);
+    } catch (err) {
+      setSlices((prev) => {
+        const next = new Map(prev);
+        next.delete(storeId);
+        return next;
+      });
+      setLoadError(err instanceof Error ? err.message : "Failed to reload NI figures");
+    }
+  }
+
   const storeRows = React.useMemo(
-    () => [...rows, ...manualRows].filter((r) => r.store_id === activeStore?.id),
-    [rows, manualRows, activeStore?.id],
+    () => (activeSlice ? [...activeSlice.rows, ...activeSlice.manualRows] : []),
+    [activeSlice],
   );
 
   async function addManualRow(input: {
@@ -85,7 +140,7 @@ export function NiMonthlyView({
       await addManualNiRecord({ store_id: activeStore.id, ...input });
       setAdding(false);
       toast.success("Manual NI record saved");
-      router.refresh();
+      await reloadStore(activeStore.id);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save record");
     } finally {
@@ -94,11 +149,12 @@ export function NiMonthlyView({
   }
 
   async function removeManualRow(id: string) {
+    if (!activeStore) return;
     setBusy(true);
     try {
       await deleteManualNiRecord(id);
       toast.success("Manual NI record removed");
-      router.refresh();
+      await reloadStore(activeStore.id);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to remove record");
     } finally {
@@ -205,7 +261,18 @@ export function NiMonthlyView({
         </div>
       </div>
 
-      {months.length === 0 ? (
+      {loadError ? (
+        <Card className="border-danger/40">
+          <p className="text-sm text-danger">
+            Couldn&apos;t load {activeStore.name}&apos;s NI figures — {loadError}. These
+            numbers are incomplete; reload before relying on them.
+          </p>
+        </Card>
+      ) : loading || !activeSlice ? (
+        <Card>
+          <p className="text-sm text-text-muted">Loading {activeStore.name}…</p>
+        </Card>
+      ) : months.length === 0 ? (
         <Card>
           <p className="text-sm text-text-muted">
             No approved hours for {activeStore.name} yet. Approve clocked hours on the

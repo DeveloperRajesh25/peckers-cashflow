@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
 import { resolveActiveStoreId } from "@/lib/types";
+import { loadManualNiRows, loadNiRows } from "@/lib/ni-data";
+import type { ManualNiRow, NiRow } from "@/components/ni/NiMonthlyView";
 import { writeAudit } from "./audit";
 
 type SessionUser = NonNullable<Awaited<ReturnType<typeof getSessionUser>>>;
@@ -29,6 +31,24 @@ function assertStoreAccess(user: SessionUser, storeId: string) {
 function revalidateNi() {
   revalidatePath("/ni-monthly");
   revalidatePath("/manager/ni-monthly");
+}
+
+/**
+ * One store's NI slice, fetched on demand when an admin switches store tabs so
+ * the page only pays for the store it opens on.
+ */
+export async function loadNiForStore(
+  storeId: string,
+): Promise<{ rows: NiRow[]; manualRows: ManualNiRow[] }> {
+  const user = await requireStaff();
+  if (!storeId) throw new Error("Store is required");
+  assertStoreAccess(user, storeId);
+
+  const [rows, manualRows] = await Promise.all([
+    loadNiRows(storeId),
+    loadManualNiRows(storeId),
+  ]);
+  return { rows, manualRows };
 }
 
 /**

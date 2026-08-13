@@ -5,6 +5,8 @@ import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
 import { resolveActiveStoreId } from "@/lib/types";
 import { writeAudit } from "./audit";
 import { scanForAlertsBackground } from "./alerts";
+import { buildStoreCashView } from "@/lib/cash-flow-data";
+import type { StoreCashView } from "@/components/cash-flow/CashFlowDashboard";
 import { addDays, parseISODate, toISODate, todayISO } from "@/lib/utils";
 
 async function requireStaff() {
@@ -32,6 +34,35 @@ function revalidateCashFlow() {
   ]) {
     revalidatePath(p);
   }
+}
+
+/**
+ * One store's cash-flow dashboard, fetched when an admin switches store tabs.
+ * The page builds the first store's view only.
+ */
+export async function loadStoreCashView(input: {
+  store_id: string;
+  week_start: string;
+}): Promise<StoreCashView> {
+  const user = await requireStaff();
+  if (!input.store_id) throw new Error("Store is required");
+  if (user.allowed!.role === "manager") {
+    const activeStore = resolveActiveStoreId(user.allowed);
+    if (!activeStore) throw new Error("No store assigned to your account.");
+    if (input.store_id !== activeStore) {
+      throw new Error("You can only view cash flow for the store you're managing.");
+    }
+  }
+
+  const supabase = createServerSupabase();
+  const { data: store } = await supabase
+    .from("stores")
+    .select("id, name")
+    .eq("id", input.store_id)
+    .maybeSingle();
+  if (!store) throw new Error("Store not found");
+
+  return buildStoreCashView(store, input.week_start);
 }
 
 /**

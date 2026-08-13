@@ -82,65 +82,72 @@ export async function loadWeekEntries(
   return (data ?? []) as DailyCashEntry[];
 }
 
-/** Rich per-store dashboard view models for the cash flow dashboard. */
-export async function buildDashboardViews(
-  stores: StoreOpt[],
+/**
+ * One store's dashboard view model. The four reads are independent of each
+ * other, so they go out together rather than one at a time.
+ */
+export async function buildStoreCashView(
+  store: StoreOpt,
   weekStart: string,
-): Promise<StoreCashView[]> {
+): Promise<StoreCashView> {
   const supabase = createServerSupabase();
   const weekEnd = toISODate(addDays(parseISODate(weekStart), 6));
-  const views: StoreCashView[] = [];
 
-  for (const store of stores) {
-    const summary = await getPrePaymentSummary({ store_id: store.id, week_start: weekStart });
-
-    const { data: entries } = await supabase
+  const [summary, entriesRes, lastRes, payoutRes] = await Promise.all([
+    getPrePaymentSummary({ store_id: store.id, week_start: weekStart }),
+    supabase
       .from("daily_cash_entries")
       .select("*")
       .eq("store_id", store.id)
       .gte("entry_date", weekStart)
       .lte("entry_date", weekEnd)
-      .order("entry_date");
-    const weekEntries = (entries ?? []) as DailyCashEntry[];
-
-    const rows = runningBalanceRows(weekEntries, summary.opening_balance);
-    const runningBalance = rows.length ? rows[rows.length - 1].running_balance : summary.opening_balance;
-    const discrepancyDays = weekEntries.filter(
-      (e) => Math.abs(Number(e.difference) || 0) > 0.001,
-    ).length;
-
-    const { data: last } = await supabase
+      .order("entry_date"),
+    supabase
       .from("daily_cash_entries")
       .select("submitted_by_name, edited_by_name, entry_date, created_at, edited_at")
       .eq("store_id", store.id)
       .order("created_at", { ascending: false })
       .limit(1)
-      .maybeSingle();
-
-    const { data: payout } = await supabase
+      .maybeSingle(),
+    supabase
       .from("cash_payouts")
       .select("status")
       .eq("store_id", store.id)
       .eq("week_start_date", weekStart)
-      .maybeSingle();
+      .maybeSingle(),
+  ]);
 
-    views.push({
-      store,
-      openingBalance: summary.opening_balance,
-      runningBalance,
-      rows,
-      discrepancyDays,
-      summary,
-      lastEntry: last
-        ? {
-            name: last.edited_by_name ?? last.submitted_by_name,
-            date: last.entry_date,
-            at: last.edited_at ?? last.created_at,
-          }
-        : null,
-      payoutStatus: (payout?.status as "draft" | "confirmed" | undefined) ?? "none",
-    });
-  }
+  const weekEntries = (entriesRes.data ?? []) as DailyCashEntry[];
+  const rows = runningBalanceRows(weekEntries, summary.opening_balance);
+  const runningBalance = rows.length
+    ? rows[rows.length - 1].running_balance
+    : summary.opening_balance;
+  const last = lastRes.data;
 
-  return views;
+  return {
+    store,
+    openingBalance: summary.opening_balance,
+    runningBalance,
+    rows,
+    discrepancyDays: weekEntries.filter(
+      (e) => Math.abs(Number(e.difference) || 0) > 0.001,
+    ).length,
+    summary,
+    lastEntry: last
+      ? {
+          name: last.edited_by_name ?? last.submitted_by_name,
+          date: last.entry_date,
+          at: last.edited_at ?? last.created_at,
+        }
+      : null,
+    payoutStatus: (payoutRes.data?.status as "draft" | "confirmed" | undefined) ?? "none",
+  };
+}
+
+/** Rich per-store dashboard view models for the cash flow dashboard. */
+export async function buildDashboardViews(
+  stores: StoreOpt[],
+  weekStart: string,
+): Promise<StoreCashView[]> {
+  return Promise.all(stores.map((store) => buildStoreCashView(store, weekStart)));
 }

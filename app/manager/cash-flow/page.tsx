@@ -44,7 +44,12 @@ export default async function ManagerCashFlowPage({
         title="Cash Flow"
         description="Daily reconciliation, running balance, and Tuesday wage forecast."
       />
-      <CashFlowDashboard views={views} weekStart={weekStart} basePath="/manager/cash-flow" />
+      <CashFlowDashboard
+        stores={store ? [store] : []}
+        views={views}
+        weekStart={weekStart}
+        basePath="/manager/cash-flow"
+      />
     </>
   );
 }

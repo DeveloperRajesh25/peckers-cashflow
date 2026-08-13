@@ -2,7 +2,6 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { createServerSupabase, requireRole } from "@/lib/supabase-server";
 import { hasRole, resolveActiveStoreId } from "@/lib/types";
 import { EmployeesView } from "@/components/employees/EmployeesView";
-import { withContactEmails } from "@/lib/contact-email";
 import { getAppSettings } from "@/app/actions/settings";
 import { addDays, groupClockEventsByWeek, mapClockEventsToDaily, startOfISOWeek, toISODate, todayISO } from "@/lib/utils";
 import { summariseCoverDriverDays } from "@/lib/cover-driver-hours";
@@ -10,11 +9,16 @@ import { mapManagerDaysToApproval } from "@/lib/manager-clock-sessions";
 import type {
   CoverDriver,
   CoverDriverClockEvent,
-  Employee,
+  EmployeeSummary,
   ManagerClockEvent,
 } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+
+// Daily Approval and the Weekly Log need identity, store and rates — nothing
+// else. The full profile is loaded by the Employees tab that renders it.
+const APPROVAL_EMPLOYEE_COLUMNS =
+  "id, name, position, store_id, employment_status, is_active, hourly_rate, hourly_ni_rate";
 
 export default async function ManagerEmployeesPage() {
   const user = await requireRole(["manager"]);
@@ -26,7 +30,6 @@ export default async function ManagerEmployeesPage() {
 
   const [
     empRes,
-    hoursRes,
     storesRes,
     clocksRes,
     sessionsRes,
@@ -38,15 +41,10 @@ export default async function ManagerEmployeesPage() {
   ] = await Promise.all([
     supabase
       .from("employees")
-      .select("*")
+      .select(APPROVAL_EMPLOYEE_COLUMNS)
       .eq("store_id", storeId)
       .order("employment_status")
       .order("name"),
-    supabase
-      .from("employee_hours_computed")
-      .select("*")
-      .order("week_start_date", { ascending: false })
-      .limit(500),
     supabase.from("stores").select("*").eq("id", storeId),
     supabase
       .from("clock_events")
@@ -91,7 +89,7 @@ export default async function ManagerEmployeesPage() {
       .order("event_date", { ascending: false }),
   ]);
 
-  const employees = await withContactEmails(supabase, (empRes.data ?? []) as Employee[]);
+  const employees = (empRes.data ?? []) as unknown as EmployeeSummary[];
   const empMap = new Map(
     employees.map((e) => ({
       id: e.id,
@@ -148,7 +146,6 @@ export default async function ManagerEmployeesPage() {
       />
       <EmployeesView
         initialEmployees={employees}
-        initialHours={(hoursRes.data ?? []) as any[]}
         coverDrivers={coverDrivers}
         coverDriverDays={coverDriverDays}
         coverDriverHours={(coverHoursRes.data ?? []) as any[]}

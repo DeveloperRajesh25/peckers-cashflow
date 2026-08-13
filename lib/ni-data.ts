@@ -4,6 +4,16 @@ import { createServerSupabase } from "./supabase-server";
 import type { ManualNiRow, NiRow } from "@/components/ni/NiMonthlyView";
 import type { EmployeeHoursComputed } from "./types";
 
+type NiHoursRow = Pick<
+  EmployeeHoursComputed,
+  | "employee_id"
+  | "employee_name"
+  | "week_start_date"
+  | "total_hours_worked"
+  | "bank_hours"
+  | "hourly_rate_snapshot"
+>;
+
 /**
  * Approved weekly hours flattened into NI rows (one per employee-week), tagged
  * with the employee's store and the calendar month of the week's Monday.
@@ -12,15 +22,9 @@ import type { EmployeeHoursComputed } from "./types";
 export async function loadNiRows(storeId?: string | null): Promise<NiRow[]> {
   const supabase = createServerSupabase();
 
-  const [hoursRes, employeesRes] = await Promise.all([
-    supabase
-      .from("employee_hours_computed")
-      .select("*")
-      .eq("approved", true)
-      .order("week_start_date", { ascending: false })
-      .limit(2000),
-    supabase.from("employees").select("id, store_id, hourly_cash_rate"),
-  ]);
+  let employeeQuery = supabase.from("employees").select("id, store_id, hourly_cash_rate");
+  if (storeId) employeeQuery = employeeQuery.eq("store_id", storeId);
+  const employeesRes = await employeeQuery;
 
   const empById = new Map(
     (employeesRes.data ?? []).map(
@@ -31,7 +35,23 @@ export async function loadNiRows(storeId?: string | null): Promise<NiRow[]> {
     ),
   );
 
-  const rows = (hoursRes.data ?? []) as EmployeeHoursComputed[];
+  if (storeId && empById.size === 0) return [];
+
+  // employee_hours_computed carries no store_id, so a store scope has to be
+  // expressed as the store's employee ids. Doing it here rather than in JS keeps
+  // the 2000-row cap from being spent on the other store's weeks.
+  let hoursQuery = supabase
+    .from("employee_hours_computed")
+    .select(
+      "employee_id, employee_name, week_start_date, total_hours_worked, bank_hours, hourly_rate_snapshot",
+    )
+    .eq("approved", true);
+  if (storeId) hoursQuery = hoursQuery.in("employee_id", Array.from(empById.keys()));
+  const hoursRes = await hoursQuery
+    .order("week_start_date", { ascending: false })
+    .limit(2000);
+
+  const rows = (hoursRes.data ?? []) as NiHoursRow[];
   const out: NiRow[] = [];
   for (const r of rows) {
     const emp = empById.get(r.employee_id);

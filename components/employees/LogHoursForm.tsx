@@ -8,7 +8,7 @@ import { useToast } from "@/components/ui/Toast";
 import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import { HoursMinsInput } from "@/components/ui/HoursMinsInput";
 import { logEmployeeHours } from "@/app/actions/employees";
-import type { Employee, EmployeeHoursComputed } from "@/lib/types";
+import type { EmployeeHoursComputed, EmployeeSummary } from "@/lib/types";
 import { formatINR, formatGBP, parseHoursMinsInput, startOfISOWeek, toISODate } from "@/lib/utils";
 
 const BANK_LIMIT = 20;
@@ -17,7 +17,7 @@ export function LogHoursForm({
   employees,
   onLogged,
 }: {
-  employees: Employee[];
+  employees: EmployeeSummary[];
   onLogged: (freshHours: EmployeeHoursComputed[]) => void;
 }) {
   const toast = useToast();

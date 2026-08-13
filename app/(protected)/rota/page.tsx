@@ -20,11 +20,17 @@ import type {
   EmployeeScheduleDay,
   ManagerClockEvent,
   ManagerShift,
+  RotaHistoryShift,
   RotaShift,
   Store,
   ClockEvent,
   WeeklyDelivery,
 } from "@/lib/types";
+import {
+  ROTA_CLOCK_COLUMNS,
+  ROTA_HISTORY_SHIFT_COLUMNS,
+  ROTA_SHIFT_COLUMNS,
+} from "@/lib/rota-columns";
 
 export const dynamic = "force-dynamic";
 
@@ -45,11 +51,16 @@ export default async function RotaPage({
 
   // For 4-week rolling avg we also fetch the prior 4 weeks of shifts
   const fourWeeksBack = toISODate(addDays(parseISODate(weekStartIso), -28));
+  const dayBeforeRange = toISODate(addDays(parseISODate(startIso), -1));
+  // No clock cell exists outside the visible range, and none can exist after
+  // today — anything else the query returns is thrown away client-side.
+  const clockEndIso = endIso < todayISO() ? endIso : todayISO();
 
   const [
     storesRes,
     employeesRes,
     shiftsRes,
+    shiftHistoryRes,
     clocksRes,
     deliveriesRes,
     schedulesRes,
@@ -69,14 +80,21 @@ export default async function RotaPage({
       .order("name"),
     supabase
       .from("rota_shifts")
-      .select("*")
+      .select(ROTA_SHIFT_COLUMNS)
+      .gte("shift_date", startIso)
+      .lte("shift_date", endIso)
+      .order("shift_date"),
+    supabase
+      .from("rota_shifts")
+      .select(ROTA_HISTORY_SHIFT_COLUMNS)
       .gte("shift_date", fourWeeksBack)
-      .lte("shift_date", endIso),
+      .lte("shift_date", dayBeforeRange)
+      .order("shift_date"),
     supabase
       .from("clock_events")
-      .select("*")
-      .gte("event_date", fourWeeksBack)
-      .lte("event_date", todayISO()),
+      .select(ROTA_CLOCK_COLUMNS)
+      .gte("event_date", startIso)
+      .lte("event_date", clockEndIso),
     supabase
       .from("weekly_deliveries")
       .select("*")
@@ -92,7 +110,7 @@ export default async function RotaPage({
       .from("manager_clock_events")
       .select("*")
       .gte("event_date", startIso)
-      .lte("event_date", todayISO()),
+      .lte("event_date", clockEndIso),
     supabase.from("cover_drivers").select("*").eq("is_active", true),
     supabase
       .from("cover_driver_shifts")
@@ -104,7 +122,7 @@ export default async function RotaPage({
       .from("cover_driver_clock_events")
       .select("*")
       .gte("event_date", startIso)
-      .lte("event_date", todayISO()),
+      .lte("event_date", clockEndIso),
   ]);
 
   return (
@@ -117,6 +135,7 @@ export default async function RotaPage({
         stores={(storesRes.data ?? []) as Store[]}
         employees={(employeesRes.data ?? []) as Employee[]}
         shifts={(shiftsRes.data ?? []) as RotaShift[]}
+        historyShifts={(shiftHistoryRes.data ?? []) as RotaHistoryShift[]}
         clocks={(clocksRes.data ?? []) as ClockEvent[]}
         weeklyDeliveries={(deliveriesRes.data ?? []) as WeeklyDelivery[]}
         schedules={(schedulesRes.data ?? []) as EmployeeScheduleDay[]}

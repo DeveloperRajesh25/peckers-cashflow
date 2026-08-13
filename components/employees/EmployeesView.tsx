@@ -22,6 +22,8 @@ import { Select } from "@/components/ui/Input";
 import {
   approveDailyHours,
   approveDailyHoursForDate,
+  loadEmployeeDirectory,
+  loadWeeklyHoursLog,
   setShiftApproval,
   unapproveDailyHours,
 } from "@/app/actions/employees";
@@ -44,6 +46,7 @@ import type {
   CoverDriverHoursComputed,
   Employee,
   EmployeeHoursComputed,
+  EmployeeSummary,
   ManagerDailyApprovalRow,
   Store,
 } from "@/lib/types";
@@ -66,8 +69,8 @@ function toDeliveryInput(d: DeliveryEdit) {
 }
 
 type Props = {
-  initialEmployees: Employee[];
-  initialHours: EmployeeHoursComputed[];
+  /** Identity/store/rates only. Full profiles load with the Employees tab. */
+  initialEmployees: EmployeeSummary[];
   /** Cover drivers are a separate module — they share this page, nothing else. */
   coverDrivers?: CoverDriver[];
   coverDriverDays?: CoverDriverDaySummary[];
@@ -118,7 +121,6 @@ type TabId = "daily" | "people" | "weekly";
 
 export function EmployeesView({
   initialEmployees,
-  initialHours,
   coverDrivers = [],
   coverDriverDays = [],
   coverDriverHours = [],
@@ -146,12 +148,79 @@ export function EmployeesView({
     lockToStore && defaultStoreId ? defaultStoreId : defaultStoreId ?? "all",
   );
 
-  // Store hours in state so we can update it instantly on save/delete without
-  // relying on router.refresh() (which is async and can hit the router cache).
-  const [hours, setHours] = React.useState<EmployeeHoursComputed[]>(initialHours);
+  // ---- Lazily-loaded tab slices ----
+  // The page ships Daily Approval's data only. These two arrive when their tab
+  // is first opened, and are dropped again whenever something that could change
+  // them succeeds. `null` means "not loaded", which is NOT the same as empty.
+  const [hours, setHours] = React.useState<EmployeeHoursComputed[] | null>(null);
+  const [weeklyError, setWeeklyError] = React.useState<string | null>(null);
+  const [weeklyNonce, setWeeklyNonce] = React.useState(0);
+  const weeklyRequested = React.useRef(false);
+
+  const [directory, setDirectory] = React.useState<Employee[] | null>(null);
+  const [directoryError, setDirectoryError] = React.useState<string | null>(null);
+  const [directoryNonce, setDirectoryNonce] = React.useState(0);
+  const directoryRequested = React.useRef(false);
+
   React.useEffect(() => {
-    setHours(initialHours);
-  }, [initialHours]);
+    if (tab !== "weekly" || weeklyRequested.current) return;
+    weeklyRequested.current = true;
+    let cancelled = false;
+    setWeeklyError(null);
+    loadWeeklyHoursLog()
+      .then((rows) => {
+        if (!cancelled) setHours(rows);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        weeklyRequested.current = false;
+        setWeeklyError(err instanceof Error ? err.message : "Failed to load weekly hours");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, weeklyNonce]);
+
+  React.useEffect(() => {
+    if (tab !== "people" || directoryRequested.current) return;
+    directoryRequested.current = true;
+    let cancelled = false;
+    setDirectoryError(null);
+    loadEmployeeDirectory()
+      .then((rows) => {
+        if (!cancelled) setDirectory(rows);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        directoryRequested.current = false;
+        setDirectoryError(err instanceof Error ? err.message : "Failed to load employees");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, directoryNonce]);
+
+  /**
+   * Drop both lazy slices. Approving a day rewrites the weekly `employee_hours`
+   * rollup and a profile edit rewrites the cards, and `revalidatePath` does not
+   * reach a Map held in the browser — so every mutation has to say so here.
+   */
+  const invalidateSlices = React.useCallback(() => {
+    weeklyRequested.current = false;
+    directoryRequested.current = false;
+    setHours(null);
+    setDirectory(null);
+    setWeeklyNonce((n) => n + 1);
+    setDirectoryNonce((n) => n + 1);
+  }, []);
+
+  /** An approve action hands back the rebuilt weekly rows — take them rather
+   *  than evicting and re-fetching what we already have. */
+  const adoptFreshHours = React.useCallback((rows: EmployeeHoursComputed[]) => {
+    weeklyRequested.current = true;
+    setHours(rows);
+    setWeeklyError(null);
+  }, []);
 
   // Per-day clocked hours, kept in state so approve/undo updates instantly.
   const [daily, setDaily] =
@@ -170,26 +239,26 @@ export function EmployeesView({
 
   const employees = initialEmployees;
 
-  const filtered = employees.filter((e) => {
+  const filtered = (directory ?? []).filter((e) => {
     if (!showArchived && (e.employment_status === "left" || !e.is_active))
       return false;
     if (storeFilter !== "all" && e.store_id !== storeFilter) return false;
     return true;
   });
 
-  const activeCount = employees.filter(
+  const activeCount = (directory ?? employees).filter(
     (e) => e.employment_status === "active",
   ).length;
 
   // Called after a manual hours save — the action returns fresh rows so we can
   // update state immediately instead of waiting for the router cache.
   function handleLogged(freshHours: EmployeeHoursComputed[]) {
-    setHours(freshHours);
+    adoptFreshHours(freshHours);
     router.refresh(); // sync everything else (employee cards, analytics)
   }
 
   function handleDeleted(deletedId: string) {
-    setHours((prev) => prev.filter((r) => r.id !== deletedId));
+    setHours((prev) => (prev ? prev.filter((r) => r.id !== deletedId) : prev));
     router.refresh();
   }
 
@@ -223,7 +292,7 @@ export function EmployeesView({
       extra_long_deliveries: deliveries?.extraLong,
       extra_long_reason: deliveries?.extraLongReason,
     });
-    setHours(res.hours);
+    adoptFreshHours(res.hours);
     patchDaily(
       (d) => d.employee_id === employee_id && d.event_date === event_date,
       {
@@ -258,7 +327,7 @@ export function EmployeesView({
 
   async function handleApproveDate(event_date: string, employee_ids: string[]) {
     const res = await approveDailyHoursForDate({ event_date, employee_ids });
-    setHours(res.hours);
+    adoptFreshHours(res.hours);
     const ids = new Set(employee_ids);
     setDaily((prev) =>
       prev.map((d) =>
@@ -272,7 +341,7 @@ export function EmployeesView({
 
   async function handleUnapproveDay(employee_id: string, event_date: string) {
     const res = await unapproveDailyHours({ employee_id, event_date });
-    setHours(res.hours);
+    adoptFreshHours(res.hours);
     patchDaily(
       (d) => d.employee_id === employee_id && d.event_date === event_date,
       { hours_approved: false, approved_hours: null },
@@ -308,7 +377,7 @@ export function EmployeesView({
 
   async function handleShiftApproval(session_id: string, approved: boolean) {
     const res = await setShiftApproval({ session_id, approved });
-    setHours(res.hours);
+    adoptFreshHours(res.hours);
     // The day's own row is re-derived server-side from its shifts, so unlike the
     // day-level handlers there is nothing sensible to patch locally — refresh
     // and take the recomputed header.
@@ -356,7 +425,12 @@ export function EmployeesView({
   const visibleCoverDays = coverDriverDays.filter((d) => inStore(d.store_id));
   const visibleCoverHours = coverHours.filter((h) => inStore(h.store_id));
 
-  const refresh = () => router.refresh();
+  // A profile edit, a manual clock entry or a cover-driver change can move
+  // either slice, so both are dropped alongside the server revalidation.
+  const refresh = () => {
+    invalidateSlices();
+    router.refresh();
+  };
 
   // Daily view: scope to the selected store and count what still needs approval.
   const visibleDaily = daily.filter(
@@ -497,7 +571,18 @@ export function EmployeesView({
             </Button>
           </div>
 
-          {filtered.length === 0 ? (
+          {directoryError ? (
+            <Card className="border-danger/40">
+              <p className="text-sm text-danger">
+                Couldn&apos;t load employee profiles — {directoryError}. This is not an
+                empty roster; reload before adding anyone.
+              </p>
+            </Card>
+          ) : directory === null ? (
+            <Card>
+              <p className="text-sm text-text-muted">Loading employees…</p>
+            </Card>
+          ) : filtered.length === 0 ? (
             <Card>
               <EmptyState
                 icon={<UsersIcon />}
@@ -592,14 +677,23 @@ export function EmployeesView({
                 payroll. Approve hours day-by-day in the Daily Approval tab.
               </CardDescription>
             </CardHeader>
-            <HoursTable
-              employees={employees}
-              rows={hours}
-              clockSummaries={clockSummaries}
-              onDeleted={handleDeleted}
-              onApproved={handleLogged}
-              hideApprove
-            />
+            {weeklyError ? (
+              <p className="text-sm text-danger px-5 pb-5">
+                Couldn&apos;t load the weekly rollup — {weeklyError}. No rows here means
+                the query failed, not that nobody worked.
+              </p>
+            ) : hours === null ? (
+              <p className="text-sm text-text-muted px-5 pb-5">Loading weekly totals…</p>
+            ) : (
+              <HoursTable
+                employees={employees}
+                rows={hours}
+                clockSummaries={clockSummaries}
+                onDeleted={handleDeleted}
+                onApproved={handleLogged}
+                hideApprove
+              />
+            )}
           </Card>
         </div>
       )}

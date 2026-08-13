@@ -22,7 +22,10 @@ import {
   setSessionApproval,
   unapproveDaySessions,
 } from "@/lib/clock-sessions";
+import { withContactEmails } from "@/lib/contact-email";
+import { resolveActiveStoreId } from "@/lib/types";
 import type {
+  Employee,
   EmployeeHoursComputed,
   EmployeePosition,
   EmploymentStatus,
@@ -33,6 +36,49 @@ async function requireAllowed() {
   const user = await getSessionUser();
   if (!user || !user.allowed) throw new Error("Not authorised");
   return user;
+}
+
+/**
+ * Full employee rows for the Employees (cards) tab, fetched when that tab is
+ * opened. Bank details, DOB and the contact-email lookup are only rendered
+ * there, so none of it belongs on the approval screen's critical path.
+ */
+export async function loadEmployeeDirectory(): Promise<Employee[]> {
+  const user = await requireAllowed();
+  const supabase = createServerSupabase();
+
+  let query = supabase
+    .from("employees")
+    .select("*")
+    .order("employment_status")
+    .order("name");
+  // A manager's scope is re-derived here: a server action is a public endpoint,
+  // and the page's guard does not cover it.
+  if (user.allowed!.role === "manager") {
+    const storeId = resolveActiveStoreId(user.allowed);
+    if (!storeId) throw new Error("No store assigned to your account.");
+    query = query.eq("store_id", storeId);
+  }
+
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+  return withContactEmails(supabase, (data ?? []) as Employee[]);
+}
+
+/**
+ * The Weekly Log's rolled-up hours. Same query the approve actions return, so
+ * an approval refreshes this slice rather than merely invalidating it.
+ */
+export async function loadWeeklyHoursLog(): Promise<EmployeeHoursComputed[]> {
+  await requireAllowed();
+  const supabase = createServerSupabase();
+  const { data, error } = await supabase
+    .from("employee_hours_computed")
+    .select("*")
+    .order("week_start_date", { ascending: false })
+    .limit(500);
+  if (error) throw new Error(error.message);
+  return (data ?? []) as EmployeeHoursComputed[];
 }
 
 /**

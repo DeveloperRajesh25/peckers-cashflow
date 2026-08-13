@@ -27,8 +27,9 @@ import {
 import { wageComplianceForEmployee } from "@/lib/compliance";
 import { isCredentialEmail } from "@/lib/credentials";
 import { sendAlertDigest } from "@/lib/email";
-import type { AlertType, AlertSeverity } from "@/lib/types";
-import { hasRole } from "@/lib/types";
+import type { AlertType, AlertSeverity, SystemAlert } from "@/lib/types";
+import { hasRole, resolveActiveStoreId } from "@/lib/types";
+import { ALERTS_MAX_ROWS, ALERTS_PAGE_SIZE, type AlertsPage } from "@/lib/alerts-paging";
 
 async function requireAllowed() {
   const user = await getSessionUser();
@@ -114,6 +115,72 @@ async function upsertAlert(
     });
   }
   return data?.id ?? null;
+}
+
+/**
+ * One page of alerts. Filtering happens here rather than in the browser: a page
+ * of 10 filtered client-side would render two rows and count the badge off what
+ * happened to be loaded.
+ */
+export async function listAlerts(input: {
+  page: number;
+  pageSize?: number;
+  storeId?: string | null;
+  includeResolved: boolean;
+}): Promise<AlertsPage> {
+  const user = await requireAllowed();
+  const supabase = createServerSupabase();
+
+  // A manager's scope is theirs to see, not theirs to choose — a server action
+  // is a public endpoint, so re-derive it here rather than trusting the arg.
+  const storeId =
+    user.allowed!.role === "manager"
+      ? resolveActiveStoreId(user.allowed)
+      : input.storeId || null;
+
+  const pageSize = input.pageSize ?? ALERTS_PAGE_SIZE;
+  const page = Math.max(1, Math.floor(input.page) || 1);
+  const offset = (page - 1) * pageSize;
+
+  // The reachable window is the newest ALERTS_MAX_ROWS rows, so a page starting
+  // past it has nothing to fetch and the end index is clamped to the cap.
+  if (offset >= ALERTS_MAX_ROWS) {
+    return { rows: [], total: ALERTS_MAX_ROWS, openCount: 0, openCountCapped: false };
+  }
+  const rangeEnd = Math.min(offset + pageSize, ALERTS_MAX_ROWS) - 1;
+
+  let rowsQuery = supabase.from("alerts").select("*", { count: "exact" });
+  if (storeId) rowsQuery = rowsQuery.eq("store_id", storeId);
+  if (!input.includeResolved) rowsQuery = rowsQuery.eq("resolved", false);
+
+  let openQuery = supabase
+    .from("alerts")
+    .select("id", { count: "exact", head: true })
+    .eq("resolved", false);
+  if (storeId) openQuery = openQuery.eq("store_id", storeId);
+
+  const [rowsRes, openRes] = await Promise.all([
+    rowsQuery
+      .order("resolved")
+      .order("created_at", { ascending: false })
+      // Tiebreaker: created_at collides on rows written by one scan, and an
+      // unstable order across pages duplicates or skips them.
+      .order("id")
+      .range(offset, rangeEnd),
+    openQuery,
+  ]);
+
+  if (rowsRes.error) throw new Error(rowsRes.error.message);
+  if (openRes.error) throw new Error(openRes.error.message);
+
+  const realOpen = openRes.count ?? 0;
+
+  return {
+    rows: (rowsRes.data ?? []) as SystemAlert[],
+    total: Math.min(rowsRes.count ?? 0, ALERTS_MAX_ROWS),
+    openCount: Math.min(realOpen, ALERTS_MAX_ROWS),
+    openCountCapped: realOpen > ALERTS_MAX_ROWS,
+  };
 }
 
 export async function resolveAlert(input: { id: string; note?: string | null }) {

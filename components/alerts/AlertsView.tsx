@@ -1,15 +1,24 @@
 "use client";
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
-import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
+import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
-import { resolveAlert, scanForAlerts } from "@/app/actions/alerts";
+import { listAlerts, resolveAlert, scanForAlerts } from "@/app/actions/alerts";
+import {
+  ALERTS_MAX_ROWS,
+  ALERTS_PAGE_SIZE,
+  alertsPageCount,
+  type AlertsPage,
+} from "@/lib/alerts-paging";
 import { formatDDMMYYYY, formatTimeOnly } from "@/lib/utils";
 import type { Employee, Store, SystemAlert } from "@/lib/types";
-import { CheckIcon } from "@/components/ui/icons";
+import {
+  CheckIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+} from "@/components/ui/icons";
 
 const ALERT_LABELS: Record<string, { title: string; variant: "warning" | "danger" | "neutral" | "gold" }> = {
   wage_variance: { title: "Wage variance", variant: "warning" },
@@ -29,15 +38,15 @@ const ALERT_LABELS: Record<string, { title: string; variant: "warning" | "danger
 };
 
 export function AlertsView({
-  initialAlerts,
+  initialPage,
   stores,
   employees,
 }: {
-  initialAlerts: SystemAlert[];
+  /** Page 1 with the default filters — every later page is fetched on demand. */
+  initialPage: AlertsPage;
   stores: Store[];
   employees: Employee[];
 }) {
-  const router = useRouter();
   const toast = useToast();
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [scanning, setScanning] = React.useState(false);
@@ -46,23 +55,72 @@ export function AlertsView({
   const [resolving, setResolving] = React.useState<SystemAlert | null>(null);
   const [note, setNote] = React.useState("");
 
+  const [alerts, setAlerts] = React.useState<SystemAlert[]>(initialPage.rows);
+  const [total, setTotal] = React.useState(initialPage.total);
+  const [openCount, setOpenCount] = React.useState(initialPage.openCount);
+  const [openCapped, setOpenCapped] = React.useState(initialPage.openCountCapped);
+  const [page, setPage] = React.useState(1);
+  const [loading, setLoading] = React.useState(false);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
+  // Page 1 is already in hand; only refetch it once a filter actually changes.
+  const filtersTouched = React.useRef(false);
+  // Toggling a filter twice in quick succession must not let the first reply
+  // land on top of the second.
+  const requestSeq = React.useRef(0);
+
   const storeById = new Map(stores.map((s) => [s.id, s]));
   const empById = new Map(employees.map((e) => [e.id, e]));
 
-  const filtered = initialAlerts.filter((a) => {
-    if (!showResolved && a.resolved) return false;
-    if (storeFilter !== "all" && a.store_id !== storeFilter) return false;
-    return true;
-  });
+  const fetchPage = React.useCallback(
+    async (target: number) => {
+      const seq = ++requestSeq.current;
+      setLoading(true);
+      setLoadError(null);
+      try {
+        const res = await listAlerts({
+          page: target,
+          storeId: storeFilter === "all" ? null : storeFilter,
+          includeResolved: showResolved,
+        });
+        if (seq !== requestSeq.current) return;
+        // One page REPLACES the last — this is a pager, not an infinite list.
+        setAlerts(res.rows);
+        setTotal(res.total);
+        setOpenCount(res.openCount);
+        setOpenCapped(res.openCountCapped);
+        setPage(target);
+      } catch (err) {
+        if (seq !== requestSeq.current) return;
+        setLoadError(err instanceof Error ? err.message : "Failed to load alerts");
+      } finally {
+        if (seq === requestSeq.current) setLoading(false);
+      }
+    },
+    [storeFilter, showResolved],
+  );
 
-  const openCount = initialAlerts.filter((a) => !a.resolved).length;
+  // A filter change re-asks the server — the list is a page, not the whole set,
+  // so it can't be narrowed in the browser without the badge lying.
+  React.useEffect(() => {
+    if (!filtersTouched.current) return;
+    void fetchPage(1);
+  }, [fetchPage]);
+
+  const pageCount = alertsPageCount(total);
+  const firstShown = total === 0 ? 0 : (page - 1) * ALERTS_PAGE_SIZE + 1;
+  const lastShown = Math.min(page * ALERTS_PAGE_SIZE, total);
+
+  function changeFilters(apply: () => void) {
+    filtersTouched.current = true;
+    apply();
+  }
 
   async function runScan() {
     setScanning(true);
     try {
       await scanForAlerts();
       toast.success("Scan complete");
-      router.refresh();
+      await fetchPage(1);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
     } finally {
@@ -72,13 +130,22 @@ export function AlertsView({
 
   async function doResolve() {
     if (!resolving) return;
-    setBusyId(resolving.id);
+    const id = resolving.id;
+    const trimmed = note.trim() || null;
+    setBusyId(id);
     try {
-      await resolveAlert({ id: resolving.id, note });
+      await resolveAlert({ id, note });
       toast.success("Resolved");
       setResolving(null);
       setNote("");
-      router.refresh();
+      // Resolving flips the sort key. Refetching would jump every loaded row
+      // under the cursor, so the row is updated where it sits instead.
+      setAlerts((prev) =>
+        prev.map((a) =>
+          a.id === id ? { ...a, resolved: true, resolution_note: trimmed } : a,
+        ),
+      );
+      setOpenCount((c) => Math.max(0, c - 1));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
     } finally {
@@ -91,17 +158,21 @@ export function AlertsView({
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-3 flex-wrap">
           <Badge variant={openCount > 0 ? "warning" : "success"}>
-            {openCount} open
+            {openCount}
+            {openCapped ? "+" : ""} open
           </Badge>
           <button
-            onClick={() => setShowResolved((v) => !v)}
+            onClick={() => changeFilters(() => setShowResolved((v) => !v))}
             className="text-xs text-gold hover:underline"
           >
             {showResolved ? "Hide resolved" : "Show resolved"}
           </button>
           <select
             value={storeFilter}
-            onChange={(e) => setStoreFilter(e.target.value)}
+            onChange={(e) => {
+              const next = e.target.value;
+              changeFilters(() => setStoreFilter(next));
+            }}
             className="h-9 px-3 rounded-lg bg-surface border border-border text-sm"
           >
             <option value="all">All stores</option>
@@ -117,16 +188,24 @@ export function AlertsView({
         </Button>
       </div>
 
-      {filtered.length === 0 ? (
+      {loadError ? (
+        <Card className="border-danger/40">
+          <p className="text-sm text-danger">
+            Couldn&apos;t load alerts — {loadError}. This list is incomplete; retry
+            before treating it as &quot;nothing outstanding&quot;.
+          </p>
+        </Card>
+      ) : alerts.length === 0 ? (
         <Card>
           <p className="text-sm text-text-muted text-center py-10">
-            No alerts {showResolved ? "" : "open"}. Click &quot;Scan now&quot; to check
-            for new issues.
+            {loading
+              ? "Loading alerts…"
+              : `No alerts ${showResolved ? "" : "open"}. Click "Scan now" to check for new issues.`}
           </p>
         </Card>
       ) : (
         <div className="flex flex-col gap-3">
-          {filtered.map((a) => {
+          {alerts.map((a) => {
             const meta = ALERT_LABELS[a.alert_type] ?? {
               title: a.alert_type,
               variant: "neutral",
@@ -172,6 +251,33 @@ export function AlertsView({
               </Card>
             );
           })}
+          <div className="flex items-center justify-between gap-3 flex-wrap pt-1">
+            <p className="text-xs text-text-muted">
+              Showing {firstShown}–{lastShown} of {total}
+              {openCapped && ` (newest ${ALERTS_MAX_ROWS})`}
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => void fetchPage(page - 1)}
+                disabled={page <= 1 || loading}
+                aria-label="Previous 10 alerts"
+                className="h-9 w-9 inline-flex items-center justify-center rounded-lg bg-surface border border-border text-text-primary hover:bg-surface-hover disabled:opacity-40 disabled:hover:bg-surface transition-colors"
+              >
+                <ChevronLeftIcon size={16} />
+              </button>
+              <span className="text-xs text-text-muted tabular-nums min-w-[5.5rem] text-center">
+                Page {page} of {pageCount}
+              </span>
+              <button
+                onClick={() => void fetchPage(page + 1)}
+                disabled={page >= pageCount || loading}
+                aria-label="Next 10 alerts"
+                className="h-9 w-9 inline-flex items-center justify-center rounded-lg bg-surface border border-border text-text-primary hover:bg-surface-hover disabled:opacity-40 disabled:hover:bg-surface transition-colors"
+              >
+                <ChevronRightIcon size={16} />
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
