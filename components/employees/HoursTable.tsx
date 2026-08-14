@@ -122,7 +122,7 @@ export function HoursTable({
   rows: EmployeeHoursComputed[];
   clockSummaries?: ClockWeeklySummary[];
   onDeleted: (deletedId: string) => void;
-  onApproved?: (freshHours: EmployeeHoursComputed[]) => void;
+  onApproved?: (freshHours: EmployeeHoursComputed[], capped?: boolean) => void;
   /**
    * Weekly-log mode: hide the per-week Approve control (approval now happens
    * day-by-day in the Daily Approval tab) and show a Pending badge instead.
@@ -152,7 +152,7 @@ export function HoursTable({
         override_hours: overrideHours,
       });
       toast.success("Clocked hours approved");
-      onApproved?.(res.hours);
+      onApproved?.(res.hours, res.hoursCapped);
       setEditedHours((prev) => {
         const next = { ...prev };
         delete next[key];

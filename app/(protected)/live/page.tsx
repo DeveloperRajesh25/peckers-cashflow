@@ -5,7 +5,8 @@ import { todayISO } from "@/lib/utils";
 import type {
   AllowedUser,
   ClockEvent,
-  ClockSession,
+  LiveClockSession,
+  LiveEmployee,
   CoverDriver,
   CoverDriverClockEvent,
   CoverDriverScheduleDay,
@@ -18,6 +19,12 @@ import type {
   RotaShift,
   Store,
 } from "@/lib/types";
+import {
+  COVER_SCHEDULE_COLUMNS,
+  LIVE_CLOCK_SESSION_COLUMNS,
+  LIVE_EMPLOYEE_COLUMNS,
+  SCHEDULE_COLUMNS,
+} from "@/lib/rota-columns";
 
 export const dynamic = "force-dynamic";
 
@@ -43,16 +50,16 @@ export default async function LivePage() {
     coverSchedulesRes,
   ] = await Promise.all([
     supabase.from("stores").select("*").order("name"),
-    supabase.from("employees").select("*").neq("employment_status", "left"),
+    supabase.from("employees").select(LIVE_EMPLOYEE_COLUMNS).neq("employment_status", "left"),
     supabase.from("rota_shifts").select("*").eq("shift_date", today),
     supabase.from("clock_events").select("*").eq("event_date", today),
     // The day's individual shifts — the clock row above is only its header.
     supabase
       .from("clock_sessions")
-      .select("*")
+      .select(LIVE_CLOCK_SESSION_COLUMNS)
       .eq("event_date", today)
       .order("clock_in_at", { ascending: true }),
-    supabase.from("employee_schedules").select("*"),
+    supabase.from("employee_schedules").select(SCHEDULE_COLUMNS),
     supabase.from("allowed_users").select("*").eq("role", "manager"),
     supabase.from("manager_clock_events").select("*").eq("event_date", today),
     // A manager's day can hold several shifts — the clock row above is only its
@@ -67,7 +74,7 @@ export default async function LivePage() {
     supabase.from("cover_drivers").select("*").eq("is_active", true),
     supabase.from("cover_driver_clock_events").select("*").eq("event_date", today),
     supabase.from("cover_driver_shifts").select("*").eq("shift_date", today),
-    supabase.from("cover_driver_schedules").select("*"),
+    supabase.from("cover_driver_schedules").select(COVER_SCHEDULE_COLUMNS),
   ]);
 
   return (
@@ -78,10 +85,10 @@ export default async function LivePage() {
       />
       <LiveDashboard
         stores={(storesRes.data ?? []) as Store[]}
-        employees={(employeesRes.data ?? []) as Employee[]}
+        employees={(employeesRes.data ?? []) as LiveEmployee[]}
         shifts={(shiftsRes.data ?? []) as RotaShift[]}
         clocks={(clocksRes.data ?? []) as ClockEvent[]}
-        clockSessions={(sessionsRes.data ?? []) as ClockSession[]}
+        clockSessions={(sessionsRes.data ?? []) as LiveClockSession[]}
         schedules={(schedulesRes.data ?? []) as EmployeeScheduleDay[]}
         managers={(managersRes.data ?? []) as AllowedUser[]}
         managerClocks={(managerClocksRes.data ?? []) as ManagerClockEvent[]}

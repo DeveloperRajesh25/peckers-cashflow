@@ -19,14 +19,14 @@ import {
 import type {
   AllowedUser,
   ClockEvent,
-  ClockSession,
   CoverDriver,
   CoverDriverClockEvent,
   CoverDriverScheduleDay,
   CoverDriverShift,
-  Employee,
   EmployeeScheduleDay,
+  LiveClockSession,
   LiveDashboardStatus,
+  LiveEmployee,
   ManagerClockEvent,
   ManagerClockSession,
   ManagerShift,
@@ -48,7 +48,7 @@ import {
 
 type Props = {
   stores: Store[];
-  employees: Employee[];
+  employees: LiveEmployee[];
   shifts: RotaShift[];
   clocks: ClockEvent[];
   /** Recurring weekly templates — used as the fallback "expected" shift when no
@@ -57,7 +57,7 @@ type Props = {
   /** Manager login accounts (allowed_users, role=manager) for attendance. */
   managers?: AllowedUser[];
   /** Today's individual shifts, keyed by clock_events.id — a day can hold several. */
-  clockSessions?: ClockSession[];
+  clockSessions?: LiveClockSession[];
   /** Today's manager clock rows, keyed on the login account. */
   managerClocks?: ManagerClockEvent[];
   /** Today's individual manager shifts — a manager's day can hold several. */
@@ -140,7 +140,7 @@ function computeStatus(
 }
 
 /** Gross hourly rate used to value a day's wage (on-the-books NI rate). */
-function rateOf(emp: Employee): number {
+function rateOf(emp: LiveEmployee): number {
   return Number(emp.hourly_ni_rate ?? emp.hourly_rate ?? 0) || 0;
 }
 
@@ -233,7 +233,7 @@ export function LiveDashboard({
   // The day's individual shifts, per employee. The clock row above is the day's
   // header: its In is the FIRST clock-in and its Out the last, so hours have to
   // come from the sessions or a split day would bill the gap between shifts.
-  const sessionsByEmp = new Map<string, ClockSession[]>();
+  const sessionsByEmp = new Map<string, LiveClockSession[]>();
   for (const s of clockSessions) {
     const arr = sessionsByEmp.get(s.employee_id) ?? [];
     arr.push(s);
@@ -267,7 +267,7 @@ export function LiveDashboard({
   // of truth for where they actually are), else where they're scheduled, else
   // their home store. Staff aren't locked to one store, so a visiting worker
   // shows under the store they actually worked at — not their home store.
-  const todayStoreOf = (emp: Employee): string | null => {
+  const todayStoreOf = (emp: LiveEmployee): string | null => {
     const c = clockByEmp.get(emp.id);
     if (c?.store_id) return c.store_id;
     const s = shiftByEmp.get(emp.id);

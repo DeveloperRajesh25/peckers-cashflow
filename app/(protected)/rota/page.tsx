@@ -16,7 +16,7 @@ import type {
   CoverDriverClockEvent,
   CoverDriverScheduleDay,
   CoverDriverShift,
-  Employee,
+  RotaEmployee,
   EmployeeScheduleDay,
   ManagerClockEvent,
   ManagerShift,
@@ -27,9 +27,12 @@ import type {
   WeeklyDelivery,
 } from "@/lib/types";
 import {
+  COVER_SCHEDULE_COLUMNS,
   ROTA_CLOCK_COLUMNS,
+  ROTA_EMPLOYEE_COLUMNS,
   ROTA_HISTORY_SHIFT_COLUMNS,
   ROTA_SHIFT_COLUMNS,
+  SCHEDULE_COLUMNS,
 } from "@/lib/rota-columns";
 
 export const dynamic = "force-dynamic";
@@ -75,7 +78,7 @@ export default async function RotaPage({
     supabase.from("stores").select("*").order("name"),
     supabase
       .from("employees")
-      .select("*")
+      .select(ROTA_EMPLOYEE_COLUMNS)
       .neq("employment_status", "left")
       .order("name"),
     supabase
@@ -99,7 +102,7 @@ export default async function RotaPage({
       .from("weekly_deliveries")
       .select("*")
       .eq("week_start_date", weekStartIso),
-    supabase.from("employee_schedules").select("*"),
+    supabase.from("employee_schedules").select(SCHEDULE_COLUMNS),
     supabase.from("allowed_users").select("*").eq("role", "manager"),
     supabase
       .from("manager_shifts")
@@ -117,7 +120,7 @@ export default async function RotaPage({
       .select("*")
       .gte("shift_date", startIso)
       .lte("shift_date", endIso),
-    supabase.from("cover_driver_schedules").select("*"),
+    supabase.from("cover_driver_schedules").select(COVER_SCHEDULE_COLUMNS),
     supabase
       .from("cover_driver_clock_events")
       .select("*")
@@ -133,7 +136,7 @@ export default async function RotaPage({
       />
       <RotaView
         stores={(storesRes.data ?? []) as Store[]}
-        employees={(employeesRes.data ?? []) as Employee[]}
+        employees={(employeesRes.data ?? []) as RotaEmployee[]}
         shifts={(shiftsRes.data ?? []) as RotaShift[]}
         historyShifts={(shiftHistoryRes.data ?? []) as RotaHistoryShift[]}
         clocks={(clocksRes.data ?? []) as ClockEvent[]}

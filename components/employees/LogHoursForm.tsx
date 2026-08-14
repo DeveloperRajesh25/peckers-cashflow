@@ -18,7 +18,7 @@ export function LogHoursForm({
   onLogged,
 }: {
   employees: EmployeeSummary[];
-  onLogged: (freshHours: EmployeeHoursComputed[]) => void;
+  onLogged: (freshHours: EmployeeHoursComputed[], capped?: boolean) => void;
 }) {
   const toast = useToast();
   const [empId, setEmpId] = React.useState<string>(employees[0]?.id ?? "");
@@ -77,7 +77,7 @@ export function LogHoursForm({
       setHours("");
       setNotes("");
       // Pass the fresh hours list back so EmployeesView can update state instantly
-      onLogged(result.hours);
+      onLogged(result.hours, result.hoursCapped);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save hours");
     } finally {

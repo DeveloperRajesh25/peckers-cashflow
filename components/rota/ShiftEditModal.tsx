@@ -9,10 +9,10 @@ import { upsertShift, deleteShift } from "@/app/actions/rota";
 import { formatDDMMYYYY, formatShiftRange, shiftHours, shiftRangesOverlap, todayISO } from "@/lib/utils";
 import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import { presetTimes, type ShiftTimeSettings } from "@/lib/settings";
-import { hasRole, type Employee, type RotaShift, type ShiftPreset } from "@/lib/types";
+import { hasRole, type RotaEmployee, type RotaShift, type ShiftPreset } from "@/lib/types";
 
 type Props = {
-  employee: Employee;
+  employee: RotaEmployee;
   storeId: string;
   shiftDate: string;
   existing: RotaShift | null;
@@ -152,7 +152,7 @@ function ShiftForm({
   onClose,
   onSaved,
 }: {
-  employee: Employee;
+  employee: RotaEmployee;
   storeId: string;
   shiftDate: string;
   existing: RotaShift | null;

@@ -19,16 +19,37 @@ import {
 } from "@/lib/utils";
 import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import { DeliveryCell } from "./DeliveryCell";
-import type { CashPayoutWithLines, Store } from "@/lib/types";
+import {
+  exportPayoutHistory,
+  listPayoutHistory,
+  loadPayoutLines,
+} from "@/app/actions/payout-history";
+import type {
+  PayoutHistoryExportRow,
+  PayoutHistoryFilters,
+  PayoutHistoryHeader,
+} from "@/lib/payout-history-paging";
+import type { CashPayoutLine, Store } from "@/lib/types";
+
+const CSV_HEADERS = [
+  "Week start", "Store", "Payment date", "Confirmed by", "Status",
+  "Employee", "Role", "Cash hours", "Cash rate", "Cash wage",
+  "Short deliveries (SD)", "Long deliveries (LD)",
+  "Short misc (SM)", "Long misc (LM)",
+  "Delivery wages", "Total paid",
+];
 
 export function PayoutHistoryView({
-  payouts,
+  initialPayouts,
   stores,
   isAdmin,
+  loadError = null,
 }: {
-  payouts: CashPayoutWithLines[];
+  initialPayouts: PayoutHistoryHeader[];
   stores: Store[];
   isAdmin: boolean;
+  /** A failed initial query — surfaced, never rendered as "no payouts". */
+  loadError?: string | null;
 }) {
   const [from, setFrom] = React.useState("");
   const [to, setTo] = React.useState("");
@@ -36,32 +57,101 @@ export function PayoutHistoryView({
   const [name, setName] = React.useState("");
   const [expanded, setExpanded] = React.useState<string | null>(null);
 
-  const storeById = new Map(stores.map((s) => [s.id, s.name]));
+  const [payouts, setPayouts] = React.useState<PayoutHistoryHeader[]>(initialPayouts);
+  const [listError, setListError] = React.useState<string | null>(loadError);
+  const [listLoading, setListLoading] = React.useState(false);
 
-  const filtered = React.useMemo(() => {
-    const q = name.trim().toLowerCase();
-    return payouts.filter((p) => {
-      if (from && p.week_start_date < from) return false;
-      if (to && p.week_start_date > to) return false;
-      if (store && p.store_id !== store) return false;
-      if (q && !p.lines.some((l) => l.employee_name.toLowerCase().includes(q))) return false;
-      return true;
+  // Lines arrive when a card is opened. `undefined` means "not fetched yet",
+  // which is NOT the same as a payout that genuinely has no lines.
+  const [linesById, setLinesById] = React.useState<Map<string, CashPayoutLine[]>>(
+    () => new Map(),
+  );
+  const [linesLoading, setLinesLoading] = React.useState<string | null>(null);
+  const [linesError, setLinesError] = React.useState<Record<string, string>>({});
+
+  const [exporting, setExporting] = React.useState(false);
+  const [printRows, setPrintRows] = React.useState<PayoutHistoryExportRow[] | null>(null);
+
+  const storeById = React.useMemo(
+    () => new Map(stores.map((s) => [s.id, s.name])),
+    [stores],
+  );
+
+  const filters: PayoutHistoryFilters = React.useMemo(
+    () => ({ from, to, storeId: store, name }),
+    [from, to, store, name],
+  );
+
+  // The name box types a character at a time; everything else is a discrete
+  // pick. Debouncing only the text input keeps date/store changes instant.
+  const [debouncedName, setDebouncedName] = React.useState("");
+  React.useEffect(() => {
+    const t = setTimeout(() => setDebouncedName(name), 300);
+    return () => clearTimeout(t);
+  }, [name]);
+
+  // Skips the fetch on first render — the server already sent the unfiltered
+  // first page, and refetching it would be a wasted round trip on every load.
+  const primed = React.useRef(false);
+  const seq = React.useRef(0);
+
+  React.useEffect(() => {
+    if (!primed.current) {
+      primed.current = true;
+      return;
+    }
+    const mine = ++seq.current;
+    setListLoading(true);
+    setListError(null);
+    listPayoutHistory({ from, to, storeId: store, name: debouncedName })
+      .then((rows) => {
+        // A slow reply for an old filter must not land on top of a fast one.
+        if (mine !== seq.current) return;
+        setPayouts(rows);
+        setExpanded(null);
+        setListLoading(false);
+      })
+      .catch((err: unknown) => {
+        if (mine !== seq.current) return;
+        setListError(err instanceof Error ? err.message : "Failed to load payouts");
+        setListLoading(false);
+      });
+  }, [from, to, store, debouncedName]);
+
+  function toggleExpand(payoutId: string) {
+    if (expanded === payoutId) {
+      setExpanded(null);
+      return;
+    }
+    setExpanded(payoutId);
+    if (linesById.has(payoutId) || linesLoading === payoutId) return;
+
+    setLinesLoading(payoutId);
+    setLinesError((prev) => {
+      const next = { ...prev };
+      delete next[payoutId];
+      return next;
     });
-  }, [payouts, from, to, store, name]);
+    loadPayoutLines(payoutId)
+      .then((lines) => {
+        setLinesById((prev) => new Map(prev).set(payoutId, lines));
+        setLinesLoading(null);
+      })
+      .catch((err: unknown) => {
+        setLinesError((prev) => ({
+          ...prev,
+          [payoutId]: err instanceof Error ? err.message : "Failed to load lines",
+        }));
+        setLinesLoading(null);
+      });
+  }
 
-  function exportCSV() {
-    const headers = [
-      "Week start", "Store", "Payment date", "Confirmed by", "Status",
-      "Employee", "Role", "Cash hours", "Cash rate", "Cash wage",
-      "Short deliveries (SD)", "Long deliveries (LD)",
-      "Short misc (SM)", "Long misc (LM)",
-      "Delivery wages", "Total paid",
-    ];
-    const rows: (string | number)[][] = [];
-    for (const p of filtered) {
-      const storeName = storeById.get(p.store_id) ?? "";
+  function exportRowsToCSV(rows: PayoutHistoryExportRow[]) {
+    const out: (string | number)[][] = [];
+    for (const p of rows) {
+      const storeName = storeById.get(p.store_id) ?? p.store_name ?? "";
       for (const l of p.lines) {
-        rows.push([
+        out.push([
           formatDDMMYYYY(p.week_start_date),
           storeName,
           p.payment_date ? formatDDMMYYYY(p.payment_date) : "",
@@ -81,8 +171,43 @@ export function PayoutHistoryView({
         ]);
       }
     }
-    downloadCSV(`peckers-payout-summary-${new Date().toISOString().slice(0, 10)}.csv`, toCSV(headers, rows));
+    downloadCSV(
+      `peckers-payout-summary-${new Date().toISOString().slice(0, 10)}.csv`,
+      toCSV(CSV_HEADERS, out),
+    );
   }
+
+  // Both exports cover the whole FILTERED set, not the cards on screen — the
+  // lines are fetched for the export rather than read from what happens to be
+  // expanded. Shrinking a payroll export to one open card would be a
+  // regression, not an optimisation.
+  async function runExport(mode: "csv" | "pdf") {
+    setExporting(true);
+    try {
+      const rows = await exportPayoutHistory(filters);
+      if (mode === "csv") {
+        exportRowsToCSV(rows);
+        return;
+      }
+      setPrintRows(rows);
+      // Let the print-only block commit before the browser snapshots the page.
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      window.print();
+    } catch (err) {
+      setListError(err instanceof Error ? err.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  React.useEffect(() => {
+    if (!printRows) return;
+    const clear = () => setPrintRows(null);
+    window.addEventListener("afterprint", clear);
+    return () => window.removeEventListener("afterprint", clear);
+  }, [printRows]);
+
+  const exportDisabled = exporting || listLoading || payouts.length === 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -100,18 +225,40 @@ export function PayoutHistoryView({
           )}
           <Input label="Employee" placeholder="Name…" value={name} onChange={(e) => setName(e.target.value)} />
           <div className="flex items-end gap-2">
-            <Button variant="secondary" onClick={exportCSV} iconLeft={<DownloadIcon size={16} />} className="flex-1" disabled={filtered.length === 0}>
-              CSV
+            <Button
+              variant="secondary"
+              onClick={() => runExport("csv")}
+              iconLeft={<DownloadIcon size={16} />}
+              className="flex-1"
+              disabled={exportDisabled}
+            >
+              {exporting ? "…" : "CSV"}
             </Button>
-            <Button variant="secondary" onClick={() => window.print()} className="flex-1" disabled={filtered.length === 0}>
-              PDF
+            <Button
+              variant="secondary"
+              onClick={() => runExport("pdf")}
+              className="flex-1"
+              disabled={exportDisabled}
+            >
+              {exporting ? "…" : "PDF"}
             </Button>
           </div>
         </div>
       </Card>
 
-      {filtered.length === 0 ? (
-        <Card>
+      {listError ? (
+        <Card className="print:hidden">
+          <p className="text-sm text-danger">
+            Couldn&apos;t load the payout history — {listError}. An empty list here means
+            the query failed, not that nobody was paid.
+          </p>
+        </Card>
+      ) : listLoading ? (
+        <Card className="print:hidden">
+          <p className="text-sm text-text-muted">Loading payouts…</p>
+        </Card>
+      ) : payouts.length === 0 ? (
+        <Card className="print:hidden">
           <EmptyState
             icon={<ListIcon />}
             title="No payout records yet"
@@ -119,13 +266,14 @@ export function PayoutHistoryView({
           />
         </Card>
       ) : (
-        <div className="flex flex-col gap-3">
-          {filtered.map((p) => {
+        <div className="flex flex-col gap-3 print:hidden">
+          {payouts.map((p) => {
             const open = expanded === p.id;
+            const lines = linesById.get(p.id);
             return (
               <Card key={p.id} className="p-0 overflow-hidden">
                 <button
-                  onClick={() => setExpanded(open ? null : p.id)}
+                  onClick={() => toggleExpand(p.id)}
                   className="w-full px-5 py-4 flex items-center justify-between gap-3 text-left hover:bg-surface-hover transition-colors"
                 >
                   <div className="min-w-0">
@@ -144,7 +292,7 @@ export function PayoutHistoryView({
                     <p className="text-xs text-text-muted mt-1">
                       Paid {p.payment_date ? formatDDMMYYYY(p.payment_date) : "—"}
                       {p.confirmed_by_name && ` · by ${p.confirmed_by_name}`}
-                      {` · ${p.lines.length} employee${p.lines.length === 1 ? "" : "s"}`}
+                      {` · ${p.line_count} employee${p.line_count === 1 ? "" : "s"}`}
                     </p>
                   </div>
                   <div className="flex items-center gap-3 flex-shrink-0">
@@ -179,63 +327,20 @@ export function PayoutHistoryView({
                         />
                       )}
                     </div>
-                    <div className="overflow-x-auto border-t border-border">
-                      <table className="w-full text-sm">
-                        <thead>
-                          <tr className="text-left text-xs uppercase tracking-wider text-text-muted bg-bg/50">
-                            <th className="px-4 py-2.5 font-medium">Employee</th>
-                            <th className="px-4 py-2.5 font-medium">Role</th>
-                            <th className="px-4 py-2.5 font-medium text-right">Cash hrs</th>
-                            <th className="px-4 py-2.5 font-medium text-right">Rate</th>
-                            <th className="px-4 py-2.5 font-medium text-right">Cash wage</th>
-                            <th
-                              className="px-4 py-2.5 font-medium text-right"
-                              title="SD short · LD long · SM short misc · LM long misc"
-                            >
-                              Deliveries
-                            </th>
-                            <th className="px-4 py-2.5 font-medium text-right">Delivery £</th>
-                            <th className="px-4 py-2.5 font-medium text-right">Total</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {p.lines.map((l, i) => (
-                            <tr key={l.id} className={`${i % 2 === 0 ? "" : "bg-bg/40"} border-t border-border/60`}>
-                              <td className="px-4 py-2.5 font-medium">
-                                {l.employee_name}
-                                {l.cover_driver_id && (
-                                  <span
-                                    className="ml-2 align-middle text-[9px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-gold/40 bg-gold/10 text-gold font-medium"
-                                    title="Cover driver — paid cash, no NI"
-                                  >
-                                    Cover
-                                  </span>
-                                )}
-                                {l.manager_id && (
-                                  <span
-                                    className="ml-2 align-middle text-[9px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-gold/40 bg-gold/10 text-gold font-medium"
-                                    title="Manager — deliveries only, paid per drop"
-                                  >
-                                    Manager
-                                  </span>
-                                )}
-                              </td>
-                              <td className="px-4 py-2.5 text-text-muted">{l.role ?? "—"}</td>
-                              <td className="px-4 py-2.5 text-right tabular-nums">
-                                <HoursMinsDisplay hours={l.cash_hours} />
-                              </td>
-                              <td className="px-4 py-2.5 text-right tabular-nums">{formatGBP(l.cash_rate)}</td>
-                              <td className="px-4 py-2.5 text-right tabular-nums">{formatGBP(l.cash_wage)}</td>
-                              <td className="px-4 py-2.5 text-right tabular-nums">
-                                <DeliveryCell line={l} />
-                              </td>
-                              <td className="px-4 py-2.5 text-right tabular-nums">{l.delivery_wages > 0 ? formatGBP(l.delivery_wages) : "—"}</td>
-                              <td className="px-4 py-2.5 text-right tabular-nums font-semibold">{formatGBP(l.total_payment)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                    {linesError[p.id] ? (
+                      <p className="text-sm text-danger px-5 pb-5 border-t border-border pt-4">
+                        Couldn&apos;t load this payout&apos;s lines — {linesError[p.id]}. This
+                        is a failed query, not an unpaid week.
+                      </p>
+                    ) : lines === undefined ? (
+                      <p className="text-sm text-text-muted px-5 pb-5 border-t border-border pt-4">
+                        Loading payment lines…
+                      </p>
+                    ) : (
+                      <div className="overflow-x-auto border-t border-border">
+                        <LinesTable lines={lines} />
+                      </div>
+                    )}
                   </div>
                 )}
               </Card>
@@ -243,7 +348,88 @@ export function PayoutHistoryView({
           })}
         </div>
       )}
+
+      {/* Print-only rendering of the whole filtered set, so PDF keeps covering
+          everything the filter matches rather than the one expanded card. */}
+      {printRows && (
+        <div className="hidden print:block">
+          {printRows.map((p) => (
+            <div key={p.id} className="mb-6 break-inside-avoid">
+              <h3 className="font-semibold">
+                {weekLabel(parseISODate(p.week_start_date))} —{" "}
+                {storeById.get(p.store_id) ?? p.store_name ?? "Store"} ({p.status})
+              </h3>
+              <p className="text-xs">
+                Paid {p.payment_date ? formatDDMMYYYY(p.payment_date) : "—"}
+                {p.confirmed_by_name && ` · by ${p.confirmed_by_name}`} · Total{" "}
+                {formatGBP(p.grand_total_wages)}
+              </p>
+              <LinesTable lines={p.lines} />
+            </div>
+          ))}
+        </div>
+      )}
     </div>
+  );
+}
+
+function LinesTable({ lines }: { lines: CashPayoutLine[] }) {
+  return (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="text-left text-xs uppercase tracking-wider text-text-muted bg-bg/50">
+          <th className="px-4 py-2.5 font-medium">Employee</th>
+          <th className="px-4 py-2.5 font-medium">Role</th>
+          <th className="px-4 py-2.5 font-medium text-right">Cash hrs</th>
+          <th className="px-4 py-2.5 font-medium text-right">Rate</th>
+          <th className="px-4 py-2.5 font-medium text-right">Cash wage</th>
+          <th
+            className="px-4 py-2.5 font-medium text-right"
+            title="SD short · LD long · SM short misc · LM long misc"
+          >
+            Deliveries
+          </th>
+          <th className="px-4 py-2.5 font-medium text-right">Delivery £</th>
+          <th className="px-4 py-2.5 font-medium text-right">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {lines.map((l, i) => (
+          <tr key={l.id} className={`${i % 2 === 0 ? "" : "bg-bg/40"} border-t border-border/60`}>
+            <td className="px-4 py-2.5 font-medium">
+              {l.employee_name}
+              {l.cover_driver_id && (
+                <span
+                  className="ml-2 align-middle text-[9px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-gold/40 bg-gold/10 text-gold font-medium"
+                  title="Cover driver — paid cash, no NI"
+                >
+                  Cover
+                </span>
+              )}
+              {l.manager_id && (
+                <span
+                  className="ml-2 align-middle text-[9px] uppercase tracking-wide rounded px-1.5 py-0.5 border border-gold/40 bg-gold/10 text-gold font-medium"
+                  title="Manager — deliveries only, paid per drop"
+                >
+                  Manager
+                </span>
+              )}
+            </td>
+            <td className="px-4 py-2.5 text-text-muted">{l.role ?? "—"}</td>
+            <td className="px-4 py-2.5 text-right tabular-nums">
+              <HoursMinsDisplay hours={l.cash_hours} />
+            </td>
+            <td className="px-4 py-2.5 text-right tabular-nums">{formatGBP(l.cash_rate)}</td>
+            <td className="px-4 py-2.5 text-right tabular-nums">{formatGBP(l.cash_wage)}</td>
+            <td className="px-4 py-2.5 text-right tabular-nums">
+              <DeliveryCell line={l} />
+            </td>
+            <td className="px-4 py-2.5 text-right tabular-nums">{l.delivery_wages > 0 ? formatGBP(l.delivery_wages) : "—"}</td>
+            <td className="px-4 py-2.5 text-right tabular-nums font-semibold">{formatGBP(l.total_payment)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

@@ -197,6 +197,45 @@ export type EmployeeSummary = Pick<
   | "hourly_ni_rate"
 >;
 
+/** What the Rota pages fetch — see ROTA_EMPLOYEE_COLUMNS. No bank details. */
+export type RotaEmployee = Pick<
+  Employee,
+  | "id"
+  | "name"
+  | "hourly_rate"
+  | "bank_weekly_hours_limit"
+  | "is_active"
+  | "joined_date"
+  | "date_of_birth"
+  | "gender"
+  | "position"
+  | "employment_start_date"
+  | "hourly_ni_rate"
+  | "hourly_cash_rate"
+  | "store_id"
+  | "employment_status"
+  | "short_delivery_rate"
+  | "long_delivery_rate"
+>;
+
+/** What the Live pages fetch — see LIVE_EMPLOYEE_COLUMNS. */
+export type LiveEmployee = Pick<
+  Employee,
+  | "id"
+  | "name"
+  | "position"
+  | "store_id"
+  | "employment_status"
+  | "hourly_rate"
+  | "hourly_ni_rate"
+>;
+
+/** What Live fetches of a clock session — see LIVE_CLOCK_SESSION_COLUMNS. */
+export type LiveClockSession = Pick<
+  ClockSession,
+  "employee_id" | "clock_in_at" | "clock_out_at"
+>;
+
 /** Parse pipe-delimited positions string into array. */
 export function parsePositions(positionStr: string | null): EmployeePosition[] {
   if (!positionStr) return [];

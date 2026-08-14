@@ -16,7 +16,7 @@ import type {
   CoverDriverClockEvent,
   CoverDriverScheduleDay,
   CoverDriverShift,
-  Employee,
+  RotaEmployee,
   EmployeeScheduleDay,
   RotaHistoryShift,
   RotaShift,
@@ -25,18 +25,15 @@ import type {
   WeeklyDelivery,
 } from "@/lib/types";
 import {
+  COVER_SCHEDULE_COLUMNS,
   ROTA_CLOCK_COLUMNS,
+  ROTA_EMPLOYEE_COLUMNS,
   ROTA_HISTORY_SHIFT_COLUMNS,
   ROTA_SHIFT_COLUMNS,
+  SCHEDULE_COLUMNS,
 } from "@/lib/rota-columns";
 
 export const dynamic = "force-dynamic";
-
-// The rota needs each employee's identity, store, rates and DOB (for min-wage
-// checks) — but never their bank details. Managers load every store's staff (to
-// schedule visitors), so we deliberately omit the sensitive payment columns.
-const ROTA_EMPLOYEE_COLUMNS =
-  "id, name, hourly_rate, bank_weekly_hours_limit, is_active, joined_date, date_of_birth, gender, position, employment_start_date, hourly_ni_rate, hourly_cash_rate, store_id, employment_status, short_delivery_rate, long_delivery_rate";
 
 export default async function ManagerRotaPage({
   searchParams,
@@ -105,7 +102,7 @@ export default async function ManagerRotaPage({
         .select("*")
         .eq("store_id", storeId)
         .eq("week_start_date", weekStartIso),
-      supabase.from("employee_schedules").select("*"),
+      supabase.from("employee_schedules").select(SCHEDULE_COLUMNS),
       // Cover drivers belong to one store and aren't loaned out, so unlike
       // staff these are scoped to this store rather than loaded estate-wide.
       supabase
@@ -119,7 +116,7 @@ export default async function ManagerRotaPage({
         .eq("store_id", storeId)
         .gte("shift_date", startIso)
         .lte("shift_date", endIso),
-      supabase.from("cover_driver_schedules").select("*"),
+      supabase.from("cover_driver_schedules").select(COVER_SCHEDULE_COLUMNS),
       supabase
         .from("cover_driver_clock_events")
         .select("*")
@@ -136,7 +133,7 @@ export default async function ManagerRotaPage({
       />
       <RotaView
         stores={(storesRes.data ?? []) as Store[]}
-        employees={(employeesRes.data ?? []) as Employee[]}
+        employees={(employeesRes.data ?? []) as RotaEmployee[]}
         shifts={(shiftsRes.data ?? []) as RotaShift[]}
         historyShifts={(shiftHistoryRes.data ?? []) as RotaHistoryShift[]}
         clocks={(clocksRes.data ?? []) as ClockEvent[]}

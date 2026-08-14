@@ -9,10 +9,10 @@ import { useToast } from "@/components/ui/Toast";
 import { upsertWeeklyDelivery } from "@/app/actions/rota";
 import { setClockDeliveries } from "@/app/actions/clock";
 import { formatDDMMYYYY } from "@/lib/utils";
-import type { ClockEvent, Employee, WeeklyDelivery } from "@/lib/types";
+import type { ClockEvent, RotaEmployee, WeeklyDelivery } from "@/lib/types";
 
 type Props = {
-  driver: Employee;
+  driver: RotaEmployee;
   storeId: string;
   weekStartIso: string;
   existing: WeeklyDelivery | null;

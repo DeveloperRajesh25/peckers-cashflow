@@ -39,6 +39,34 @@ async function requireAllowed() {
 }
 
 /**
+ * How many weekly rollup rows the Weekly Log will hold. One row per employee
+ * per week, so ~30 staff × 52 weeks ≈ 1,560/yr — about 16 months of headroom.
+ * The previous 500 was ~2 weeks from silently discarding the oldest weeks.
+ *
+ * Every read of employee_hours_computed uses this, because the approve actions
+ * hand their result straight to the client: a different limit there would
+ * install a differently-truncated list than the tab originally loaded.
+ */
+const WEEKLY_HOURS_MAX_ROWS = 2000;
+
+/** The weekly rollup, plus whether the cap actually bit — never truncate in silence. */
+export type WeeklyHoursSlice = {
+  rows: EmployeeHoursComputed[];
+  capped: boolean;
+};
+
+async function fetchWeeklyHours(supabase: ServerSupabase): Promise<WeeklyHoursSlice> {
+  const { data, error } = await supabase
+    .from("employee_hours_computed")
+    .select("*")
+    .order("week_start_date", { ascending: false })
+    .limit(WEEKLY_HOURS_MAX_ROWS);
+  if (error) throw new Error(error.message);
+  const rows = (data ?? []) as EmployeeHoursComputed[];
+  return { rows, capped: rows.length >= WEEKLY_HOURS_MAX_ROWS };
+}
+
+/**
  * Full employee rows for the Employees (cards) tab, fetched when that tab is
  * opened. Bank details, DOB and the contact-email lookup are only rendered
  * there, so none of it belongs on the approval screen's critical path.
@@ -69,16 +97,9 @@ export async function loadEmployeeDirectory(): Promise<Employee[]> {
  * The Weekly Log's rolled-up hours. Same query the approve actions return, so
  * an approval refreshes this slice rather than merely invalidating it.
  */
-export async function loadWeeklyHoursLog(): Promise<EmployeeHoursComputed[]> {
+export async function loadWeeklyHoursLog(): Promise<WeeklyHoursSlice> {
   await requireAllowed();
-  const supabase = createServerSupabase();
-  const { data, error } = await supabase
-    .from("employee_hours_computed")
-    .select("*")
-    .order("week_start_date", { ascending: false })
-    .limit(500);
-  if (error) throw new Error(error.message);
-  return (data ?? []) as EmployeeHoursComputed[];
+  return fetchWeeklyHours(createServerSupabase());
 }
 
 /**
@@ -427,16 +448,12 @@ export async function logEmployeeHours(input: {
 
   // Fetch the fresh computed rows so the client can update state immediately
   // without waiting for the router cache to clear.
-  const { data: freshHours } = await supabase
-    .from("employee_hours_computed")
-    .select("*")
-    .order("week_start_date", { ascending: false })
-    .limit(500);
+  const fresh = await fetchWeeklyHours(supabase);
 
   revalidatePath("/employees");
   revalidatePath("/manager/employees");
   revalidatePath("/analytics");
-  return { ok: true, hours: (freshHours ?? []) as EmployeeHoursComputed[] };
+  return { ok: true, hours: fresh.rows, hoursCapped: fresh.capped };
 }
 
 /**
@@ -531,16 +548,12 @@ export async function approveClockedHours(input: {
     changes: payload,
   });
 
-  const { data: freshHours } = await supabase
-    .from("employee_hours_computed")
-    .select("*")
-    .order("week_start_date", { ascending: false })
-    .limit(500);
+  const fresh = await fetchWeeklyHours(supabase);
 
   revalidatePath("/employees");
   revalidatePath("/manager/employees");
   revalidatePath("/analytics");
-  return { ok: true, hours: (freshHours ?? []) as EmployeeHoursComputed[] };
+  return { ok: true, hours: fresh.rows, hoursCapped: fresh.capped };
 }
 
 export async function deleteEmployeeHours(id: string) {
@@ -569,15 +582,11 @@ type ServerSupabase = ReturnType<typeof createServerSupabase>;
 
 /** Refetch computed weekly rows + revalidate the pages that show hours. */
 async function freshHoursResult(supabase: ServerSupabase) {
-  const { data: freshHours } = await supabase
-    .from("employee_hours_computed")
-    .select("*")
-    .order("week_start_date", { ascending: false })
-    .limit(500);
+  const fresh = await fetchWeeklyHours(supabase);
   revalidatePath("/employees");
   revalidatePath("/manager/employees");
   revalidatePath("/analytics");
-  return { ok: true, hours: (freshHours ?? []) as EmployeeHoursComputed[] };
+  return { ok: true, hours: fresh.rows, hoursCapped: fresh.capped };
 }
 
 /**

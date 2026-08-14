@@ -34,8 +34,8 @@ import { DEFAULT_SETTINGS, type MinWageBands, type ShiftTimeSettings } from "@/l
 import type {
   AllowedUser,
   ClockEvent,
-  Employee,
   EmployeeScheduleDay,
+  RotaEmployee,
   CoverDriver,
   CoverDriverClockEvent,
   CoverDriverScheduleDay,
@@ -59,7 +59,7 @@ function presetShort(t: ShiftPreset | null): string | null {
 
 type Props = {
   stores: Store[];
-  employees: Employee[];
+  employees: RotaEmployee[];
   /** Bookings inside the visible range only. */
   shifts: RotaShift[];
   /** The 4 weeks before the range, for the rolling average — never rendered. */
@@ -131,7 +131,7 @@ export function RotaView({
   const [addedManagerVisitorIds, setAddedManagerVisitorIds] = React.useState<string[]>([]);
   React.useEffect(() => setAddedManagerVisitorIds([]), [activeStoreId]);
   const [editingShift, setEditingShift] = React.useState<{
-    employee: Employee;
+    employee: RotaEmployee;
     date: string;
     existing: RotaShift | null;
     prefill: { start: string; end: string } | null;
@@ -140,7 +140,7 @@ export function RotaView({
     dayShifts: RotaShift[];
   } | null>(null);
   const [editingDelivery, setEditingDelivery] = React.useState<{
-    driver: Employee;
+    driver: RotaEmployee;
     existing: WeeklyDelivery | null;
     weekDays: string[];
     events: ClockEvent[];
@@ -556,7 +556,7 @@ export function RotaView({
   // employee's home store only hours above the weekly limit are cash; at a store
   // they're visiting, every hour is cash (no NI record there). No cash rate ⇒ no
   // cash hours.
-  function weekCashHours(emp: Employee): number {
+  function weekCashHours(emp: RotaEmployee): number {
     if (!worksForCash(emp)) return 0;
     const isHome = emp.store_id === activeStoreId;
     const limit = Number(emp.bank_weekly_hours_limit ?? 20) || 20;
@@ -566,7 +566,7 @@ export function RotaView({
     );
   }
 
-  function weekWages(emp: Employee): { ni: number; cash: number; total: number } {
+  function weekWages(emp: RotaEmployee): { ni: number; cash: number; total: number } {
     const niRate = Number(emp.hourly_ni_rate ?? emp.hourly_rate ?? 0);
     const cashRate = Number(emp.hourly_cash_rate ?? 0);
     const cashEligible = worksForCash(emp);

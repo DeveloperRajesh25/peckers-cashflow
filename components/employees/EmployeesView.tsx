@@ -153,6 +153,9 @@ export function EmployeesView({
   // is first opened, and are dropped again whenever something that could change
   // them succeeds. `null` means "not loaded", which is NOT the same as empty.
   const [hours, setHours] = React.useState<EmployeeHoursComputed[] | null>(null);
+  // True when the loaded slice hit WEEKLY_HOURS_MAX_ROWS, so the table can say
+  // the list is truncated rather than just ending at an arbitrary old week.
+  const [hoursCapped, setHoursCapped] = React.useState(false);
   const [weeklyError, setWeeklyError] = React.useState<string | null>(null);
   const [weeklyNonce, setWeeklyNonce] = React.useState(0);
   const weeklyRequested = React.useRef(false);
@@ -168,8 +171,10 @@ export function EmployeesView({
     let cancelled = false;
     setWeeklyError(null);
     loadWeeklyHoursLog()
-      .then((rows) => {
-        if (!cancelled) setHours(rows);
+      .then((slice) => {
+        if (cancelled) return;
+        setHours(slice.rows);
+        setHoursCapped(slice.capped);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -216,11 +221,15 @@ export function EmployeesView({
 
   /** An approve action hands back the rebuilt weekly rows — take them rather
    *  than evicting and re-fetching what we already have. */
-  const adoptFreshHours = React.useCallback((rows: EmployeeHoursComputed[]) => {
-    weeklyRequested.current = true;
-    setHours(rows);
-    setWeeklyError(null);
-  }, []);
+  const adoptFreshHours = React.useCallback(
+    (rows: EmployeeHoursComputed[], capped = false) => {
+      weeklyRequested.current = true;
+      setHours(rows);
+      setHoursCapped(capped);
+      setWeeklyError(null);
+    },
+    [],
+  );
 
   // Per-day clocked hours, kept in state so approve/undo updates instantly.
   const [daily, setDaily] =
@@ -252,8 +261,8 @@ export function EmployeesView({
 
   // Called after a manual hours save — the action returns fresh rows so we can
   // update state immediately instead of waiting for the router cache.
-  function handleLogged(freshHours: EmployeeHoursComputed[]) {
-    adoptFreshHours(freshHours);
+  function handleLogged(freshHours: EmployeeHoursComputed[], capped = false) {
+    adoptFreshHours(freshHours, capped);
     router.refresh(); // sync everything else (employee cards, analytics)
   }
 
@@ -292,7 +301,7 @@ export function EmployeesView({
       extra_long_deliveries: deliveries?.extraLong,
       extra_long_reason: deliveries?.extraLongReason,
     });
-    adoptFreshHours(res.hours);
+    adoptFreshHours(res.hours, res.hoursCapped);
     patchDaily(
       (d) => d.employee_id === employee_id && d.event_date === event_date,
       {
@@ -327,7 +336,7 @@ export function EmployeesView({
 
   async function handleApproveDate(event_date: string, employee_ids: string[]) {
     const res = await approveDailyHoursForDate({ event_date, employee_ids });
-    adoptFreshHours(res.hours);
+    adoptFreshHours(res.hours, res.hoursCapped);
     const ids = new Set(employee_ids);
     setDaily((prev) =>
       prev.map((d) =>
@@ -341,7 +350,7 @@ export function EmployeesView({
 
   async function handleUnapproveDay(employee_id: string, event_date: string) {
     const res = await unapproveDailyHours({ employee_id, event_date });
-    adoptFreshHours(res.hours);
+    adoptFreshHours(res.hours, res.hoursCapped);
     patchDaily(
       (d) => d.employee_id === employee_id && d.event_date === event_date,
       { hours_approved: false, approved_hours: null },
@@ -377,7 +386,7 @@ export function EmployeesView({
 
   async function handleShiftApproval(session_id: string, approved: boolean) {
     const res = await setShiftApproval({ session_id, approved });
-    adoptFreshHours(res.hours);
+    adoptFreshHours(res.hours, res.hoursCapped);
     // The day's own row is re-derived server-side from its shifts, so unlike the
     // day-level handlers there is nothing sensible to patch locally — refresh
     // and take the recomputed header.
@@ -685,14 +694,22 @@ export function EmployeesView({
             ) : hours === null ? (
               <p className="text-sm text-text-muted px-5 pb-5">Loading weekly totals…</p>
             ) : (
-              <HoursTable
-                employees={employees}
-                rows={hours}
-                clockSummaries={clockSummaries}
-                onDeleted={handleDeleted}
-                onApproved={handleLogged}
-                hideApprove
-              />
+              <>
+                {hoursCapped && (
+                  <p className="text-xs text-text-muted px-5 pb-2">
+                    Showing the most recent {hours.length.toLocaleString()} weekly rows.
+                    Older weeks exist but aren&apos;t loaded here.
+                  </p>
+                )}
+                <HoursTable
+                  employees={employees}
+                  rows={hours}
+                  clockSummaries={clockSummaries}
+                  onDeleted={handleDeleted}
+                  onApproved={handleLogged}
+                  hideApprove
+                />
+              </>
             )}
           </Card>
         </div>

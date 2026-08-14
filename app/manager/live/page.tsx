@@ -13,19 +13,25 @@ import {
 import { todayISO } from "@/lib/utils";
 import type {
   ClockEvent,
-  ClockSession,
   CoverDriver,
   CoverDriverClockEvent,
   CoverDriverScheduleDay,
   CoverDriverShift,
   DailyCashEntry,
-  Employee,
   EmployeeScheduleDay,
+  LiveClockSession,
+  LiveEmployee,
   ManagerClockEvent,
   ManagerClockSession,
   RotaShift,
   Store,
 } from "@/lib/types";
+import {
+  COVER_SCHEDULE_COLUMNS,
+  LIVE_CLOCK_SESSION_COLUMNS,
+  LIVE_EMPLOYEE_COLUMNS,
+  SCHEDULE_COLUMNS,
+} from "@/lib/rota-columns";
 
 export const dynamic = "force-dynamic";
 
@@ -63,7 +69,7 @@ export default async function ManagerLivePage() {
       .neq("employment_status", "left"),
     supabase.from("clock_events").select("employee_id").eq("event_date", today).eq("store_id", storeId ?? ""),
     supabase.from("rota_shifts").select("employee_id").eq("shift_date", today).eq("store_id", storeId ?? ""),
-    supabase.from("employee_schedules").select("*"),
+    supabase.from("employee_schedules").select(SCHEDULE_COLUMNS),
     storeId
       ? supabase
           .from("daily_cash_entries")
@@ -108,7 +114,7 @@ export default async function ManagerLivePage() {
       .select("*")
       .eq("shift_date", today)
       .eq("store_id", storeId ?? ""),
-    supabase.from("cover_driver_schedules").select("*"),
+    supabase.from("cover_driver_schedules").select(COVER_SCHEDULE_COLUMNS),
   ]);
 
   const relevantIds = Array.from(
@@ -126,7 +132,7 @@ export default async function ManagerLivePage() {
     ? await Promise.all([
         supabase
           .from("employees")
-          .select("*")
+          .select(LIVE_EMPLOYEE_COLUMNS)
           .in("id", relevantIds)
           .neq("employment_status", "left"),
         supabase.from("rota_shifts").select("*").eq("shift_date", today).in("employee_id", relevantIds),
@@ -134,7 +140,7 @@ export default async function ManagerLivePage() {
         // The day's individual shifts — the clock row above is only its header.
         supabase
           .from("clock_sessions")
-          .select("*")
+          .select(LIVE_CLOCK_SESSION_COLUMNS)
           .eq("event_date", today)
           .in("employee_id", relevantIds)
           .order("clock_in_at", { ascending: true }),
@@ -174,10 +180,10 @@ export default async function ManagerLivePage() {
       </div>
       <LiveDashboard
         stores={stores}
-        employees={(employeesRes.data ?? []) as Employee[]}
+        employees={(employeesRes.data ?? []) as LiveEmployee[]}
         shifts={(shiftsRes.data ?? []) as RotaShift[]}
         clocks={(clocksRes.data ?? []) as ClockEvent[]}
-        clockSessions={(sessionsRes.data ?? []) as ClockSession[]}
+        clockSessions={(sessionsRes.data ?? []) as LiveClockSession[]}
         schedules={(schedulesRes.data ?? []) as EmployeeScheduleDay[]}
         coverDrivers={(coverDriversRes.data ?? []) as CoverDriver[]}
         coverDriverClocks={(coverClocksRes.data ?? []) as CoverDriverClockEvent[]}
