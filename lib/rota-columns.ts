@@ -2,6 +2,8 @@
 // every store's rows (visiting staff and the "away" badge depend on it), so the
 // saving has to come from the columns, not a store filter.
 
+import type { EarlyClockInRequest } from "@/lib/types";
+
 export const ROTA_SHIFT_COLUMNS =
   "id, employee_id, store_id, shift_date, start_time, end_time, is_day_off, scheduled_hours, shift_type, same_day_edit_reason";
 
@@ -35,3 +37,49 @@ export const COVER_SCHEDULE_COLUMNS =
 // "09:00–13:00, 17:00–now" — the geofence coordinates and audit columns are
 // never read there.
 export const LIVE_CLOCK_SESSION_COLUMNS = "employee_id, clock_in_at, clock_out_at";
+
+// Early clock-in authorisations for Live (migration 043). `otp_code` IS read
+// here — the manager has to read it down the phone — which is why RLS keeps
+// this table staff-only and the employee's own screen never touches it. The
+// request-time coordinates and the attempt count stay on the server.
+export const EARLY_CLOCK_IN_COLUMNS =
+  "id, employee_id, store_id, event_date, scheduled_start, otp_code, status, requested_at, expires_at, actual_clock_in_at, employees(name), stores(name)";
+
+type EarlyClockInRow = {
+  id: string;
+  employee_id: string;
+  store_id: string;
+  event_date: string;
+  scheduled_start: string | null;
+  otp_code: string;
+  status: string;
+  requested_at: string;
+  expires_at: string;
+  actual_clock_in_at: string | null;
+  employees?: { name?: string | null } | { name?: string | null }[] | null;
+  stores?: { name?: string | null } | { name?: string | null }[] | null;
+};
+
+/** PostgREST returns an embedded row as an object or a one-element array
+ *  depending on how it infers the relationship; both shapes reach here. */
+function embeddedName(rel: EarlyClockInRow["employees"]): string | null {
+  const row = Array.isArray(rel) ? rel[0] : rel;
+  return row?.name ?? null;
+}
+
+export function mapEarlyClockInRows(data: unknown): EarlyClockInRequest[] {
+  return ((data ?? []) as EarlyClockInRow[]).map((r) => ({
+    id: r.id,
+    employee_id: r.employee_id,
+    employee_name: embeddedName(r.employees) ?? "Unknown",
+    store_id: r.store_id,
+    store_name: embeddedName(r.stores),
+    event_date: r.event_date,
+    scheduled_start: r.scheduled_start,
+    otp_code: r.otp_code,
+    status: r.status as EarlyClockInRequest["status"],
+    requested_at: r.requested_at,
+    expires_at: r.expires_at,
+    actual_clock_in_at: r.actual_clock_in_at,
+  }));
+}

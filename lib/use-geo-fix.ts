@@ -22,6 +22,13 @@
 // The last one is what makes this robust on mobile: iOS Safari and installed
 // PWAs do not reliably fire visibilitychange when resuming from a locked screen
 // or the app switcher, and bfcache restores fire pageshow instead.
+//
+// `suspended` exists for the early clock-in OTP screen (migration 043). While
+// the employee is on the phone to their manager there is nothing to submit, so
+// re-acquiring is pointless battery — and the resume handler's onResume fires
+// router.refresh(), which would remount the card and wipe the half-typed code.
+// The fix that matters on that flow was already captured and verified when the
+// code was requested; the consume step takes no location at all.
 // =============================================================
 
 import * as React from "react";
@@ -86,6 +93,13 @@ type Options = {
    * yesterday's date, shift and hours until something refreshes it.
    */
   onResume?: () => void;
+  /**
+   * Pause the background upkeep: no staleness re-acquire, and a resumed tab is
+   * left alone rather than dropping the fix, re-acquiring and firing onResume.
+   * `acquireForSubmit` is deliberately unaffected — a press still gets a
+   * current fix.
+   */
+  suspended?: boolean;
 };
 
 export function useGeoFix({
@@ -93,6 +107,7 @@ export function useGeoFix({
   desiredAccuracyM = 30,
   maxWaitMs = 12_000,
   onResume,
+  suspended = false,
 }: Options) {
   const [geo, setGeo] = React.useState<GeoState>({ status: "idle" });
 
@@ -100,6 +115,12 @@ export function useGeoFix({
   // stale closure.
   const onResumeRef = React.useRef(onResume);
   onResumeRef.current = onResume;
+
+  // Also a ref: subscribing to it would tear down and rebuild the effects below
+  // on every toggle, and the mount effect acquires — so suspending would fire
+  // the very acquisition it is there to prevent.
+  const suspendedRef = React.useRef(suspended);
+  suspendedRef.current = suspended;
 
   // The authoritative fix. Deliberately NOT derived from `geo`: the age has to
   // survive re-renders untouched, and it is cleared the instant a fix stops
@@ -180,6 +201,7 @@ export function useGeoFix({
     void acquire().catch(() => {});
     const timer = setInterval(() => {
       if (document.visibilityState !== "visible" || denied.current) return;
+      if (suspendedRef.current) return;
       const cached = current.current;
       if (!cached || performance.now() - cached.capturedAt >= FIX_STALE_AFTER_MS) {
         void acquire().catch(() => {});
@@ -196,6 +218,11 @@ export function useGeoFix({
 
     const handleResume = () => {
       if (document.visibilityState !== "visible") return;
+      // Suspended: keep the fix, don't fetch, don't call onResume. Dropping it
+      // here would leave the screen showing "getting your location" for a flow
+      // that no longer needs one, and onResume would refresh away a half-typed
+      // OTP.
+      if (suspendedRef.current) return;
       const cached = current.current;
       const age = cached ? performance.now() - cached.capturedAt : Infinity;
       // A few seconds away is a glance at another app, not a journey. Skipping

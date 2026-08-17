@@ -10,6 +10,13 @@ import { useToast } from "@/components/ui/Toast";
 import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import { clockIn, clockOut, updateDeliveryCount } from "@/app/actions/clock";
 import {
+  cancelEarlyClockInRequest,
+  clockInWithEarlyOtp,
+  getEarlyClockInStatus,
+  requestEarlyClockInOtp,
+} from "@/app/actions/early-clock-in";
+import { bookableStartMinutes, isEarlyClockIn } from "@/lib/early-clock-in";
+import {
   WEEKDAY_LONG,
   addDays,
   formatDDMMYYYY,
@@ -17,8 +24,10 @@ import {
   formatShiftRange,
   formatTimeOnly,
   liveDayWorkedHours,
+  londonHHMM,
   resolvedDayHours,
   startOfISOWeek,
+  timeToMinutes,
   toISODate,
   todayISO,
   weekdayIndex,
@@ -56,6 +65,22 @@ type Props = {
  * phantom shift on a payroll record is worth a moment's friction.
  */
 const RECLOCK_CONFIRM_WINDOW_MS = 5 * 60_000;
+
+/** How often the waiting employee asks whether the manager has denied them. */
+const OTP_POLL_MS = 15_000;
+
+/** The live authorisation the employee is waiting on. Never carries the code. */
+type OtpFlow = {
+  requestId?: string;
+  expiresAt: string;
+  scheduledStart: string;
+  storeName: string;
+};
+
+function formatCountdown(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
 
 export function CrewClockApp({
   employee,
@@ -230,15 +255,72 @@ export function CrewClockApp({
   const currentPhase: "in" | "out" = clockedIn ? "out" : "in";
   const finishedShiftToday = !clockedIn && (completedTodayCount > 0 || !!todayClock?.clock_out_at);
 
+  // The booked start today's clock-in is measured against, in London wall-clock
+  // minutes. Only a BOOKING counts — `weekShifts` is rota_shifts, and the
+  // recurring `schedules` template above is availability, which never creates
+  // one. Earliest booked shift of the day, matching what findShiftForClockIn
+  // resolves to server-side.
+  const todayBookedStartMinutes = React.useMemo(() => {
+    const booked = weekShifts
+      .filter((s) => s.shift_date === today && !s.is_day_off && s.start_time)
+      .sort((a, b) => (a.start_time ?? "").localeCompare(b.start_time ?? ""))[0];
+    return bookableStartMinutes(booked ?? null);
+  }, [weekShifts, today]);
+
+  const [otpFlow, setOtpFlow] = React.useState<OtpFlow | null>(null);
+  const [otpCode, setOtpCode] = React.useState("");
+  const [otpLocked, setOtpLocked] = React.useState(false);
+  const [otpNow, setOtpNow] = React.useState(() => Date.now());
+
   const { geo, refresh: requestLocation, acquireForSubmit } = useGeoFix({
     enabled: locatedStores.length > 0,
+    // Nothing to submit while they're on the phone to their manager, and a
+    // resume-triggered refresh would remount this card and wipe the code
+    // they're half way through typing.
+    suspended: !!otpFlow,
     // A tab backgrounded overnight renders yesterday's date, shift and hours
     // until the server data is re-fetched. Skipped mid-submit so a refresh can't
     // land on top of a clock action.
     onResume: () => {
-      if (!busy) router.refresh();
+      if (!busy && !otpFlow) router.refresh();
     },
   });
+
+  const otpExpiresAt = otpFlow ? new Date(otpFlow.expiresAt).getTime() : 0;
+  const otpExpired = !!otpFlow && otpNow >= otpExpiresAt;
+  const otpDead = otpExpired || otpLocked;
+
+  // Countdown tick. Only while the panel is up — a second-by-second re-render
+  // of the whole card the rest of the time would be pure waste.
+  React.useEffect(() => {
+    if (!otpFlow) return;
+    const t = setInterval(() => setOtpNow(Date.now()), 1_000);
+    return () => clearInterval(t);
+  }, [otpFlow]);
+
+  // A manager denying the request has to reach the person standing outside, and
+  // they have no other reason to re-render.
+  React.useEffect(() => {
+    if (!otpFlow) return;
+    const t = setInterval(async () => {
+      const res = await getEarlyClockInStatus();
+      if (!res.ok) return;
+      if (res.status === "cancelled") {
+        setOtpFlow(null);
+        setOtpCode("");
+        setOtpLocked(false);
+        requestLocation();
+        toast.error("Your manager declined the early start.");
+      } else if (res.status === "used") {
+        setOtpFlow(null);
+        setOtpCode("");
+        router.refresh();
+      } else if (res.status === "locked") {
+        setOtpLocked(true);
+      }
+    }, OTP_POLL_MS);
+    return () => clearInterval(t);
+  }, [otpFlow, requestLocation, router, toast]);
 
   // Distance to every clockable store from the current position, nearest first.
   const storeDistances = React.useMemo(
@@ -306,6 +388,18 @@ export function CrewClockApp({
         toast.error("You're not within range of a store. Move closer and try again.");
         return;
       }
+
+      // Starting before the booked shift needs the manager's authorisation, so
+      // that press goes to the OTP action instead. Decided from props already
+      // on this screen: an ON-TIME clock-in makes exactly the one server call
+      // it always did. The server re-checks either way — this only routes.
+      const early = isEarlyClockIn({
+        nowMinutes: timeToMinutes(londonHHMM(new Date())),
+        scheduledStartMinutes: todayBookedStartMinutes,
+        hasSessionToday: todaySessions.length > 0,
+      });
+      if (early && (await startOtpFlow(fix))) return;
+
       const res = await clockIn({
         latitude: fix.lat,
         longitude: fix.lng,
@@ -317,6 +411,102 @@ export function CrewClockApp({
         return;
       }
       toast.success(`Clocked in at ${detected.store.name}. Have a good shift!`);
+      router.refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Ask for a code against a fix taken at the press. Returns true when the OTP
+   * panel took over; false means the server judged the clock-in on time after
+   * all and the caller should carry on as normal.
+   */
+  async function startOtpFlow(fix: Awaited<ReturnType<typeof acquireForSubmit>>) {
+    const res = await requestEarlyClockInOtp({
+      latitude: fix.lat,
+      longitude: fix.lng,
+      accuracy: fix.accuracy,
+      fix_age_ms: fix.ageMs,
+    });
+    if (!res.ok) {
+      toast.error(res.error);
+      return true;
+    }
+    if (!res.otp_required) return false;
+    setOtpFlow({
+      requestId: res.request_id,
+      expiresAt: res.expires_at,
+      scheduledStart: res.scheduled_start ?? "",
+      storeName: res.store_name,
+    });
+    setOtpCode("");
+    setOtpLocked(false);
+    setOtpNow(Date.now());
+    return true;
+  }
+
+  async function submitOtp() {
+    if (!/^\d{4}$/.test(otpCode)) {
+      toast.error("Enter the 4-digit code your manager gave you.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await clockInWithEarlyOtp({ otp: otpCode });
+      if (!res.ok) {
+        toast.error(res.error);
+        setOtpCode("");
+        return;
+      }
+      const storeName = otpFlow?.storeName;
+      setOtpFlow(null);
+      setOtpCode("");
+      setOtpLocked(false);
+      toast.success(
+        storeName ? `Clocked in at ${storeName}. Have a good shift!` : "Clocked in.",
+      );
+      router.refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelOtp() {
+    const requestId = otpFlow?.requestId;
+    setOtpFlow(null);
+    setOtpCode("");
+    setOtpLocked(false);
+    // The hook stopped refreshing the fix while the panel was up, so get a
+    // current one back before the button is live again.
+    requestLocation();
+    if (requestId) await cancelEarlyClockInRequest({ requestId });
+  }
+
+  /** Expired or locked — start again with a fresh fix and a fresh code. */
+  async function requestNewOtp() {
+    setBusy(true);
+    try {
+      const fix = await acquireForSubmit();
+      if (await startOtpFlow(fix)) return;
+      // No longer early (they waited past their start time), so this is just a
+      // clock-in now.
+      setOtpFlow(null);
+      const res = await clockIn({
+        latitude: fix.lat,
+        longitude: fix.lng,
+        accuracy: fix.accuracy,
+        fix_age_ms: fix.ageMs,
+      });
+      if (!res.ok) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success("Clocked in. Have a good shift!");
       router.refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
@@ -503,8 +693,76 @@ export function CrewClockApp({
               </div>
             )}
 
+            {/* Early start — waiting on the manager's code. Replaces the clock
+                button entirely: there is nothing else to press until this is
+                resolved one way or the other. */}
+            {otpFlow && (
+              <div className="rounded-xl border border-gold/40 bg-gold/5 p-4 flex flex-col gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-gold">
+                    You&apos;re starting your shift early. Ask your manager for an OTP
+                    to clock in.
+                  </div>
+                  {otpFlow.scheduledStart && (
+                    <p className="text-xs text-text-muted mt-1">
+                      Your shift is booked to start at{" "}
+                      <span className="tabular-nums font-medium text-text-primary">
+                        {otpFlow.scheduledStart.slice(0, 5)}
+                      </span>
+                      .
+                    </p>
+                  )}
+                  <p className="text-xs text-text-muted mt-0.5">
+                    Your manager can see the code on their Live board at{" "}
+                    {otpFlow.storeName}.
+                  </p>
+                </div>
+
+                {otpDead ? (
+                  <>
+                    <p className="text-sm text-danger">
+                      {otpLocked
+                        ? "Too many wrong codes — ask your manager for a new one."
+                        : "OTP expired — ask your manager for a new one."}
+                    </p>
+                    <Button onClick={requestNewOtp} loading={busy} className="w-full">
+                      Request new OTP
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-xs text-text-muted tabular-nums">
+                      Expires in {formatCountdown(otpExpiresAt - otpNow)}
+                    </p>
+                    <Input
+                      label="4-digit OTP"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      maxLength={4}
+                      value={otpCode}
+                      onChange={(e) =>
+                        setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 4))
+                      }
+                      placeholder="0000"
+                    />
+                    <Button
+                      onClick={submitOtp}
+                      loading={busy}
+                      disabled={busy || otpCode.length !== 4}
+                      className="w-full"
+                    >
+                      Submit &amp; clock in
+                    </Button>
+                  </>
+                )}
+                <Button variant="outline" onClick={cancelOtp} disabled={busy} className="w-full">
+                  Cancel
+                </Button>
+              </div>
+            )}
+
             {/* Big primary action */}
-            {(
+            {!otpFlow && (
               <div className="flex flex-col gap-3">
                 {/* Drivers enter short + long deliveries before clocking out */}
                 {currentPhase === "out" && isDriver && (

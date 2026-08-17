@@ -642,6 +642,41 @@ export type ClockSessionSpan = {
   extra_long_deliveries?: number | null;
 };
 
+export type EarlyClockInStatus =
+  | "pending"
+  | "used"
+  | "expired"
+  | "cancelled"
+  | "locked";
+
+/**
+ * A request to start a booked shift EARLY, authorised by a manager reading a
+ * 4-digit code out loud (migration 043).
+ *
+ * An audit sidecar, never a pay record: the clock-in it authorises writes an
+ * ordinary clock_events + clock_sessions pair, and approval and the Tuesday
+ * sheet neither know nor care that this row exists.
+ *
+ * `otp_code` is present because this type describes the STAFF-side row — the
+ * Live board renders it for the manager to read out. It must never be sent to
+ * the employee it gates; their client polls a server action that strips it.
+ */
+export type EarlyClockInRequest = {
+  id: string;
+  employee_id: string;
+  employee_name: string;
+  store_id: string;
+  store_name: string | null;
+  event_date: string;
+  scheduled_start: string | null;
+  otp_code: string;
+  status: EarlyClockInStatus;
+  requested_at: string;
+  expires_at: string;
+  /** When they actually clocked in, on a `used` row. */
+  actual_clock_in_at: string | null;
+};
+
 /**
  * A manager's clock in/out for a day. Managers are login accounts
  * (allowed_users), not employees, so their attendance lives in its own table

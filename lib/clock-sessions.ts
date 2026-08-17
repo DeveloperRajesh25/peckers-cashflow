@@ -318,6 +318,29 @@ export async function findOpenSession(
   return (data as ClockSession | null) ?? null;
 }
 
+/**
+ * Has this person clocked at all on a given date? Answered from the SESSIONS,
+ * not the day header, because the header's clock_in_at survives a shift being
+ * deleted and a day can exist with no shifts on it at all.
+ *
+ * Used by the early clock-in gate: the second shift of a day is never asked for
+ * an OTP, since the person is already on site and the morning verified them.
+ */
+export async function hasSessionOnDate(
+  supabase: SupabaseClient,
+  employeeId: string,
+  eventDate: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("clock_sessions")
+    .select("id")
+    .eq("employee_id", employeeId)
+    .eq("event_date", eventDate)
+    .limit(1);
+  if (error) throw new Error(error.message);
+  return (data ?? []).length > 0;
+}
+
 /** Every session of a day, earliest first. */
 export async function sessionsForEvent(
   supabase: SupabaseClient,

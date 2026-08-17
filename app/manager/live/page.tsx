@@ -28,9 +28,11 @@ import type {
 } from "@/lib/types";
 import {
   COVER_SCHEDULE_COLUMNS,
+  EARLY_CLOCK_IN_COLUMNS,
   LIVE_CLOCK_SESSION_COLUMNS,
   LIVE_EMPLOYEE_COLUMNS,
   SCHEDULE_COLUMNS,
+  mapEarlyClockInRows,
 } from "@/lib/rota-columns";
 
 export const dynamic = "force-dynamic";
@@ -58,6 +60,7 @@ export default async function ManagerLivePage() {
     coverClocksRes,
     coverShiftsRes,
     coverSchedulesRes,
+    earlyClockInsRes,
   ] = await Promise.all([
     // All stores — the clock card needs every store's geofence to detect which
     // one the manager is physically at (and nudge them to switch if needed).
@@ -115,6 +118,15 @@ export default async function ManagerLivePage() {
       .eq("shift_date", today)
       .eq("store_id", storeId ?? ""),
     supabase.from("cover_driver_schedules").select(COVER_SCHEDULE_COLUMNS),
+    // Scoped to the store the manager is RUNNING, never their home store — a
+    // manager covering the other store answers that store's phone.
+    supabase
+      .from("early_clock_in_requests")
+      .select(EARLY_CLOCK_IN_COLUMNS)
+      .eq("event_date", today)
+      .eq("store_id", storeId ?? "")
+      .in("status", ["pending", "used"])
+      .order("requested_at", { ascending: false }),
   ]);
 
   const relevantIds = Array.from(
@@ -189,6 +201,7 @@ export default async function ManagerLivePage() {
         coverDriverClocks={(coverClocksRes.data ?? []) as CoverDriverClockEvent[]}
         coverDriverShifts={(coverShiftsRes.data ?? []) as CoverDriverShift[]}
         coverDriverSchedules={(coverSchedulesRes.data ?? []) as CoverDriverScheduleDay[]}
+        earlyClockIns={mapEarlyClockInRows(earlyClockInsRes.data)}
         canAddClockIn
         todayISO={today}
         userRole="manager"

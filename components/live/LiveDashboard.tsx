@@ -20,6 +20,7 @@ import type {
   AllowedUser,
   ClockEvent,
   CoverDriver,
+  EarlyClockInRequest,
   CoverDriverClockEvent,
   CoverDriverScheduleDay,
   CoverDriverShift,
@@ -45,6 +46,7 @@ import {
   ManualClockEntryModal,
   type ManualEntryCandidate,
 } from "@/components/clock/ManualClockEntryModal";
+import { EarlyClockInOtpPanel } from "@/components/live/EarlyClockInOtpPanel";
 
 type Props = {
   stores: Store[];
@@ -77,6 +79,9 @@ type Props = {
    * elsewhere can't silently switch a pay-affecting write back on.
    */
   canAddClockIn?: boolean;
+  /** Today's early clock-in authorisations (migration 043). Defaulted to [] so
+   *  anything else rendering this board is unaffected. */
+  earlyClockIns?: EarlyClockInRequest[];
   /** Server's "today" as YYYY-MM-DD, for the manual-entry date. */
   todayISO?: string;
   userRole: string;
@@ -173,6 +178,7 @@ export function LiveDashboard({
   coverDriverShifts = [],
   coverDriverSchedules = [],
   canAddClockIn = false,
+  earlyClockIns = [],
   todayISO: todayIsoProp,
   userRole,
   userStoreId,
@@ -191,14 +197,19 @@ export function LiveDashboard({
     return () => clearInterval(tick);
   }, []);
 
+  // Someone is standing outside waiting to be let in, so the board has to reach
+  // them faster than its usual half-minute cadence.
+  const hasPendingEarlyClockIn = earlyClockIns.some((r) => r.status === "pending");
+
   // Server data refresh runs every 30 seconds, and only while the tab is
   // visible — keeps the board "live" without hammering Supabase on idle tabs.
   React.useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
+    const every = hasPendingEarlyClockIn ? 10_000 : 30_000;
 
     const start = () => {
       if (timer) return;
-      timer = setInterval(() => router.refresh(), 30_000);
+      timer = setInterval(() => router.refresh(), every);
     };
     const stop = () => {
       if (timer) {
@@ -220,7 +231,7 @@ export function LiveDashboard({
       document.removeEventListener("visibilitychange", onVisibility);
       stop();
     };
-  }, [router]);
+  }, [router, hasPendingEarlyClockIn]);
 
   const isSuperAdmin = userRole === "admin";
 
@@ -348,6 +359,10 @@ export function LiveDashboard({
           Live · updated {formatTimeOnly(now.toISOString())}
         </span>
       </div>
+
+      {/* Above everything: somebody may be waiting outside for a code, and it
+          renders itself away when there is nothing to show. */}
+      <EarlyClockInOtpPanel requests={earlyClockIns} showStore={isSuperAdmin} />
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
         {visibleStores.map((store) => {
