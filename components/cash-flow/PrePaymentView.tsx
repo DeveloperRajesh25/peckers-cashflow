@@ -57,6 +57,7 @@ export function PrePaymentView({
   store,
   stores,
   weekStart,
+  vmDeliveryOrders,
   prevWeek,
   nextWeek,
   isAdmin,
@@ -67,6 +68,8 @@ export function PrePaymentView({
   store: StoreOpt;
   stores: StoreOpt[];
   weekStart: string;
+  /** Vita Mojo delivery orders for the pay week, or null when VM has no data. */
+  vmDeliveryOrders?: number | null;
   prevWeek: string;
   nextWeek: string;
   isAdmin: boolean;
@@ -181,8 +184,7 @@ export function PrePaymentView({
   );
   const paidCount = payout ? payout.lines.filter(isLinePaid).length : 0;
 
-  // Delivery totals for the footer, shaped like a payout line so the footer
-  // cell foots to a checkable number per drop type (SD / LD / SM / LM).
+  // Delivery totals for the footer, summed per drop type (SD / LD / SM / LM).
   const totals = React.useMemo(
     () =>
       lines.reduce(
@@ -204,6 +206,12 @@ export function PrePaymentView({
       ),
     [lines],
   );
+
+  // Footer split: what a manager signs off (the normal round) vs the extra drops
+  // logged beyond it, so both can be read against Vita Mojo's delivery orders.
+  const approvedDeliveries =
+    totals.short_deliveries_count + totals.long_deliveries_count;
+  const miscDeliveries = totals.short_misc_count + totals.long_misc_count;
 
   function go(storeId: string, week: string) {
     return `${basePath}/payout?week=${week}&store=${storeId}`;
@@ -708,7 +716,34 @@ export function PrePaymentView({
                 <tr className="border-t-2 border-border bg-bg/60 font-semibold">
                   <td className="px-4 py-3" colSpan={4}>Total</td>
                   <td className="px-4 py-3 text-right tabular-nums">
-                    <DeliveryCell line={totals} total />
+                    <span className="flex flex-col items-end gap-0.5 whitespace-nowrap">
+                      <span className="text-[11px] font-normal text-text-muted">
+                        VM deliveries{" "}
+                        <span
+                          className="ml-1 font-semibold text-text-primary tabular-nums"
+                          title="Total delivery orders Vita Mojo recorded for this pay week"
+                        >
+                          {vmDeliveryOrders == null ? "—" : vmDeliveryOrders}
+                        </span>
+                      </span>
+                      <span className="text-[11px] font-normal text-text-muted">
+                        Approved{" "}
+                        <span className="ml-1 font-semibold text-text-primary tabular-nums">
+                          {approvedDeliveries}
+                        </span>
+                      </span>
+                      <span className="text-[11px] font-normal text-text-muted">
+                        Miscellaneous{" "}
+                        <span
+                          className={
+                            "ml-1 font-semibold tabular-nums " +
+                            (miscDeliveries > 0 ? "text-gold" : "text-text-primary")
+                          }
+                        >
+                          {miscDeliveries}
+                        </span>
+                      </span>
+                    </span>
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums">
                     {formatGBP(lines.reduce((s, l) => s + l.delivery_wages, 0))}

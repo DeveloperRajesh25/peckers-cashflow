@@ -28,6 +28,8 @@ import type {
   YoyRow,
   WeeklySummaryInputRow,
 } from "@/lib/vm-analytics/types";
+import { canonicalStore, isDeliveryChannel } from "@/lib/vm-analytics/constants";
+import { groupAgg } from "@/lib/vm-analytics/channels";
 
 // All KPI views are weekly. Most queries take an optional ISO week_start; when
 // omitted they resolve to the latest available week.
@@ -717,4 +719,22 @@ function sumIfComplete(rows: YoyRow[], f: keyof YoyRow): number | null {
     total += numOf(v);
   }
   return total;
+}
+
+// Delivery order count for one week, scoped to a store — the same figure the
+// Executive dashboard prints as "Delivery Orders" (its channel-table TOTAL), so
+// the Tuesday payout can be checked against what Vita Mojo recorded. Store names
+// differ between the VM and cashflow databases, hence canonicalStore. Returns
+// null when the week has no VM rows at all, which must read as "not loaded"
+// rather than zero deliveries.
+export async function getDeliveryOrdersForWeek(
+  weekIso: string,
+  store?: string | null,
+): Promise<number | null> {
+  const rows = await getExecChannels(weekIso);
+  const scoped = store
+    ? rows.filter((r) => canonicalStore(r.store) === canonicalStore(store))
+    : rows;
+  if (scoped.length === 0) return null;
+  return groupAgg(scoped, isDeliveryChannel).orders;
 }
