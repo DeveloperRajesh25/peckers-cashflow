@@ -260,7 +260,8 @@ export const config = {
   matcher: [
     // Exclude Next internals, static assets, and machine endpoints that do their
     // own auth: the service worker + manifest (must be served as-is, not
-    // redirected to a login page), and secret-guarded cron routes.
-    "/((?!_next/static|_next/image|favicon.ico|api/health|api/cron|sw.js|manifest.webmanifest|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    // redirected to a login page), and the secret-guarded cron + external
+    // machine-to-machine routes.
+    "/((?!_next/static|_next/image|favicon.ico|api/health|api/cron|api/external|sw.js|manifest.webmanifest|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };
