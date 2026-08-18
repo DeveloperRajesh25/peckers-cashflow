@@ -717,6 +717,17 @@ export function PrePaymentView({
                   <td className="px-4 py-3" colSpan={4}>Total</td>
                   <td className="px-4 py-3 text-right tabular-nums">
                     <span className="flex flex-col items-end gap-0.5 whitespace-nowrap">
+                      <span className="text-[10px] font-normal text-text-muted">
+                        {totals.short_deliveries_count} SD ·{" "}
+                        {totals.long_deliveries_count} LD ·{" "}
+                        <span className={totals.short_misc_count > 0 ? "text-gold font-medium" : ""}>
+                          {totals.short_misc_count} SM
+                        </span>{" "}
+                        ·{" "}
+                        <span className={totals.long_misc_count > 0 ? "text-gold font-medium" : ""}>
+                          {totals.long_misc_count} LM
+                        </span>
+                      </span>
                       <span className="text-[11px] font-normal text-text-muted">
                         VM deliveries{" "}
                         <span
