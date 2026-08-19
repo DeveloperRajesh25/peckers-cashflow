@@ -69,6 +69,28 @@ export interface ProductCategoryRow extends ProductRow {
   category: string;
 }
 
+// Trailing N-week NET revenue for one store x category x item, alongside the N
+// weeks before it, from vm_mv_category_quarter_net. Grain is per item so the app
+// can apply the same hidden-product / category-folding rules it applies to the
+// weekly figures.
+//
+// The window length lives in SQL (vm_quarter_weeks()), not here: q_from/prev_to
+// carry the bounds and q_weeks/prev_weeks how many weeks of data each window
+// actually holds, so changing the quarter length needs no app change.
+export interface CategoryQuarterRow {
+  store: string;
+  category: string;
+  item_name: string;
+  q_from: string;
+  q_to: string;
+  prev_from: string;
+  prev_to: string;
+  q_weeks: Num;
+  prev_weeks: Num;
+  q_net_sales: Num;
+  prev_q_net_sales: Num;
+}
+
 // One curated new-launch entry, from vm_new_launches. Each row maps a raw
 // sales-data item_name to a display_name; several raw variants can share one
 // display_name so they roll up into a single New Launches line. launch_date is

@@ -10,6 +10,7 @@ import type {
   CategoryRow,
   CategoryPerfRow,
   ProductCategoryRow,
+  CategoryQuarterRow,
   NewLaunchRow,
   DaypartRow,
   DaypartChannelRow,
@@ -282,6 +283,42 @@ export async function getProductsNet(weekIso: string): Promise<ProductRow[]> {
     .order("net_sales", { ascending: false });
   if (error) throw new Error(`getProductsNet: ${error.message}`);
   return (data ?? []) as ProductRow[];
+}
+
+// Trailing N-week NET revenue per store x category x item for the given anchor
+// week, plus the N weeks before it, from vm_mv_category_quarter_net. Returns []
+// if the matview is missing OR has not been refreshed since this week synced, so
+// the Product Performance page still renders — the quarterly column just hides.
+// A hidden column is visible to the user in a way stale figures would not be.
+//
+// Paged: the item grain spans two windows of menu history, which can exceed the
+// REST layer's 1000-row response cap. A silently truncated page would drop whole
+// categories out of the quarterly column with no error to show for it.
+export async function getCategoryQuarterNet(weekIso: string): Promise<CategoryQuarterRow[]> {
+  const sb = getVMSupabaseServer();
+  const PAGE = 1000;
+  const MAX_PAGES = 20;
+  const out: CategoryQuarterRow[] = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const from = page * PAGE;
+    const { data, error } = await sb
+      .from("vm_mv_category_quarter_net")
+      .select(
+        "store, category, item_name, q_from, q_to, prev_from, prev_to, q_weeks, prev_weeks, q_net_sales, prev_q_net_sales",
+      )
+      .eq("anchor_week", weekIso)
+      .order("store")
+      .order("item_name")
+      .range(from, from + PAGE - 1);
+    if (error) {
+      console.warn(`getCategoryQuarterNet: ${error.message}`);
+      return [];
+    }
+    const rows = (data ?? []) as CategoryQuarterRow[];
+    out.push(...rows);
+    if (rows.length < PAGE) break;
+  }
+  return out;
 }
 
 export async function getCategoryItemsNet(weekIso: string): Promise<ProductCategoryRow[]> {

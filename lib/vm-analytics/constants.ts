@@ -84,11 +84,25 @@ export const isExcludedProduct = (itemName: string) => {
 // category totals/drill-down) without touching the source data. Delete a line to
 // bring one back. Kept separate from EXCLUDED_PRODUCTS, which only drops drinks/
 // sides from rankings but keeps them in category totals.
-export const HIDDEN_PRODUCTS = new Set(
-  ["The OG Burger & Chips", "Alpha OG burger meal"].map(normalizeItem),
-);
+export const HIDDEN_PRODUCTS = new Set(["The OG Burger & Chips"].map(normalizeItem));
 
-export const isHiddenProduct = (itemName: string) => HIDDEN_PRODUCTS.has(normalizeItem(itemName));
+// Loyalty stamp-card redemptions (see the physical card: 3 stamps = GAMMA free
+// side, 6 = BETA free main, 10 = ALPHA free meal) ring through the till as
+// dedicated "Alpha ..."-prefixed items — "Alpha OG burger meal", "Alpha 3
+// Tender Meal", "Alpha 4 Wings Meal", "Alpha OG Peri Peri Burger Meal" — priced
+// near zero, confirmed by SQL audit against vm_net_sales_per_product (2026-08-19,
+// see docs/updates.md Update 119): every one nets £0-£11 against a real meal's
+// £10-27, some literally £0. Matched by PREFIX rather than the exact-name list
+// above so a new Alpha meal variant is excluded on day one, not after it's
+// already shown up as a "least selling item". Beta/Gamma redemptions currently
+// ring up as the ordinary menu item with a till discount (no dedicated SKU), so
+// they can't be caught this way — see docs/updates.md Update 119 for the gap.
+const REWARD_TIER_PREFIXES = ["alpha", "beta", "gamma"];
+
+export const isHiddenProduct = (itemName: string) => {
+  const norm = normalizeItem(itemName);
+  return HIDDEN_PRODUCTS.has(norm) || REWARD_TIER_PREFIXES.some((prefix) => norm.startsWith(prefix));
+};
 
 // Thresholds for the Weekly Exception Report (rule-based exceptions).
 export const EXCEPTION_THRESHOLDS = {

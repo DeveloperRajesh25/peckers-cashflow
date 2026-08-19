@@ -201,10 +201,17 @@ on conflict (item_name) do update set category = excluded.category, updated_at =
 --    This auto-classifies new flavours and quantity-prefixed names
 --    ("2 Mango Pineapple Glazed Tenders") without a table edit.
 -- 3) otherwise Uncategorised.
+--
+-- search_path is pinned so the unqualified `vm_menu_item_category` reference
+-- below can never fail to resolve based on the calling session's search_path.
+-- A plain `create or replace view` never surfaced this because a view doesn't
+-- execute its query at creation time — but `create materialized view` does,
+-- immediately, in whatever search_path the SQL editor session happens to have.
 create or replace function vm_category_for(p_item_name text)
 returns text
 language sql
 stable
+set search_path = public
 as $$
   with n as (
     select regexp_replace(lower(btrim(p_item_name)), '\s+', ' ', 'g') as name
