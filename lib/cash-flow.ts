@@ -291,8 +291,8 @@ export function buildPrePaymentSummary(input: {
   /** Default supermarket cash float added to the pot (0 if not configured). */
   supermarket_cash?: number;
   /**
-   * Manual cash adjustment (migration 039), SIGNED: positive = cash added,
-   * negative = cash taken out. Settles AFTER actual_cash_available so the cash
+   * Manual cash adjustment (migration 039), SIGNED: positive = cash taken out,
+   * negative = cash added. Settles AFTER actual_cash_available so the cash
    * reconciliation above stays a record of real till movements only.
    */
   adjustment?: number;
@@ -309,10 +309,10 @@ export function buildPrePaymentSummary(input: {
   const totalCashWages = round2(input.lines.reduce((s, l) => s + l.cash_wage, 0));
   const totalDeliveryWages = round2(input.lines.reduce((s, l) => s + l.delivery_wages, 0));
   const grandTotal = round2(totalCashWages + totalDeliveryWages);
-  // Signed, and NOT clamped at zero — a negative adjustment (cash taken out of
+  // Signed, and NOT clamped at zero — a positive adjustment (cash taken out of
   // the pot) is the whole reason the field can hold one.
   const adjustment = round2(Number(input.adjustment) || 0);
-  const diff = round2(actualCashAvailable + adjustment - grandTotal);
+  const diff = round2(actualCashAvailable - adjustment - grandTotal);
 
   return {
     store_id: input.store_id,

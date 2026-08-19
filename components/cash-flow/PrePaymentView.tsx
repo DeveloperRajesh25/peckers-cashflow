@@ -435,7 +435,7 @@ export function PrePaymentView({
                 <SummaryRow
                   label={`Adjustment${fin.adjustment_reason ? ` — ${fin.adjustment_reason}` : ""}`}
                   value={`${fin.adjustment > 0 ? "+" : "−"} ${formatGBP(Math.abs(fin.adjustment))}`}
-                  tone={fin.adjustment > 0 ? "good" : "bad"}
+                  tone={fin.adjustment > 0 ? "bad" : "good"}
                 />
               )}
               {fin.post_office_draw > 0.001 ? (
@@ -532,11 +532,11 @@ export function PrePaymentView({
                   </div>
                 </div>
                 <p className="text-xs text-text-muted">
-                  A <span className="font-medium text-success">positive</span> amount is
-                  cash added to the pot — it shrinks the Post Office draw, or grows the
+                  A <span className="font-medium text-danger">positive</span> amount is
+                  cash taken out of the pot — it grows the Post Office draw, or shrinks the
                   surplus carried into next week. A{" "}
-                  <span className="font-medium text-danger">negative</span> amount (e.g.{" "}
-                  <span className="tabular-nums">-50</span>) is cash taken out and does the
+                  <span className="font-medium text-success">negative</span> amount (e.g.{" "}
+                  <span className="tabular-nums">-50</span>) is cash added and does the
                   opposite. Set it to 0 to remove the adjustment. This does{" "}
                   <span className="font-medium text-text-primary">not</span> change the
                   envelope figures or anyone&apos;s wages.

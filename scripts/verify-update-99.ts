@@ -67,33 +67,33 @@ check("no draw", none.post_office_draw, 0);
 check("adjustment defaults to 0", none.adjustment, 0);
 check("no reason", none.adjustment_reason, null);
 
-console.log("\n--- POSITIVE adjustment: cash added to the pot ---");
-const plus = buildPrePaymentSummary({ ...base, adjustment: 200, adjustment_reason: "Owner float" });
+console.log("\n--- POSITIVE adjustment: cash taken out of the pot ---");
+const plus = buildPrePaymentSummary({ ...base, adjustment: 200, adjustment_reason: "Paid supplier" });
 check("actual cash available is UNCHANGED", plus.actual_cash_available, 1350);
-check("surplus grows by the adjustment", plus.surplus, 1050);
+check("surplus shrinks by the adjustment", plus.surplus, 650);
 check("still no draw", plus.post_office_draw, 0);
-check("amount and reason carried", [plus.adjustment, plus.adjustment_reason], [200, "Owner float"]);
+check("amount and reason carried", [plus.adjustment, plus.adjustment_reason], [200, "Paid supplier"]);
 
-console.log("\n--- NEGATIVE adjustment: cash taken out ---");
-const minus = buildPrePaymentSummary({ ...base, adjustment: -200, adjustment_reason: "Paid supplier" });
+console.log("\n--- NEGATIVE adjustment: cash added to the pot ---");
+const minus = buildPrePaymentSummary({ ...base, adjustment: -200, adjustment_reason: "Owner float" });
 check("actual cash available is UNCHANGED", minus.actual_cash_available, 1350);
-check("surplus shrinks by the adjustment", minus.surplus, 650);
+check("surplus grows by the adjustment", minus.surplus, 1050);
 check("still no draw", minus.post_office_draw, 0);
 
-console.log("\n--- A negative adjustment can CREATE a Post Office draw ---");
-const intoDraw = buildPrePaymentSummary({ ...base, adjustment: -1000, adjustment_reason: "Cash removed" });
+console.log("\n--- A positive adjustment can CREATE a Post Office draw ---");
+const intoDraw = buildPrePaymentSummary({ ...base, adjustment: 1000, adjustment_reason: "Cash removed" });
 check("surplus gone", intoDraw.surplus, 0);
 check("draw = 500 + 1000 - 1350 = 150", intoDraw.post_office_draw, 150);
 
-console.log("\n--- A positive adjustment can CLEAR a Post Office draw ---");
+console.log("\n--- A negative adjustment can CLEAR a Post Office draw ---");
 // Shrink the pot so a draw exists first: envelopes 0 => available = 100+0+350 = 450 vs 500 due.
 const shortBase = { ...base, entries: [{ vita_mojo_sales: 0, envelope_amount: 0, difference: 0 }] };
 const short = buildPrePaymentSummary(shortBase);
 check("baseline draw of 50", short.post_office_draw, 50);
-const rescued = buildPrePaymentSummary({ ...shortBase, adjustment: 50, adjustment_reason: "Topped up" });
+const rescued = buildPrePaymentSummary({ ...shortBase, adjustment: -50, adjustment_reason: "Topped up" });
 check("draw exactly cleared", rescued.post_office_draw, 0);
 check("and no phantom surplus at the boundary", rescued.surplus, 0);
-const overRescued = buildPrePaymentSummary({ ...shortBase, adjustment: 130, adjustment_reason: "Topped up" });
+const overRescued = buildPrePaymentSummary({ ...shortBase, adjustment: -130, adjustment_reason: "Topped up" });
 check("beyond break-even becomes surplus", [overRescued.post_office_draw, overRescued.surplus], [0, 80]);
 
 console.log("\n--- Rounding: pennies must not drift ---");

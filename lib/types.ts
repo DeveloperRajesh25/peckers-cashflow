@@ -1084,8 +1084,8 @@ export type CashPayout = {
   total_delivery_wages: number;
   grand_total_wages: number;
   /**
-   * Manual cash adjustment (migration 039), SIGNED: positive = cash added to
-   * the pot, negative = taken out. Applied at the settle, NOT inside
+   * Manual cash adjustment (migration 039), SIGNED: positive = cash taken out
+   * of the pot, negative = added. Applied at the settle, NOT inside
    * actual_cash_available — see buildPrePaymentSummary.
    */
   adjustment_amount: number;
@@ -1215,9 +1215,9 @@ export type PrePaymentSummary = {
    */
   adjustment: number;
   adjustment_reason: string | null;
-  /** grand_total_wages − (actual_cash_available + adjustment), clamped ≥ 0. */
+  /** grand_total_wages − (actual_cash_available − adjustment), clamped ≥ 0. */
   post_office_draw: number;
-  /** (actual_cash_available + adjustment) − grand_total_wages, clamped ≥ 0. */
+  /** (actual_cash_available − adjustment) − grand_total_wages, clamped ≥ 0. */
   surplus: number;
   lines: WageLine[];
   /**
