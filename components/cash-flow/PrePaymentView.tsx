@@ -23,6 +23,7 @@ import {
   parseISODate,
   formatTimeOnly,
   deliveryBreakdown,
+  addDays,
 } from "@/lib/utils";
 import { payWeekOf, supermarketCashLabel } from "@/lib/cash-flow";
 import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
@@ -329,6 +330,10 @@ export function PrePaymentView({
   const tuesday = formatDDMMYYYY(
     new Date(parseISODate(weekStart).getTime() + 1 * 86400000),
   );
+  // Vita Mojo cash window: the Tuesday before this week through this Monday —
+  // mirrors the cashStart/cashEnd calc in app/actions/payouts.ts computeSummary.
+  const cashInStart = addDays(parseISODate(weekStart), -6);
+  const cashInEnd = parseISODate(weekStart);
   // Wages paid this Tuesday are for the PREVIOUS Mon–Sun week.
   const payWeekStartDate = new Date(parseISODate(weekStart).getTime() - 7 * 86400000);
   const payWeekLabel = `${formatDDMMYYYY(payWeekStartDate)} – ${formatDDMMYYYY(
@@ -411,7 +416,10 @@ export function PrePaymentView({
           <table className="w-full text-sm">
             <tbody>
               <SummaryRow label="Opening balance (carried forward)" value={formatGBP(fin.opening_balance)} />
-              <SummaryRow label="Vita Mojo cash sales (Tue – Mon)" value={formatGBP(fin.vita_mojo_total)} />
+              <SummaryRow
+                label={`Vita Mojo cash sales (Tue ${formatDDMMYYYY(cashInStart)} – Mon ${formatDDMMYYYY(cashInEnd)})`}
+                value={formatGBP(fin.vita_mojo_total)}
+              />
               <SummaryRow label="Less: logged differences / cash used" value={`(${formatGBP(fin.logged_differences)})`} tone="bad" />
               {fin.supermarket_cash > 0.001 && (
                 <SummaryRow label={supermarketCashLabel(store.name)} value={`+ ${formatGBP(fin.supermarket_cash)}`} tone="good" />
