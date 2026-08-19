@@ -2,6 +2,7 @@ import {
   getProductsNet,
   getWeeks,
   getCategoryItemsNet,
+  getCategoryQuarterNet,
   getNewLaunches,
   getExec,
 } from "@/lib/vm-analytics/queries";
@@ -21,7 +22,13 @@ import { Commentary } from "@/components/vm-analytics/Commentary";
 import { BarChartCard, PieChartCard } from "@/components/vm-analytics/charts/Charts";
 import { EmptyWeek, ErrorState, PageTitle } from "@/components/vm-analytics/PageState";
 import { buildInsights, type ProductInput } from "@/lib/vm-analytics/insights";
-import type { ProductRow, ProductCategoryRow, NewLaunchRow, ExecRow } from "@/lib/vm-analytics/types";
+import type {
+  ProductRow,
+  ProductCategoryRow,
+  CategoryQuarterRow,
+  NewLaunchRow,
+  ExecRow,
+} from "@/lib/vm-analytics/types";
 
 export const dynamic = "force-dynamic";
 
@@ -122,6 +129,15 @@ function aggregateNewLaunches(
     .sort((a, b) => b.units - a.units);
 }
 
+// The quarter length is defined in SQL (vm_quarter_weeks()), never here — the
+// rows carry their own window bounds and week counts. The % is shown only when
+// the prior window holds as many weeks of data as the current one, for every
+// store in scope: a full quarter measured against a part-loaded one reports a
+// collapse that never happened.
+function quarterComparableFrom(rows: CategoryQuarterRow[]): boolean {
+  return rows.length > 0 && rows.every((r) => n(r.q_weeks) > 0 && n(r.prev_weeks) === n(r.q_weeks));
+}
+
 // Fold "Churros" into "Desserts" so the two aggregate into one row. Applied to
 // every map key in aggregateCategories; all other categories pass through.
 const canonicalCategory = (name: string): string =>
@@ -133,11 +149,15 @@ const canonicalCategory = (name: string): string =>
 // the item rows so category totals always equal the sum of the visible items.
 // EXCLUDED_PRODUCTS (drinks, sides) deliberately stay in; only HIDDEN_PRODUCTS
 // are dropped, so they leave both the totals and the drill-down together.
+// quarterRows carry the trailing 16-week totals; they are folded and filtered by
+// the same rules as the weekly figures so the two columns can be read together.
 function aggregateCategories(
   itemRows: ProductCategoryRow[],
   itemPrevRows: ProductCategoryRow[],
   allItemRows: ProductCategoryRow[],
   allItemPrevRows: ProductCategoryRow[],
+  quarterRows: CategoryQuarterRow[],
+  quarterComparable: boolean,
 ): CategoryPerf[] {
   const wow = (cur: number, prev: number) => (prev > 0 ? ((cur - prev) / prev) * 100 : null);
   // The base is surfaced next to the % in the table, and is null on exactly the
@@ -185,6 +205,29 @@ function aggregateCategories(
   const hitchin = storeWow("Peckers Hitchin");
   const stevenage = storeWow("Peckers Stevenage");
 
+  // A category's quarterly revenue is what the CATEGORY took over 16 weeks, so it
+  // includes items that sold during the window but not in the anchor week. Those
+  // items have no drill-down line, which is why the item rows need not sum to the
+  // category total the way the weekly ones do.
+  const visibleQuarter = quarterRows.filter((r) => !isHiddenProduct(r.item_name));
+  const sumQuarter = (key: (r: CategoryQuarterRow) => string) => {
+    const m = new Map<string, { cur: number; prev: number }>();
+    for (const r of visibleQuarter) {
+      const k = key(r);
+      const c = m.get(k) ?? { cur: 0, prev: 0 };
+      c.cur += n(r.q_net_sales);
+      c.prev += n(r.prev_q_net_sales);
+      m.set(k, c);
+    }
+    return m;
+  };
+  const qCat = sumQuarter((r) => canonicalCategory(r.category));
+  const qItem = sumQuarter((r) => `${canonicalCategory(r.category)}::${r.item_name}`);
+  const quarterOf = (m: Map<string, { cur: number; prev: number }>, key: string) => {
+    const q = m.get(key) ?? { cur: 0, prev: 0 };
+    return { qRevenue: q.cur, qPct: quarterComparable ? wow(q.cur, q.prev) : null };
+  };
+
   const curCat = sumBy(visibleItems, (r) => canonicalCategory(r.category), (r) => n(r.gross_sales), (r) => n(r.units_sold));
   const prevCat = sumBy(visiblePrevItems, (r) => canonicalCategory(r.category), (r) => n(r.gross_sales), (r) => n(r.units_sold));
   const prevItem = sumBy(visiblePrevItems, (r) => `${canonicalCategory(r.category)}::${r.item_name}`, (r) => n(r.gross_sales), (r) => n(r.units_sold));
@@ -221,6 +264,7 @@ function aggregateCategories(
           hitchinPrev: hi.prev,
           stevenageWow: st.pct,
           stevenagePrev: st.prev,
+          ...quarterOf(qItem, key),
         };
       })
       .sort((a, b) => b.revenue - a.revenue);
@@ -237,6 +281,7 @@ function aggregateCategories(
       hitchinPrev: hiCat.prev,
       stevenageWow: stCat.pct,
       stevenagePrev: stCat.prev,
+      ...quarterOf(qCat, category),
       items,
     };
   });
@@ -260,6 +305,7 @@ export default async function ProductsPage({
   let prevRows: ProductRow[] = [];
   let itemRows: ProductCategoryRow[] = [];
   let itemPrevRows: ProductCategoryRow[] = [];
+  let quarterRows: CategoryQuarterRow[] = [];
   let newLaunches: NewLaunchRow[] = [];
   let execRows: ExecRow[] = [];
   let weekEnd = "";
@@ -270,11 +316,12 @@ export default async function ProductsPage({
     weekEnd = weeks.find((w) => w.week_start_iso === weekIso)?.week_end ?? "";
     const idx = weeks.findIndex((w) => w.week_start_iso === weekIso);
     const prevWeekIso = idx >= 0 ? weeks[idx + 1]?.week_start_iso ?? null : null;
-    [rows, prevRows, itemRows, itemPrevRows, newLaunches, execRows] = await Promise.all([
+    [rows, prevRows, itemRows, itemPrevRows, quarterRows, newLaunches, execRows] = await Promise.all([
       getProductsNet(weekIso),
       prevWeekIso ? getProductsNet(prevWeekIso) : Promise.resolve<ProductRow[]>([]),
       getCategoryItemsNet(weekIso),
       prevWeekIso ? getCategoryItemsNet(prevWeekIso) : Promise.resolve<ProductCategoryRow[]>([]),
+      getCategoryQuarterNet(weekIso),
       getNewLaunches(),
       getExec(weekIso),
     ]);
@@ -293,6 +340,7 @@ export default async function ProductsPage({
     prevRows = prevRows.filter((r) => r.store === activeStore);
     itemRows = itemRows.filter((r) => r.store === activeStore);
     itemPrevRows = itemPrevRows.filter((r) => r.store === activeStore);
+    quarterRows = quarterRows.filter((r) => r.store === activeStore);
   }
 
   // Denominator for Category Revenue Share = Executive dashboard total net sales
@@ -311,9 +359,19 @@ export default async function ProductsPage({
     );
   }
 
+  const quarterComparable = quarterComparableFrom(quarterRows);
   const items = aggregate(rows, prevRows);
   const newLaunchRows = aggregateNewLaunches(rows, prevRows, newLaunches);
-  const categoryPerf = aggregateCategories(itemRows, itemPrevRows, allItemRows, allItemPrevRows);
+  const categoryPerf = aggregateCategories(
+    itemRows,
+    itemPrevRows,
+    allItemRows,
+    allItemPrevRows,
+    quarterRows,
+    quarterComparable,
+  );
+  const showQuarter = quarterRows.length > 0;
+  const quarterStartIso = quarterRows[0]?.q_from ?? null;
   const top = items.slice(0, 5);
 
   // Category commentary. Add-on categories (Fries, Drinks, etc.) stay in — they
@@ -398,9 +456,23 @@ export default async function ProductsPage({
 
       <Section
         title="Category Performance"
-        description="Units, net revenue and week-on-week per menu category. Click a category to see its items."
+        description={
+          showQuarter
+            ? `Units, net revenue and week-on-week per menu category. Quarterly Revenue is the ${n(
+                quarterRows[0]?.q_weeks,
+              )} weeks to ${weekRange(quarterStartIso, weekEnd)}${
+                quarterComparable
+                  ? `, with the change vs the ${n(quarterRows[0]?.q_weeks)} weeks before it`
+                  : " — the % is withheld until an equally long earlier period exists to compare against"
+              }. Click a category to see its items.`
+            : "Units, net revenue and week-on-week per menu category. Click a category to see its items."
+        }
       >
-        <CategoryPerformanceTable rows={categoryPerf} showStoreWow={!activeStore} />
+        <CategoryPerformanceTable
+          rows={categoryPerf}
+          showStoreWow={!activeStore}
+          showQuarter={showQuarter}
+        />
       </Section>
 
       <Section

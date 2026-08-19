@@ -16,6 +16,8 @@ export interface CategoryItem {
   hitchinPrev: number | null;
   stevenageWow: number | null;
   stevenagePrev: number | null;
+  qRevenue: number;
+  qPct: number | null;
 }
 
 export interface CategoryPerf {
@@ -28,6 +30,8 @@ export interface CategoryPerf {
   hitchinPrev: number | null;
   stevenageWow: number | null;
   stevenagePrev: number | null;
+  qRevenue: number;
+  qPct: number | null;
   items: CategoryItem[];
 }
 
@@ -54,15 +58,46 @@ function WowCell({
   );
 }
 
+// Trailing 16-week net revenue with its change vs the previous 16 weeks. Unlike
+// WowCell this leads with the CURRENT figure — the quarter total is the number
+// being reported, and the % is the qualifier on it. `pct` is null when the
+// previous window has no revenue to measure against (a new item, or not enough
+// history loaded yet), in which case the total still stands on its own.
+function QuarterCell({
+  revenue,
+  pct,
+  dense,
+}: {
+  revenue: number;
+  pct: number | null;
+  dense?: boolean;
+}) {
+  if (revenue <= 0) return <span className="text-tertiary">—</span>;
+  return (
+    <span className={dense ? "text-secondary" : "text-primary"}>
+      {gbp(revenue)}
+      <span
+        className={`ml-1 font-medium ${dense ? "text-[10px]" : "text-xs"} ${
+          pct === null ? "text-tertiary" : deltaClass(pct)
+        }`}
+      >
+        ({signedPct(pct)})
+      </span>
+    </span>
+  );
+}
+
 // showStoreWow adds the per-store Hitchin/Stevenage WoW columns. They only make
 // sense in combined view — when a single store is selected they'd just duplicate
 // the (already store-scoped) Revenue WoW column, so the page hides them.
 export function CategoryPerformanceTable({
   rows,
   showStoreWow = false,
+  showQuarter = false,
 }: {
   rows: CategoryPerf[];
   showStoreWow?: boolean;
+  showQuarter?: boolean;
 }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -101,12 +136,17 @@ export function CategoryPerformanceTable({
                   </th>
                 </>
               )}
+              {showQuarter && (
+                <th className="whitespace-nowrap px-4 py-3 font-semibold uppercase text-xs tracking-wide border-b border-line text-right">
+                  Quarterly Revenue
+                </th>
+              )}
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={showStoreWow ? 6 : 4} className="px-4 py-8 text-center text-tertiary">
+                <td colSpan={4 + (showStoreWow ? 2 : 0) + (showQuarter ? 1 : 0)} className="px-4 py-8 text-center text-tertiary">
                   No data for this week.
                 </td>
               </tr>
@@ -144,6 +184,11 @@ export function CategoryPerformanceTable({
                           </td>
                         </>
                       )}
+                      {showQuarter && (
+                        <td className="whitespace-nowrap px-4 py-3 text-right tabular-nums">
+                          <QuarterCell revenue={cat.qRevenue} pct={cat.qPct} />
+                        </td>
+                      )}
                     </tr>
                     {isOpen &&
                       cat.items.map((it) => (
@@ -169,6 +214,11 @@ export function CategoryPerformanceTable({
                                 <WowCell prev={it.stevenagePrev} pct={it.stevenageWow} dense />
                               </td>
                             </>
+                          )}
+                          {showQuarter && (
+                            <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums text-xs">
+                              <QuarterCell revenue={it.qRevenue} pct={it.qPct} dense />
+                            </td>
                           )}
                         </tr>
                       ))}
