@@ -14,9 +14,8 @@ import {
   formatGBP,
   formatGBPPlain,
   toCSV,
-  weekLabel,
-  parseISODate,
 } from "@/lib/utils";
+import { payWeekOf } from "@/lib/cash-flow";
 import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import { DeliveryCell } from "./DeliveryCell";
 import {
@@ -30,6 +29,12 @@ import type {
   PayoutHistoryHeader,
 } from "@/lib/payout-history-paging";
 import type { CashPayoutLine, Store } from "@/lib/types";
+
+/** The header shows the week actually WORKED (and paid for), not the payment week. */
+function payoutWeekLabel(weekStartISO: string): string {
+  const { start, end } = payWeekOf(weekStartISO);
+  return `${formatDDMMYYYY(start)} – ${formatDDMMYYYY(end)}`;
+}
 
 const CSV_HEADERS = [
   "Week start", "Store", "Payment date", "Confirmed by", "Status",
@@ -152,7 +157,7 @@ export function PayoutHistoryView({
       const storeName = storeById.get(p.store_id) ?? p.store_name ?? "";
       for (const l of p.lines) {
         out.push([
-          formatDDMMYYYY(p.week_start_date),
+          formatDDMMYYYY(payWeekOf(p.week_start_date).start),
           storeName,
           p.payment_date ? formatDDMMYYYY(p.payment_date) : "",
           p.confirmed_by_name ?? "",
@@ -278,7 +283,7 @@ export function PayoutHistoryView({
                 >
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-semibold text-text-primary">{weekLabel(parseISODate(p.week_start_date))}</span>
+                      <span className="font-semibold text-text-primary">{payoutWeekLabel(p.week_start_date)}</span>
                       <Badge variant="neutral">{storeById.get(p.store_id) ?? p.store_name ?? "Store"}</Badge>
                       {p.status === "confirmed" ? (
                         <Badge variant="success">Confirmed</Badge>
@@ -356,7 +361,7 @@ export function PayoutHistoryView({
           {printRows.map((p) => (
             <div key={p.id} className="mb-6 break-inside-avoid">
               <h3 className="font-semibold">
-                {weekLabel(parseISODate(p.week_start_date))} —{" "}
+                {payoutWeekLabel(p.week_start_date)} —{" "}
                 {storeById.get(p.store_id) ?? p.store_name ?? "Store"} ({p.status})
               </h3>
               <p className="text-xs">
