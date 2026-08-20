@@ -20,9 +20,50 @@
 -- they already had in memory before being written.
 -- =============================================================
 
+-- employee_hours_computed's SELECT reads total_hours_worked, so Postgres
+-- won't widen the column while the view depends on it. Drop and recreate
+-- the view (same definition migration 044 left it in) around the alter.
+drop view if exists public.employee_hours_computed;
+
 alter table public.employee_hours
   alter column total_hours_worked type numeric(7,4);
 
 -- Re-round any already-stored 2dp values isn't needed/possible retroactively
 -- (the sub-hundredth precision was already lost on write) — this only
 -- prevents the loss from happening again on future rollups/edits.
+
+create view public.employee_hours_computed with (security_invoker = true) as
+select
+  eh.id,
+  eh.employee_id,
+  e.name                                         as employee_name,
+  e.phone                                        as employee_phone,
+  eh.week_start_date,
+  eh.total_hours_worked,
+  case
+    when e.hourly_cash_rate is not null and e.hourly_cash_rate > 0
+      then least(eh.total_hours_worked, coalesce(e.bank_weekly_hours_limit, 20))
+    else eh.total_hours_worked
+  end                                             as bank_hours,
+  case
+    when e.hourly_cash_rate is not null and e.hourly_cash_rate > 0
+      then greatest(eh.total_hours_worked - coalesce(e.bank_weekly_hours_limit, 20), 0)
+    else 0
+  end                                             as cash_hours,
+  case
+    when e.hourly_cash_rate is not null and e.hourly_cash_rate > 0
+      then greatest(eh.total_hours_worked - coalesce(e.bank_weekly_hours_limit, 20), 0)
+        * e.hourly_cash_rate
+    else 0
+  end                                             as cash_amount_due,
+  eh.hourly_rate_snapshot,
+  eh.notes,
+  eh.logged_by,
+  eh.approved,
+  eh.approved_at,
+  eh.source,
+  eh.created_at
+from public.employee_hours eh
+join public.employees e on e.id = eh.employee_id;
+
+grant select on public.employee_hours_computed to authenticated;
