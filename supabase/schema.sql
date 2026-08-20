@@ -121,10 +121,22 @@ select
   e.phone                                        as employee_phone,
   eh.week_start_date,
   eh.total_hours_worked,
-  least(eh.total_hours_worked, 20)               as bank_hours,
-  greatest(eh.total_hours_worked - 20, 0)        as cash_hours,
-  greatest(eh.total_hours_worked - 20, 0)
-    * eh.hourly_rate_snapshot                    as cash_amount_due,
+  case
+    when e.hourly_cash_rate is not null and e.hourly_cash_rate > 0
+      then least(eh.total_hours_worked, coalesce(e.bank_weekly_hours_limit, 20))
+    else eh.total_hours_worked
+  end                                             as bank_hours,
+  case
+    when e.hourly_cash_rate is not null and e.hourly_cash_rate > 0
+      then greatest(eh.total_hours_worked - coalesce(e.bank_weekly_hours_limit, 20), 0)
+    else 0
+  end                                             as cash_hours,
+  case
+    when e.hourly_cash_rate is not null and e.hourly_cash_rate > 0
+      then greatest(eh.total_hours_worked - coalesce(e.bank_weekly_hours_limit, 20), 0)
+        * e.hourly_cash_rate
+    else 0
+  end                                             as cash_amount_due,
   eh.hourly_rate_snapshot,
   eh.notes,
   eh.logged_by,
