@@ -87,7 +87,7 @@ create table if not exists public.employee_hours (
   id                     uuid primary key default gen_random_uuid(),
   employee_id            uuid not null references public.employees(id) on delete cascade,
   week_start_date        date not null,
-  total_hours_worked     numeric(5,2) not null,
+  total_hours_worked     numeric(7,4) not null,
   hourly_rate_snapshot   numeric(8,2) not null,
   notes                  text,
   logged_by              uuid references auth.users(id) on delete set null,
