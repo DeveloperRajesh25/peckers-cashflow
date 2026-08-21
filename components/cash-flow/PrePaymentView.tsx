@@ -23,7 +23,6 @@ import {
   parseISODate,
   formatTimeOnly,
   deliveryBreakdown,
-  addDays,
 } from "@/lib/utils";
 import { payWeekOf, supermarketCashLabel } from "@/lib/cash-flow";
 import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
@@ -330,15 +329,19 @@ export function PrePaymentView({
   const tuesday = formatDDMMYYYY(
     new Date(parseISODate(weekStart).getTime() + 1 * 86400000),
   );
-  // Vita Mojo cash window: the Tuesday before this week through this Monday —
-  // mirrors the cashStart/cashEnd calc in app/actions/payouts.ts computeSummary.
-  const cashInStart = addDays(parseISODate(weekStart), -6);
-  const cashInEnd = parseISODate(weekStart);
-  // Wages paid this Tuesday are for the PREVIOUS Mon–Sun week.
-  const payWeekStartDate = new Date(parseISODate(weekStart).getTime() - 7 * 86400000);
-  const payWeekLabel = `${formatDDMMYYYY(payWeekStartDate)} – ${formatDDMMYYYY(
-    new Date(payWeekStartDate.getTime() + 6 * 86400000),
-  )}`;
+  // Wages paid this Tuesday are for the PREVIOUS Mon–Sun week, and the Vita
+  // Mojo cash window is that SAME Mon–Sun week — both read from payWeekOf, the
+  // function app/actions/payouts.ts computeSummary bounds its query with.
+  const payWeek = payWeekOf(weekStart);
+  const cashInStart = parseISODate(payWeek.start);
+  const cashInEnd = parseISODate(payWeek.end);
+  const payWeekLabel = `${formatDDMMYYYY(cashInStart)} – ${formatDDMMYYYY(cashInEnd)}`;
+
+  // A confirmed sheet renders the FROZEN snapshot while the date label above it
+  // is derived live, so a week locked under an older cash window silently reads
+  // as though it were computed from the current one. Say so instead.
+  const snapshotStale =
+    confirmed && Math.abs(fin.vita_mojo_total - summary.vita_mojo_total) > 0.005;
 
   return (
     <div className="flex flex-col gap-5">
@@ -417,8 +420,15 @@ export function PrePaymentView({
             <tbody>
               <SummaryRow label="Opening balance (carried forward)" value={formatGBP(fin.opening_balance)} />
               <SummaryRow
-                label={`Vita Mojo cash sales (Tue ${formatDDMMYYYY(cashInStart)} – Mon ${formatDDMMYYYY(cashInEnd)})`}
+                label={`Vita Mojo cash sales (Mon ${formatDDMMYYYY(cashInStart)} – Sun ${formatDDMMYYYY(cashInEnd)})`}
                 value={formatGBP(fin.vita_mojo_total)}
+                hint={
+                  snapshotStale
+                    ? `Frozen when this payout was confirmed. Cash actually collected in this window is ${formatGBP(
+                        summary.vita_mojo_total,
+                      )} — a Super Admin must unlock and regenerate to restate it.`
+                    : undefined
+                }
               />
               <SummaryRow label="Less: logged differences / cash used" value={`(${formatGBP(fin.logged_differences)})`} tone="bad" />
               {fin.supermarket_cash > 0.001 && (
@@ -820,17 +830,22 @@ function SummaryRow({
   tone = "default",
   strong,
   highlight,
+  hint,
 }: {
   label: string;
   value: string;
   tone?: "default" | "good" | "bad";
   strong?: boolean;
   highlight?: boolean;
+  hint?: string;
 }) {
   const toneCls = tone === "good" ? "text-success" : tone === "bad" ? "text-danger" : "text-text-primary";
   return (
     <tr className={`border-t border-border/60 ${highlight ? "bg-danger/5" : ""}`}>
-      <td className={`px-4 py-2.5 ${strong ? "font-semibold text-text-primary" : "text-text-subtle"}`}>{label}</td>
+      <td className={`px-4 py-2.5 ${strong ? "font-semibold text-text-primary" : "text-text-subtle"}`}>
+        {label}
+        {hint && <span className="block text-[11px] text-warning mt-0.5">{hint}</span>}
+      </td>
       <td className={`px-4 py-2.5 text-right tabular-nums ${strong ? "font-semibold" : ""} ${toneCls}`}>{value}</td>
     </tr>
   );

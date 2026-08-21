@@ -97,25 +97,20 @@ async function loadOpeningBalance(
  * Compute the live pre-payment summary for a store + week from current data.
  *
  * Pay structure (confirmed with the client): wages paid on this week's Tuesday
- * are for the PREVIOUS week's work (Mon–Sun). So the wage lines (hours +
- * deliveries) come from LAST week, while the cash available to pay them is the
- * Vita Mojo cash sales for the seven days ending the day before payday — the
- * Tuesday before this week through this Monday. (The payout is confirmed and
- * locked on payday Tuesday, so the cash window must END on the Monday before;
- * Tuesday's takings roll into next week's window instead of being lost after
- * the lock.)
+ * are for the PREVIOUS week's work (Mon–Sun), and the Vita Mojo cash sales used
+ * to fund them are that SAME Mon–Sun week — cash collected for the week is what
+ * pays that week's wages.
  */
 async function computeSummary(
   supabase: SupabaseClient,
   storeId: string,
   weekStartISO: string,
 ): Promise<PrePaymentSummary> {
-  // Cash window: the Tuesday before this week → this Monday (Tue–Mon), i.e.
-  // the seven days ending the day before payday Tuesday.
-  const cashStart = toISODate(addDays(parseISODate(weekStartISO), -6));
-  const cashEnd = toISODate(addDays(parseISODate(weekStartISO), 0));
   // The week being PAID: the previous Monday–Sunday.
   const payWeek = payWeekOf(weekStartISO);
+  // Cash window: same Mon–Sun as the pay week.
+  const cashStart = payWeek.start;
+  const cashEnd = payWeek.end;
 
   const [
     entriesRes,
