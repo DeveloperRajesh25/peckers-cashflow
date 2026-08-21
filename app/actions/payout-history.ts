@@ -1,6 +1,8 @@
 "use server";
 
 import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
+import { payWeekOf } from "@/lib/cash-flow";
+import { getDeliveryOrdersForWeek } from "@/lib/vm-analytics/queries";
 import { resolveActiveStoreId } from "@/lib/types";
 import type { CashPayoutLine } from "@/lib/types";
 import {
@@ -10,6 +12,7 @@ import {
   type PayoutHistoryExportRow,
   type PayoutHistoryFilters,
   type PayoutHistoryHeader,
+  type PayoutLinesResult,
 } from "@/lib/payout-history-paging";
 
 async function requireAllowed() {
@@ -103,22 +106,24 @@ export async function listPayoutHistory(
  * first, server-side, to match the order the page used when it loaded every
  * line up front.
  */
-export async function loadPayoutLines(payoutId: string): Promise<CashPayoutLine[]> {
+export async function loadPayoutLines(payoutId: string): Promise<PayoutLinesResult> {
   const user = await requireAllowed();
   const supabase = createServerSupabase();
 
   // Managers may only open their own store's payouts. RLS is the real gate;
   // this makes the refusal explicit rather than returning a silent empty list
   // that would read as "nobody was paid that week".
+  const { data: header, error: headerErr } = await supabase
+    .from("cash_payouts")
+    .select("store_id, week_start_date, stores(name)")
+    .eq("id", payoutId)
+    .maybeSingle();
+  if (headerErr) throw new Error(headerErr.message);
+  if (!header) throw new Error("Payout not found");
+
   if (user.allowed!.role === "manager") {
     const storeId = resolveActiveStoreId(user.allowed) ?? null;
-    const { data: owner, error: ownerErr } = await supabase
-      .from("cash_payouts")
-      .select("store_id")
-      .eq("id", payoutId)
-      .maybeSingle();
-    if (ownerErr) throw new Error(ownerErr.message);
-    if (!owner || owner.store_id !== storeId) throw new Error("Not authorised");
+    if (header.store_id !== storeId) throw new Error("Not authorised");
   }
 
   const { data, error } = await supabase
@@ -128,7 +133,14 @@ export async function loadPayoutLines(payoutId: string): Promise<CashPayoutLine[
     .order("total_payment", { ascending: false });
 
   if (error) throw new Error(error.message);
-  return (data ?? []) as CashPayoutLine[];
+
+  return {
+    lines: (data ?? []) as CashPayoutLine[],
+    vm_delivery_orders: await vmDeliveriesFor(
+      header.week_start_date as string,
+      storeNameOf(header),
+    ),
+  };
 }
 
 /**
@@ -164,5 +176,62 @@ export async function exportPayoutHistory(
     byPayout.set(line.payout_id, arr);
   }
 
-  return headers.map((h) => ({ ...h, lines: byPayout.get(h.id) ?? [] }));
+  const vmByKey = await vmDeliveriesForWeeks(headers);
+
+  return headers.map((h) => ({
+    ...h,
+    lines: byPayout.get(h.id) ?? [],
+    vm_delivery_orders: vmByKey.get(vmKey(h.week_start_date, h.store_name)) ?? null,
+  }));
+}
+
+/**
+ * Vita Mojo's delivery orders for a payout's PAY week — the same figure the
+ * Tuesday Payout sheet prints in its totals row, so a history export and the
+ * sheet it came from cannot disagree.
+ *
+ * VM Analytics lives in a separate database; a missing config or an unimported
+ * week must leave the payroll record working, so every lookup degrades to null.
+ */
+async function vmDeliveriesFor(
+  weekStartDate: string,
+  storeName: string | null,
+): Promise<number | null> {
+  return getDeliveryOrdersForWeek(payWeekOf(weekStartDate).start, storeName).catch(
+    () => null,
+  );
+}
+
+function storeNameOf(header: { stores?: unknown }): string | null {
+  const s = header.stores as { name?: string } | Array<{ name?: string }> | null;
+  if (!s) return null;
+  return (Array.isArray(s) ? s[0]?.name : s.name) ?? null;
+}
+
+function vmKey(weekStartDate: string, storeName: string | null): string {
+  return `${weekStartDate}|${storeName ?? ""}`;
+}
+
+/**
+ * One VM lookup per DISTINCT week+store, not per payout — an export spanning a
+ * year of two stores would otherwise issue hundreds of identical cross-database
+ * queries.
+ */
+async function vmDeliveriesForWeeks(
+  headers: PayoutHistoryHeader[],
+): Promise<Map<string, number | null>> {
+  const distinct = new Map<string, { week: string; store: string | null }>();
+  for (const h of headers) {
+    distinct.set(vmKey(h.week_start_date, h.store_name), {
+      week: h.week_start_date,
+      store: h.store_name,
+    });
+  }
+
+  const entries = await Promise.all(
+    Array.from(distinct, async ([key, { week, store }]) => {
+      return [key, await vmDeliveriesFor(week, store)] as const;
+    }),
+  );
+  return new Map(entries);
 }

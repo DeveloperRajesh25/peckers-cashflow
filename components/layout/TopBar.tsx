@@ -18,7 +18,7 @@ export function MobileTopBar({
 }) {
   const showSwitcher = stores != null && stores.length > 1;
   return (
-    <header className="md:hidden sticky top-0 z-30 bg-bg/95 backdrop-blur border-b border-border h-14 flex items-center justify-between px-4">
+    <header className="md:hidden print:hidden sticky top-0 z-30 bg-bg/95 backdrop-blur border-b border-border h-14 flex items-center justify-between px-4">
       <Logo />
       <div className="flex items-center gap-2 min-w-0">
         {showSwitcher ? (

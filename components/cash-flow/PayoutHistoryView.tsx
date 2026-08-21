@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ChevronDownIcon, DownloadIcon, ListIcon } from "@/components/ui/icons";
 import {
+  deliveryBreakdown,
   downloadCSV,
   formatDDMMYYYY,
   formatGBP,
@@ -27,6 +28,7 @@ import type {
   PayoutHistoryExportRow,
   PayoutHistoryFilters,
   PayoutHistoryHeader,
+  PayoutLinesResult,
 } from "@/lib/payout-history-paging";
 import type { CashPayoutLine, Store } from "@/lib/types";
 
@@ -68,7 +70,7 @@ export function PayoutHistoryView({
 
   // Lines arrive when a card is opened. `undefined` means "not fetched yet",
   // which is NOT the same as a payout that genuinely has no lines.
-  const [linesById, setLinesById] = React.useState<Map<string, CashPayoutLine[]>>(
+  const [linesById, setLinesById] = React.useState<Map<string, PayoutLinesResult>>(
     () => new Map(),
   );
   const [linesLoading, setLinesLoading] = React.useState<string | null>(null);
@@ -138,8 +140,8 @@ export function PayoutHistoryView({
       return next;
     });
     loadPayoutLines(payoutId)
-      .then((lines) => {
-        setLinesById((prev) => new Map(prev).set(payoutId, lines));
+      .then((result) => {
+        setLinesById((prev) => new Map(prev).set(payoutId, result));
         setLinesLoading(null);
       })
       .catch((err: unknown) => {
@@ -343,7 +345,10 @@ export function PayoutHistoryView({
                       </p>
                     ) : (
                       <div className="overflow-x-auto border-t border-border">
-                        <LinesTable lines={lines} />
+                        <LinesTable
+                          lines={lines.lines}
+                          vmDeliveryOrders={lines.vm_delivery_orders}
+                        />
                       </div>
                     )}
                   </div>
@@ -357,7 +362,11 @@ export function PayoutHistoryView({
       {/* Print-only rendering of the whole filtered set, so PDF keeps covering
           everything the filter matches rather than the one expanded card. */}
       {printRows && (
-        <div className="hidden print:block">
+        <div className="hidden print:block print-sheet">
+          {/* Landscape plus the `@media print` rules in globals.css (chrome
+              hidden, compact cells) are what keep all 8 columns on the sheet —
+              the Total column was being clipped off the page edge. */}
+          <style media="print">{`@page { size: landscape; margin: 10mm; }`}</style>
           {printRows.map((p) => (
             <div key={p.id} className="mb-6 break-inside-avoid">
               <h3 className="font-semibold">
@@ -369,7 +378,7 @@ export function PayoutHistoryView({
                 {p.confirmed_by_name && ` · by ${p.confirmed_by_name}`} · Total{" "}
                 {formatGBP(p.grand_total_wages)}
               </p>
-              <LinesTable lines={p.lines} />
+              <LinesTable lines={p.lines} vmDeliveryOrders={p.vm_delivery_orders} />
             </div>
           ))}
         </div>
@@ -378,7 +387,47 @@ export function PayoutHistoryView({
   );
 }
 
-function LinesTable({ lines }: { lines: CashPayoutLine[] }) {
+function LinesTable({
+  lines,
+  vmDeliveryOrders,
+}: {
+  lines: CashPayoutLine[];
+  /** VM's delivery orders for the pay week; null when VM has no data. */
+  vmDeliveryOrders?: number | null;
+}) {
+  const totals = lines.reduce(
+    (acc, l) => {
+      const d = deliveryBreakdown(l);
+      return {
+        cash_hours: acc.cash_hours + l.cash_hours,
+        cash_wage: acc.cash_wage + l.cash_wage,
+        delivery_wages: acc.delivery_wages + l.delivery_wages,
+        total_payment: acc.total_payment + l.total_payment,
+        short_deliveries_count: acc.short_deliveries_count + d.sd,
+        long_deliveries_count: acc.long_deliveries_count + d.ld,
+        short_misc_count: acc.short_misc_count + d.sm,
+        long_misc_count: acc.long_misc_count + d.lm,
+      };
+    },
+    {
+      cash_hours: 0,
+      cash_wage: 0,
+      delivery_wages: 0,
+      total_payment: 0,
+      short_deliveries_count: 0,
+      long_deliveries_count: 0,
+      short_misc_count: 0,
+      long_misc_count: 0,
+    },
+  );
+
+  // Same split the Tuesday Payout sheet's footer prints: what a manager signed
+  // off (the normal round) vs the extra drops logged beyond it, both readable
+  // against Vita Mojo's own delivery orders.
+  const approvedDeliveries =
+    totals.short_deliveries_count + totals.long_deliveries_count;
+  const miscDeliveries = totals.short_misc_count + totals.long_misc_count;
+
   return (
     <table className="w-full text-sm">
       <thead>
@@ -433,6 +482,61 @@ function LinesTable({ lines }: { lines: CashPayoutLine[] }) {
             <td className="px-4 py-2.5 text-right tabular-nums font-semibold">{formatGBP(l.total_payment)}</td>
           </tr>
         ))}
+        {/* The totals live in the body's last row, not a <tfoot> — a footer is
+            REPEATED on every printed page, which would stamp the week's grand
+            total halfway down a table that spilled onto a second page. */}
+        <tr className="border-t-2 border-border bg-bg/60 font-semibold">
+          <td className="px-4 py-3" colSpan={2}>Total</td>
+          <td className="px-4 py-3 text-right tabular-nums">
+            <HoursMinsDisplay hours={totals.cash_hours} />
+          </td>
+          <td className="px-4 py-3 text-right tabular-nums text-text-muted">—</td>
+          <td className="px-4 py-3 text-right tabular-nums">{formatGBP(totals.cash_wage)}</td>
+          <td className="px-4 py-3 text-right tabular-nums">
+            <span className="flex flex-col items-end gap-0.5 whitespace-nowrap">
+              <span className="text-[10px] font-normal text-text-muted">
+                {totals.short_deliveries_count} SD · {totals.long_deliveries_count} LD ·{" "}
+                <span className={totals.short_misc_count > 0 ? "text-gold font-medium" : ""}>
+                  {totals.short_misc_count} SM
+                </span>{" "}
+                ·{" "}
+                <span className={totals.long_misc_count > 0 ? "text-gold font-medium" : ""}>
+                  {totals.long_misc_count} LM
+                </span>
+              </span>
+              <span className="text-[11px] font-normal text-text-muted">
+                VM deliveries{" "}
+                <span
+                  className="ml-1 font-semibold text-text-primary tabular-nums"
+                  title="Total delivery orders Vita Mojo recorded for this pay week"
+                >
+                  {vmDeliveryOrders == null ? "—" : vmDeliveryOrders}
+                </span>
+              </span>
+              <span className="text-[11px] font-normal text-text-muted">
+                Approved{" "}
+                <span className="ml-1 font-semibold text-text-primary tabular-nums">
+                  {approvedDeliveries}
+                </span>
+              </span>
+              <span className="text-[11px] font-normal text-text-muted">
+                Miscellaneous{" "}
+                <span
+                  className={
+                    "ml-1 font-semibold tabular-nums " +
+                    (miscDeliveries > 0 ? "text-gold" : "text-text-primary")
+                  }
+                >
+                  {miscDeliveries}
+                </span>
+              </span>
+            </span>
+          </td>
+          <td className="px-4 py-3 text-right tabular-nums">{formatGBP(totals.delivery_wages)}</td>
+          <td className="px-4 py-3 text-right tabular-nums text-gold">
+            {formatGBP(totals.total_payment)}
+          </td>
+        </tr>
       </tbody>
     </table>
   );

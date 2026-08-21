@@ -47,7 +47,7 @@ export function BottomNav({ portal }: { portal: Portal }) {
   return (
     <>
       <nav
-        className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-bg/95 backdrop-blur border-t border-border"
+        className="md:hidden print:hidden fixed bottom-0 inset-x-0 z-40 bg-bg/95 backdrop-blur border-t border-border"
         style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
       >
         <ul

@@ -223,3 +223,30 @@
 .table-scroll::-webkit-scrollbar-thumb {
   @apply bg-slate-300 rounded-full;
 }
+
+/* Printing (Payout history PDF, NI monthly). The app chrome is `md:` and up, so
+   it still renders on a print sheet and steals the width a wide payroll table
+   needs — the last column ends up off the page. */
+@media print {
+  html,
+  body {
+    background: #fff;
+  }
+  main {
+    padding: 0 !important;
+    max-width: none !important;
+  }
+  .print-sheet table {
+    width: 100% !important;
+    font-size: 10px;
+  }
+  .print-sheet th,
+  .print-sheet td {
+    padding: 3px 5px !important;
+    overflow-wrap: anywhere;
+  }
+  .print-sheet * {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

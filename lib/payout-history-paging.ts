@@ -44,9 +44,21 @@ export const EMPTY_PAYOUT_FILTERS: PayoutHistoryFilters = {
  */
 export const PAYOUT_HISTORY_MAX_ROWS = 500;
 
+/** What an expanded card gets: the lines plus the week's VM delivery orders. */
+export type PayoutLinesResult = {
+  lines: CashPayoutLine[];
+  vm_delivery_orders: number | null;
+};
+
 /** A payout plus its lines, as the CSV/PDF export needs them. */
 export type PayoutHistoryExportRow = PayoutHistoryHeader & {
   lines: CashPayoutLine[];
+  /**
+   * Vita Mojo's delivery orders for the pay week, so the printed totals row
+   * reads exactly like the Tuesday Payout sheet's footer. Null whenever VM has
+   * no data for that week/store — the payout is unaffected either way.
+   */
+  vm_delivery_orders: number | null;
 };
 
 /**
