@@ -6,7 +6,11 @@ import { Button } from "@/components/ui/Button";
 import { Input, Select } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
-import { upsertManualClockEntry } from "@/app/actions/clock";
+import {
+  listOpenShiftsForDate,
+  upsertManualClockEntry,
+  type OpenShiftOnDay,
+} from "@/app/actions/clock";
 import { upsertManualCoverDriverClockEntry } from "@/app/actions/cover-driver-clock";
 import {
   addDays,
@@ -97,8 +101,33 @@ export function ManualClockEntryModal({
   const [extraLong, setExtraLong] = React.useState("");
   const [extraShortReason, setExtraShortReason] = React.useState("");
   const [extraLongReason, setExtraLongReason] = React.useState("");
+  // Shifts still running on this day, keyed by person. Fetched rather than
+  // passed in: a day with an open shift has no header clock-out, so it never
+  // reaches Daily Approval's summaries and no screen holds its times.
+  const [openShifts, setOpenShifts] = React.useState<Map<string, OpenShiftOnDay>>(
+    new Map(),
+  );
+  const [openLookupFailed, setOpenLookupFailed] = React.useState(false);
+
+  React.useEffect(() => {
+    if (mode !== "employee") return;
+    let cancelled = false;
+    listOpenShiftsForDate(eventDate).then((res) => {
+      if (cancelled) return;
+      if (!res.ok) return setOpenLookupFailed(true);
+      setOpenLookupFailed(false);
+      setOpenShifts(new Map(res.shifts.map((s) => [s.employee_id, s])));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, eventDate]);
 
   const selected = candidates.find((c) => c.id === personId) ?? null;
+  const openForSelected = selected ? openShifts.get(selected.id) ?? null : null;
+  // A shift that is already running can only be completed, never left open —
+  // the server refuses a second open shift for the same person.
+  const mustClockOut = requireClockOut || !!openForSelected;
   // Cover drivers all drive; employees only if their position says so.
   const showDeliveries = mode === "cover_driver" || !!selected?.is_driver;
 
@@ -107,15 +136,27 @@ export function ManualClockEntryModal({
   const anyDrop =
     !!shortDrops.trim() || !!longDrops.trim() || !!extraShort.trim() || !!extraLong.trim();
 
-  // Pre-fill from the scheduled shift so the common case is pick → save.
+  // Pre-fill from the shift already running, else from the scheduled one, so
+  // the common case is pick → save. A running shift wins: its clock-in is a
+  // recorded fact, and the only thing missing is when they finished. It stays
+  // editable — the manager may be correcting a start time that was wrong.
   React.useEffect(() => {
     if (!selected) return;
-    setInTime(selected.scheduled_start?.slice(0, 5) ?? "");
-    if (requireClockOut) setOutTime(selected.scheduled_end?.slice(0, 5) ?? "");
-    // Their home store, or wherever the day's existing shifts already sit —
-    // covering elsewhere is the exception, so it stays a deliberate change.
-    setStoreId(selected.existing_store_id ?? selected.store_id ?? "");
-  }, [selected, requireClockOut]);
+    const open = openShifts.get(selected.id) ?? null;
+    setInTime(open?.clock_in_time ?? selected.scheduled_start?.slice(0, 5) ?? "");
+    setOutTime(open || !requireClockOut ? "" : selected.scheduled_end?.slice(0, 5) ?? "");
+    // The store the open shift was recorded against, else their home store, or
+    // wherever the day's existing shifts already sit — covering elsewhere is
+    // the exception, so it stays a deliberate change.
+    setStoreId(
+      open?.store_id ?? selected.existing_store_id ?? selected.store_id ?? "",
+    );
+    // Deliberately not keyed on `openShifts` itself: it lands after the modal
+    // opens, and re-running on every change would wipe a clock-out already
+    // typed. Keying on the open shift's id re-fills only when one is found for
+    // the person currently picked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [personId, openForSelected?.session_id, requireClockOut]);
 
   const showStorePicker = mode === "employee" && !!stores && stores.length > 1;
   const awayFromHome =
@@ -140,6 +181,16 @@ export function ManualClockEntryModal({
   const sameTime = bothTimes && timeToMinutes(inTime) === timeToMinutes(outTime);
   const overnight = bothTimes && !sameTime && timeToMinutes(outTime) < timeToMinutes(inTime);
   const workedHours = bothTimes && !sameTime ? shiftHours(inTime, outTime) : null;
+  // The server closes the running shift only when the submitted window COVERS
+  // it; a window that ends before it started is a different shift entirely and
+  // is added beside it, leaving the person still clocked in. Rare, but silent —
+  // so it is said out loud before saving.
+  const missesOpenShift =
+    !!openForSelected &&
+    bothTimes &&
+    !sameTime &&
+    !overnight &&
+    timeToMinutes(outTime) <= timeToMinutes(openForSelected.clock_in_time);
   const endDate = overnight
     ? toISODate(addDays(parseISODate(eventDate), 1))
     : eventDate;
@@ -159,7 +210,7 @@ export function ManualClockEntryModal({
     !!personId &&
     !!inTime &&
     (!showStorePicker || !!storeId) &&
-    (!requireClockOut || !!outTime) &&
+    (!mustClockOut || !!outTime) &&
     !sameTime &&
     !notYetWorked &&
     !!reason &&
@@ -184,7 +235,13 @@ export function ManualClockEntryModal({
     if (!personId) return setError("Pick who this is for.");
     if (showStorePicker && !storeId) return setError("Pick the store they worked at.");
     if (!inTime) return setError("Enter the clock-in time.");
-    if (requireClockOut && !outTime) return setError("Enter the clock-out time.");
+    if (mustClockOut && !outTime) {
+      return setError(
+        openForSelected
+          ? "Enter when they finished — a shift that's still running can't be left open."
+          : "Enter the clock-out time.",
+      );
+    }
     if (!reason) return setError("Give a reason.");
     if (showDeliveries && extraShortNeedsReason) {
       return setError("Give a reason for the extra short deliveries.");
@@ -222,7 +279,11 @@ export function ManualClockEntryModal({
         setError(res.error);
         return;
       }
-      toast.success(`Clock-in recorded for ${selected?.name ?? "them"}`);
+      toast.success(
+        openForSelected
+          ? `Clock-out recorded for ${selected?.name ?? "them"}`
+          : `Clock-in recorded for ${selected?.name ?? "them"}`,
+      );
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
@@ -246,7 +307,7 @@ export function ManualClockEntryModal({
             Cancel
           </Button>
           <Button onClick={save} loading={busy} disabled={!canSave}>
-            Save clock-in
+            {openForSelected ? "Save clock-out" : "Save clock-in"}
           </Button>
         </>
       }
@@ -269,20 +330,40 @@ export function ManualClockEntryModal({
                 <option key={c.id} value={c.id}>
                   {/* One child, not two: React joins multiple option children
                       with a comma, which rendered names as "Harish,". */}
-                  {c.existing_shifts
-                    ? `${c.name} — ${c.existing_shifts} shift${c.existing_shifts > 1 ? "s" : ""} already today`
-                    : c.scheduled_start
-                      ? `${c.name} — scheduled ${c.scheduled_start.slice(0, 5)}`
-                      : c.name}
+                  {openShifts.has(c.id)
+                    ? `${c.name} — still clocked in from ${openShifts.get(c.id)!.clock_in_time}`
+                    : c.existing_shifts
+                      ? `${c.name} — ${c.existing_shifts} shift${c.existing_shifts > 1 ? "s" : ""} already today`
+                      : c.scheduled_start
+                        ? `${c.name} — scheduled ${c.scheduled_start.slice(0, 5)}`
+                        : c.name}
                 </option>
               ))}
             </Select>
 
-            {!!selected?.existing_shifts && (
+            {openForSelected && (
+              <p className="text-xs text-text-primary bg-gold/10 border border-gold/30 rounded-xl px-3 py-2 -mt-1">
+                {selected?.name} is still clocked in from{" "}
+                <span className="font-medium">{openForSelected.clock_in_time}</span> on
+                this day. Enter when they finished and this{" "}
+                <span className="font-medium">closes that shift</span> rather than adding
+                a second one. Correct the clock-in above if it was recorded wrong.
+              </p>
+            )}
+
+            {!!selected?.existing_shifts && !openForSelected && (
               <p className="text-xs text-warning bg-warning/10 border border-warning/30 rounded-xl px-3 py-2 -mt-1">
                 {selected.name} already has {selected.existing_shifts} shift
                 {selected.existing_shifts > 1 ? "s" : ""} recorded that day. This adds
                 another — the times must not overlap one already recorded.
+              </p>
+            )}
+
+            {openLookupFailed && (
+              <p className="text-xs text-warning bg-warning/10 border border-warning/30 rounded-xl px-3 py-2 -mt-1">
+                Couldn&apos;t check who is still clocked in on that day, so the clock-in
+                box isn&apos;t pre-filled. Times already recorded are still protected —
+                the save is refused if they overlap.
               </p>
             )}
 
@@ -337,7 +418,7 @@ export function ManualClockEntryModal({
               />
               <Input
                 type="time"
-                label={requireClockOut ? "Clock-out *" : "Clock-out"}
+                label={mustClockOut ? "Clock-out *" : "Clock-out"}
                 value={outTime}
                 onChange={(e) => setOutTime(e.target.value)}
               />
@@ -346,6 +427,16 @@ export function ManualClockEntryModal({
             {sameTime && (
               <p className="text-xs text-danger -mt-1">
                 Clock-out can&apos;t be the same time as clock-in.
+              </p>
+            )}
+
+            {missesOpenShift && (
+              <p className="text-xs text-warning bg-warning/10 border border-warning/30 rounded-xl px-3 py-2 -mt-1">
+                These times finish before the shift that&apos;s running started (
+                {openForSelected!.clock_in_time}), so they&apos;ll be recorded as a
+                separate shift and {selected?.name} will still be clocked in. Set the
+                clock-out after {openForSelected!.clock_in_time} to close that shift
+                instead.
               </p>
             )}
 
@@ -364,13 +455,13 @@ export function ManualClockEntryModal({
               <p className="text-xs text-warning bg-warning/10 border border-warning/30 rounded-xl px-3 py-2 -mt-1">
                 That shift ends at {outTime} on {formatDDMMYYYY(endDate)}, which hasn&apos;t
                 happened yet, so the hours can&apos;t be recorded.{" "}
-                {requireClockOut
+                {mustClockOut
                   ? "Come back once the shift has finished."
                   : "Leave clock-out blank if they're still working — they can clock out themselves."}
               </p>
             )}
 
-            {!requireClockOut && (
+            {!mustClockOut && (
               <p className="text-xs text-text-muted -mt-1">
                 Leave clock-out blank if they&apos;re still working — they can clock out
                 themselves as normal.

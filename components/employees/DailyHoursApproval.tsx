@@ -1233,7 +1233,7 @@ export function DailyHoursApproval({
               size="sm"
               variant="outline"
               onClick={() => setShowAddMissed("employee")}
-              title="Record a shift an employee forgot to clock in for — including a second shift on a day they already worked"
+              title="Record a shift an employee forgot to clock in for — a second shift on a day they already worked, or the clock-out for one still running"
             >
               Add missed entry
             </Button>
@@ -1412,7 +1412,11 @@ export function DailyHoursApproval({
         only the drop counts are confirmed here.{" "}
         <span className="font-medium text-text-primary">Add manager entry</span>{" "}
         records drops for a day a manager never clocked in; it asks for no times,
-        because nothing is paid from their hours.
+        because nothing is paid from their hours.{" "}
+        <span className="font-medium text-text-primary">Add missed entry</span> also
+        closes a shift that is still running: pick the employee and their clock-in
+        time is filled in for you, so only the clock-out is needed. The day stays
+        off this list until it has one.
       </p>
       <p className="text-xs text-text-muted">
         For drivers, <span className="font-medium text-text-primary">sd</span> /{" "}

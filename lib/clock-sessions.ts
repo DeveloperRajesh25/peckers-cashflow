@@ -640,13 +640,16 @@ export async function recomputeDayHeader(
 }
 
 /**
- * Start a session on a day. `seq` continues the day's existing numbering.
+ * Add a session to a day. `seq` continues the day's existing numbering.
  *
- * The caller must have established there is no open session first — the
- * clock_sessions_one_open index enforces it at the database level too, and a
- * violation surfaces as a friendly message rather than a raw constraint error.
+ * Left OPEN when no `clockOutAt` is given — the caller must have established
+ * there is no open session first, and the clock_sessions_one_open index
+ * enforces it at the database level too. Given both times, the row is inserted
+ * ALREADY CLOSED: a finished shift being recorded after the fact must never
+ * occupy the one-open slot, which the person's current shift may be holding
+ * (the same reason insertDeliveriesOnlySession writes a closed row).
  */
-export async function openSession(
+export async function addSession(
   supabase: SupabaseClient,
   input: {
     clockEventId: string;
@@ -654,9 +657,13 @@ export async function openSession(
     storeId: string;
     eventDate: string;
     clockInAt: string;
+    /** Set only when the shift is already finished. */
+    clockOutAt?: string | null;
     lat?: number | null;
     lng?: number | null;
     manual?: { by: string; at: string; reason: string } | null;
+    /** This shift's own drops — see migration 033. */
+    deliveries?: DeliveryCounts | null;
   },
 ): Promise<ClockSession> {
   const existing = await sessionsForEvent(supabase, input.clockEventId);
@@ -671,19 +678,38 @@ export async function openSession(
       event_date: input.eventDate,
       seq,
       clock_in_at: input.clockInAt,
+      clock_out_at: input.clockOutAt ?? null,
       clock_in_lat: input.lat ?? null,
       clock_in_lng: input.lng ?? null,
       manual_entry: !!input.manual,
       manual_entry_by: input.manual?.by ?? null,
       manual_entry_at: input.manual?.at ?? null,
       manual_entry_reason: input.manual?.reason ?? null,
+      ...(input.deliveries
+        ? {
+            short_deliveries_count: input.deliveries.short,
+            long_deliveries_count: input.deliveries.long,
+            extra_short_deliveries: input.deliveries.extraShort,
+            extra_long_deliveries: input.deliveries.extraLong,
+            extra_short_reason:
+              input.deliveries.extraShort > 0 ? input.deliveries.extraShortReason : null,
+            extra_long_reason:
+              input.deliveries.extraLong > 0 ? input.deliveries.extraLongReason : null,
+          }
+        : {}),
     })
     .select("*")
     .maybeSingle();
 
   if (error) {
     if (error.code === "23505") {
-      throw new Error("You're already clocked in. Clock out before starting another shift.");
+      // A closed row cannot violate the one-open index, so a collision there is
+      // a racing second write of the same shift, not a clocked-in employee.
+      throw new Error(
+        input.clockOutAt
+          ? "That shift was just recorded by someone else. Reload the day and check the times."
+          : "You're already clocked in. Clock out before starting another shift.",
+      );
     }
     throw new Error(error.message);
   }
@@ -697,6 +723,12 @@ export async function closeSession(
   sessionId: string,
   input: {
     clockOutAt: string;
+    /** Corrects the start too — a manager completing a shift may also be
+     *  fixing the time it was recorded as starting. */
+    clockInAt?: string;
+    /** Only the manual path sets this: the store the shift is being recorded
+     *  against, which the actor may have corrected along with the times. */
+    storeId?: string;
     lat?: number | null;
     lng?: number | null;
     auto?: { source: string; at: string } | null;
@@ -711,6 +743,8 @@ export async function closeSession(
     clock_out_lat: input.lat ?? null,
     clock_out_lng: input.lng ?? null,
   };
+  if (input.clockInAt) payload.clock_in_at = input.clockInAt;
+  if (input.storeId) payload.store_id = input.storeId;
   if (input.deliveries) {
     payload.short_deliveries_count = input.deliveries.short;
     payload.long_deliveries_count = input.deliveries.long;
@@ -749,7 +783,12 @@ export async function closeSession(
  * Two rows need this. A day clocked in under the pre-029 build and clocked out
  * after the deploy — the header has a clock-in but no session to close. And the
  * open legacy rows migration 029 deliberately skipped, because several per
- * employee would have collided on the one-open-session index.
+ * employee would have collided on the one-open-session index. A manual entry
+ * that failed part-way leaves the same shape (Update 133).
+ *
+ * `closeWith` inserts the row already CLOSED. The nightly sweep needs it: an
+ * open row would collide with a shift the person has running on another date,
+ * and the collision is what stopped session-less days ever being swept.
  *
  * Returns the adopted session, or null when the header has nothing to adopt.
  */
@@ -774,11 +813,14 @@ export async function adoptHeaderIntoSession(
     auto_clock_out_source?: string | null;
     auto_clock_out_at?: string | null;
   } & SessionDeliveryRow,
+  opts?: { closeWith?: { clockOutAt: string; auto: { source: string; at: string } } },
 ): Promise<ClockSession | null> {
   if (!header.clock_in_at) return null;
 
   const existing = await sessionsForEvent(supabase, header.id);
   if (existing.length > 0) return existing[0];
+
+  const close = opts?.closeWith;
 
   const { data, error } = await supabase
     .from("clock_sessions")
@@ -789,7 +831,7 @@ export async function adoptHeaderIntoSession(
       event_date: header.event_date,
       seq: 1,
       clock_in_at: header.clock_in_at,
-      clock_out_at: header.clock_out_at,
+      clock_out_at: close?.clockOutAt ?? header.clock_out_at,
       clock_in_lat: header.clock_in_lat ?? null,
       clock_in_lng: header.clock_in_lng ?? null,
       clock_out_lat: header.clock_out_lat ?? null,
@@ -798,9 +840,9 @@ export async function adoptHeaderIntoSession(
       manual_entry_by: header.manual_entry_by ?? null,
       manual_entry_at: header.manual_entry_at ?? null,
       manual_entry_reason: header.manual_entry_reason ?? null,
-      auto_clocked_out: !!header.auto_clocked_out,
-      auto_clock_out_source: header.auto_clock_out_source ?? null,
-      auto_clock_out_at: header.auto_clock_out_at ?? null,
+      auto_clocked_out: close ? true : !!header.auto_clocked_out,
+      auto_clock_out_source: close?.auto.source ?? header.auto_clock_out_source ?? null,
+      auto_clock_out_at: close?.auto.at ?? header.auto_clock_out_at ?? null,
       // The day's drops come with it. This session becomes the only thing the
       // header is summed from, so leaving them behind would have the very next
       // recomputeDayHeader wipe a legacy day's counts to zero (migration 033).

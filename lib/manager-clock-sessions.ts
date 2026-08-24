@@ -513,6 +513,9 @@ export async function closeManagerSession(
  * open legacy rows migration 031 deliberately skipped, because several per
  * manager would have collided on the one-open-session index.
  *
+ * `closeWith` inserts the row already CLOSED, for the nightly sweep — an open
+ * row would collide with a shift the manager has running on another date.
+ *
  * Returns the adopted session, or null when the header has nothing to adopt.
  */
 export async function adoptManagerHeaderIntoSession(
@@ -538,11 +541,14 @@ export async function adoptManagerHeaderIntoSession(
     extra_short_reason?: string | null;
     extra_long_reason?: string | null;
   },
+  opts?: { closeWith?: { clockOutAt: string; auto: { source: string; at: string } } },
 ): Promise<ManagerClockSession | null> {
   if (!header.clock_in_at) return null;
 
   const existing = await managerSessionsForEvent(supabase, header.id);
   if (existing.length > 0) return existing[0];
+
+  const close = opts?.closeWith;
 
   const { data, error } = await supabase
     .from("manager_clock_sessions")
@@ -553,14 +559,14 @@ export async function adoptManagerHeaderIntoSession(
       event_date: header.event_date,
       seq: 1,
       clock_in_at: header.clock_in_at,
-      clock_out_at: header.clock_out_at ?? null,
+      clock_out_at: close?.clockOutAt ?? header.clock_out_at ?? null,
       clock_in_lat: header.clock_in_lat ?? null,
       clock_in_lng: header.clock_in_lng ?? null,
       clock_out_lat: header.clock_out_lat ?? null,
       clock_out_lng: header.clock_out_lng ?? null,
-      auto_clocked_out: !!header.auto_clocked_out,
-      auto_clock_out_source: header.auto_clock_out_source ?? null,
-      auto_clock_out_at: header.auto_clock_out_at ?? null,
+      auto_clocked_out: close ? true : !!header.auto_clocked_out,
+      auto_clock_out_source: close?.auto.source ?? header.auto_clock_out_source ?? null,
+      auto_clock_out_at: close?.auto.at ?? header.auto_clock_out_at ?? null,
       // The day's drops come with it. This session becomes the only thing the
       // header is summed from, so leaving them behind would have the very next
       // recomputeManagerDayHeader wipe the day's counts to zero.

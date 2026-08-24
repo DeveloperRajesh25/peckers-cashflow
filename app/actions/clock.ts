@@ -17,12 +17,12 @@ import {
   resolveManualClockOut,
 } from "@/lib/auto-clock-out";
 import {
+  addSession,
   adoptHeaderIntoSession,
   applyDayDeliveryTotal,
   closeSession,
   findOpenSession,
   normaliseDeliveryInput,
-  openSession,
   overlapsExistingSession,
   recomputeDayHeader,
   sessionsForEvent,
@@ -457,6 +457,65 @@ function assertClockEntryStore(
   }
 }
 
+export type OpenShiftOnDay = {
+  employee_id: string;
+  session_id: string;
+  /** "HH:MM", UK wall clock — what the manual entry's clock-in box pre-fills with. */
+  clock_in_time: string;
+  store_id: string | null;
+};
+
+/**
+ * The shifts still RUNNING on a given day. The manual entry offers to close one
+ * rather than ask for a clock-in it already holds — an open shift is invisible
+ * everywhere else on Daily Approval, because a day whose header has no
+ * clock-out never reaches the list.
+ */
+export async function listOpenShiftsForDate(
+  eventDate: string,
+): Promise<{ ok: true; shifts: OpenShiftOnDay[] } | { ok: false; error: string }> {
+  try {
+    const user = await requireClockEntryStaff();
+    if (!eventDate) throw new Error("Date is required");
+
+    const supabase = createServerSupabase();
+    let query = supabase
+      .from("clock_sessions")
+      .select("id, employee_id, store_id, clock_in_at")
+      .eq("event_date", eventDate)
+      .is("clock_out_at", null);
+    // A manager may only write against the store they're running, so a shift
+    // open elsewhere is not theirs to close and must not be offered.
+    if (user.allowed!.role === "manager") {
+      const activeStore = resolveActiveStoreId(user.allowed);
+      if (!activeStore) throw new Error("No store assigned to your account.");
+      query = query.eq("store_id", activeStore);
+    }
+
+    const { data, error } = await query;
+    if (error) throw new Error(error.message);
+
+    return {
+      ok: true,
+      shifts: (data ?? []).map((s) => ({
+        employee_id: s.employee_id as string,
+        session_id: s.id as string,
+        clock_in_time: londonHHMM(new Date(s.clock_in_at as string)),
+        store_id: (s.store_id as string | null) ?? null,
+      })),
+    };
+  } catch (err) {
+    console.error("[clock] open shift lookup failed:", err);
+    return {
+      ok: false,
+      error:
+        err instanceof Error && err.message
+          ? err.message
+          : "Could not check for open shifts.",
+    };
+  }
+}
+
 export type ManualClockEntryInput = {
   employee_id: string;
   /** YYYY-MM-DD. Defaults to today on the Live board. */
@@ -608,7 +667,24 @@ async function performManualClockEntry(input: ManualClockEntryInput) {
   }
 
   const daySessions = existing ? await sessionsForEvent(supabase, existing.id) : [];
-  if (overlapsExistingSession(daySessions, clockInAt, clockOutAt)) {
+
+  // A manual entry whose window covers the day's RUNNING shift is that shift
+  // being finished off, so it CLOSES it rather than asking for a second shift
+  // beside it. An open session runs to Infinity for the overlap check below,
+  // so this was always refused as an overlap — which left a manually entered
+  // clock-in with nothing that could ever close it: Daily Approval hides a day
+  // whose header has no clock-out, and the nightly sweep is a day away.
+  // Collision is what identifies it: a forgotten 09:00–13:00 recorded while an
+  // evening shift is open is a separate shift and is still added beside it.
+  const openOnDay =
+    (clockOutAt &&
+      daySessions.find(
+        (s) => !s.clock_out_at && overlapsExistingSession([s], clockInAt, clockOutAt),
+      )) ||
+    null;
+
+  const otherSessions = daySessions.filter((s) => s.id !== openOnDay?.id);
+  if (overlapsExistingSession(otherSessions, clockInAt, clockOutAt)) {
     throw new Error(
       "Those times overlap a shift already recorded for that day. Check the existing times first.",
     );
@@ -619,7 +695,7 @@ async function performManualClockEntry(input: ManualClockEntryInput) {
   // The rota cell starts when the day's EARLIEST shift did — by clock time, not
   // by which shift was recorded first. A manager filling in a forgotten morning
   // after the evening is the case that breaks any entry-order assumption.
-  const earliestIn = daySessions.reduce(
+  const earliestIn = otherSessions.reduce(
     (min, s) =>
       new Date(s.clock_in_at).getTime() < min.getTime() ? new Date(s.clock_in_at) : min,
     clockInAt,
@@ -633,7 +709,9 @@ async function performManualClockEntry(input: ManualClockEntryInput) {
     shift,
   });
 
-  const fields: ManualEntryFields = clockOutAt ? "both" : "in";
+  const startUnchanged =
+    !!openOnDay && new Date(openOnDay.clock_in_at).getTime() === clockInAt.getTime();
+  const fields: ManualEntryFields = !clockOutAt ? "in" : startUnchanged ? "out" : "both";
   // The header flags mean "this day contains manager-entered time" — a day whose
   // second shift was hand-recorded is still a day that wasn't fully
   // geofence-verified, and the badge is what tells a reviewer to look.
@@ -684,28 +762,44 @@ async function performManualClockEntry(input: ManualClockEntryInput) {
     ? normaliseDeliveryInput(input.deliveries)
     : null;
 
-  const session = await openSession(supabase, {
-    clockEventId,
-    employeeId: employee.id,
-    storeId,
-    eventDate: input.event_date,
-    clockInAt: clockInAt.toISOString(),
-    lat: null,
-    lng: null,
-    manual: manualStamp,
-  });
-  if (clockOutAt) {
-    await closeSession(supabase, session.id, {
-      clockOutAt: clockOutAt.toISOString(),
+  // Deliveries ride the shift row, never the day (migration 033), so filling in
+  // a forgotten morning can't wipe the evening's drops. Blank boxes normalise
+  // to null and leave whatever the driver already logged untouched.
+  let sessionSeq: number;
+  if (openOnDay) {
+    // Finishing the running shift off, in place — a second row would double-pay
+    // the same minutes and leave the first one open forever.
+    const closed = await closeSession(supabase, openOnDay.id, {
+      clockInAt: clockInAt.toISOString(),
+      clockOutAt: clockOutAt!.toISOString(),
+      storeId,
+      manual: manualStamp,
+      deliveries,
+    });
+    if (!closed) {
+      throw new Error(
+        `${employee.name} was clocked out while you were filling this in. Reload the day and check the times.`,
+      );
+    }
+    sessionSeq = openOnDay.seq;
+  } else {
+    // A finished shift is INSERTED closed. Inserting it open and closing it
+    // afterwards left it holding the one-open-session slot for the width of a
+    // round-trip, so no past day could be recorded for anyone clocked in at the
+    // time — the insert collided with their running shift (Update 133).
+    const session = await addSession(supabase, {
+      clockEventId,
+      employeeId: employee.id,
+      storeId,
+      eventDate: input.event_date,
+      clockInAt: clockInAt.toISOString(),
+      clockOutAt: clockOutAt?.toISOString() ?? null,
       lat: null,
       lng: null,
       manual: manualStamp,
-      // Against THIS shift, never the day — recomputeDayHeader below sums them,
-      // so filling in a forgotten morning can't wipe the evening's drops.
       deliveries,
     });
-  } else if (deliveries) {
-    await setSessionDeliveries(supabase, session.id, deliveries);
+    sessionSeq = session.seq;
   }
 
   const { workedHours, lastOut } = await recomputeDayHeader(supabase, clockEventId);
@@ -721,14 +815,18 @@ async function performManualClockEntry(input: ManualClockEntryInput) {
   }
 
   await writeAudit({
-    action: daySessions.length > 0 ? "manual_clock_entry_added_shift" : "manual_clock_entry",
+    action: openOnDay
+      ? "manual_clock_entry_closed_shift"
+      : daySessions.length > 0
+        ? "manual_clock_entry_added_shift"
+        : "manual_clock_entry",
     entity: "clock_event",
     entity_id: clockEventId,
     changes: {
       employee_id: employee.id,
       employee_name: employee.name,
       event_date: input.event_date,
-      session_seq: session.seq,
+      session_seq: sessionSeq,
       clock_in_at: clockInAt.toISOString(),
       clock_out_at: clockOutAt?.toISOString() ?? null,
       reason: input.reason.trim(),

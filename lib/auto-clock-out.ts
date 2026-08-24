@@ -28,13 +28,13 @@ import { parseISODate, shiftHours, timeToMinutes, weekdayIndex } from "@/lib/uti
 import {
   adoptHeaderIntoSession,
   closeSession,
-  findOpenSession,
   recomputeDayHeader,
+  sessionsForEvent,
 } from "@/lib/clock-sessions";
 import {
   adoptManagerHeaderIntoSession,
   closeManagerSession,
-  findOpenManagerSession,
+  managerSessionsForEvent,
   recomputeManagerDayHeader,
 } from "@/lib/manager-clock-sessions";
 
@@ -390,21 +390,35 @@ export async function autoCloseOpenClocks(
         // clock_in_at is the morning shift's start, so resolving from it would
         // measure the assumed end against the wrong shift — and the rota end
         // would fall before the evening shift even began.
-        const session =
-          (await findOpenSession(admin, row.employee_id)) ??
-          (await adoptHeaderIntoSession(admin, row));
-        if (!session || session.clock_event_id !== row.id) continue;
+        //
+        // Scoped to THIS day, never looked up by person (Update 133). Asking
+        // for the EMPLOYEE's open session returned whatever shift they had
+        // running on another date, and this row was then skipped for not
+        // matching it — so a day stayed open for as long as its employee was
+        // clocked in somewhere, and a day with no session beneath it never
+        // reached the adopt fallback at all.
+        const sessions = await sessionsForEvent(admin, row.id);
+        const openSess = sessions.find((s) => !s.clock_out_at) ?? null;
+        if (!openSess && sessions.length > 0) {
+          // Every shift is closed but the header still reads open. Re-derive it
+          // rather than inventing a clock-out it does not need.
+          await recomputeDayHeader(admin, row.id);
+          continue;
+        }
+        // A day with no session at all keeps its only clock-in on the header:
+        // a pre-029 row, or a manual entry that failed before writing its shift.
+        const sessionClockInAt = openSess?.clock_in_at ?? row.clock_in_at;
 
         const rota = pickRotaForSession(
           rotaByKey.get(`${row.employee_id}:${row.event_date}`) ?? [],
-          session.clock_in_at,
+          sessionClockInAt,
         );
         const tmpl = tmplByKey.get(
           `${row.employee_id}:${weekdayIndex(parseISODate(row.event_date))}`,
         );
         const resolved = resolveAutoClockOut({
           eventDate: row.event_date,
-          clockInAt: session.clock_in_at,
+          clockInAt: sessionClockInAt,
           // A rota end that lands before this shift started is discarded by
           // resolveAutoClockOut's `worked <= 0` guard, which is what makes a
           // second shift fall through to the store close / fallback instead of
@@ -421,13 +435,25 @@ export async function autoCloseOpenClocks(
         const clockOutAt = resolved.at.toISOString();
         let workedHours: number;
         try {
-          // Guarded on the session still being open, so a real clock-out that
-          // landed meanwhile wins.
-          const didClose = await closeSession(admin, session.id, {
-            clockOutAt,
-            auto: { source: resolved.source, at: now.toISOString() },
-          });
-          if (!didClose) continue;
+          if (openSess) {
+            // Guarded on the session still being open, so a real clock-out that
+            // landed meanwhile wins.
+            const didClose = await closeSession(admin, openSess.id, {
+              clockOutAt,
+              auto: { source: resolved.source, at: now.toISOString() },
+            });
+            if (!didClose) continue;
+          } else {
+            // Adopted straight into a CLOSED session, so it can never collide
+            // with a shift the employee has running on another date.
+            const adopted = await adoptHeaderIntoSession(admin, row, {
+              closeWith: {
+                clockOutAt,
+                auto: { source: resolved.source, at: now.toISOString() },
+              },
+            });
+            if (!adopted) continue;
+          }
           await admin
             .from("clock_events")
             .update({
@@ -497,15 +523,27 @@ export async function autoCloseOpenClocks(
         // clock_in_at is the morning shift's start, so resolving from it would
         // measure the assumed end against the wrong shift — and the rota end
         // would fall before the evening shift even began.
-        const session =
-          (await findOpenManagerSession(admin, row.manager_id)) ??
-          (await adoptManagerHeaderIntoSession(admin, row));
-        if (!session || session.clock_event_id !== row.id) continue;
+        //
+        // Scoped to THIS day, never looked up by person — same fix as the
+        // employee loop above (Update 133).
+        const sessions = await managerSessionsForEvent(admin, row.id);
+        // A deliveries-only row (migration 037) carries drops, not a shift: it
+        // is closed and zero-length, so it is never what an open day is waiting
+        // on and must not be adopted as attendance.
+        const shifts = sessions.filter((s) => !s.deliveries_only);
+        const openSess = shifts.find((s) => !s.clock_out_at) ?? null;
+        if (!openSess && sessions.length > 0) {
+          // Nothing is running. Finished shifts mean the header is merely stale
+          // and is re-derived; a day holding only drops has nothing to close.
+          if (shifts.length > 0) await recomputeManagerDayHeader(admin, row.id);
+          continue;
+        }
+        const sessionClockInAt = openSess?.clock_in_at ?? row.clock_in_at;
 
         const shift = shiftByKey.get(`${row.manager_id}:${row.event_date}`);
         const resolved = resolveAutoClockOut({
           eventDate: row.event_date,
-          clockInAt: session.clock_in_at,
+          clockInAt: sessionClockInAt,
           // A shift end that lands before this shift started is discarded by
           // resolveAutoClockOut's `worked <= 0` guard, which is what makes a
           // second shift fall through to the store close / fallback instead of
@@ -521,13 +559,23 @@ export async function autoCloseOpenClocks(
         const clockOutAt = resolved.at.toISOString();
         let workedHours: number;
         try {
-          // Guarded on the session still being open, so a real clock-out that
-          // landed meanwhile wins.
-          const didClose = await closeManagerSession(admin, session.id, {
-            clockOutAt,
-            auto: { source: resolved.source, at: now.toISOString() },
-          });
-          if (!didClose) continue;
+          if (openSess) {
+            // Guarded on the session still being open, so a real clock-out that
+            // landed meanwhile wins.
+            const didClose = await closeManagerSession(admin, openSess.id, {
+              clockOutAt,
+              auto: { source: resolved.source, at: now.toISOString() },
+            });
+            if (!didClose) continue;
+          } else {
+            const adopted = await adoptManagerHeaderIntoSession(admin, row, {
+              closeWith: {
+                clockOutAt,
+                auto: { source: resolved.source, at: now.toISOString() },
+              },
+            });
+            if (!adopted) continue;
+          }
           await admin
             .from("manager_clock_events")
             .update({

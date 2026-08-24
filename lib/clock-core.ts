@@ -34,10 +34,10 @@ import {
 import { detectStoreForLocation } from "@/lib/geofence-verify";
 import { findEmployeeForUser } from "@/lib/employee-lookup";
 import {
+  addSession,
   adoptHeaderIntoSession,
   findOpenSession,
   hasSessionOnDate,
-  openSession,
   recomputeDayHeader,
 } from "@/lib/clock-sessions";
 import { employeeNiRate, rollupApprovedWeek } from "@/lib/employee-hours-rollup";
@@ -537,7 +537,7 @@ export async function performClockIn(ctx: ClockInContext): Promise<ClockInOutcom
     });
   }
 
-  await openSession(supabase, {
+  await addSession(supabase, {
     clockEventId,
     employeeId: employee.id,
     storeId: workedStoreId,
