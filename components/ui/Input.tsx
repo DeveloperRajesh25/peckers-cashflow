@@ -13,11 +13,21 @@ type InputProps = React.InputHTMLAttributes<HTMLInputElement> & {
 };
 
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(function Input(
-  { label, hint, error, prefix, className, containerClassName, id, ...props },
+  { label, hint, error, prefix, className, containerClassName, id, type, onWheel, ...props },
   ref,
 ) {
   const autoId = React.useId();
   const inputId = id ?? autoId;
+  // A focused number input answers the mouse wheel, so scrolling a page with
+  // the cursor over one silently retypes it — on these screens that is someone's
+  // hours, deliveries or cash. Blur instead and let the page scroll.
+  const handleWheel =
+    type === "number"
+      ? (e: React.WheelEvent<HTMLInputElement>) => {
+          onWheel?.(e);
+          e.currentTarget.blur();
+        }
+      : onWheel;
   return (
     <div className={cn("flex flex-col gap-1.5", containerClassName)}>
       {label && (
@@ -36,6 +46,8 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(function Inp
         <input
           id={inputId}
           ref={ref}
+          type={type}
+          onWheel={handleWheel}
           className={cn(
             "flex-1 bg-transparent outline-none text-text-primary placeholder:text-text-muted text-sm w-full",
             className,

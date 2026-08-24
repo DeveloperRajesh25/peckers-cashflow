@@ -1086,9 +1086,11 @@ export type CashPayout = {
   /**
    * Manual cash adjustment (migration 039), SIGNED: positive = cash taken out
    * of the pot, negative = added. Applied at the settle, NOT inside
-   * actual_cash_available — see buildPrePaymentSummary.
+   * actual_cash_available — see buildPrePaymentSummary. Since migration 047
+   * this is the ROLL-UP of the week's cash_payout_adjustments rows.
    */
   adjustment_amount: number;
+  /** Joined summary of the child adjustments' reasons. */
   adjustment_reason: string | null;
   post_office_draw: number;
   surplus_carry_forward: number;
@@ -1140,8 +1142,24 @@ export type CashPayoutLine = {
   updated_at: string;
 };
 
+/**
+ * One manual cash movement on a payout week (migration 047). SIGNED with the
+ * same convention as the header roll-up: positive = cash taken out of the pot.
+ */
+export type CashPayoutAdjustment = {
+  id: string;
+  payout_id: string;
+  amount: number;
+  reason: string;
+  created_by_name: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type CashPayoutWithLines = CashPayout & {
   lines: CashPayoutLine[];
+  /** The week's individual adjustments; their sum is `adjustment_amount`. */
+  adjustments: CashPayoutAdjustment[];
   store_name: string | null;
 };
 
@@ -1194,6 +1212,18 @@ export type WageLine = {
   total_payment: number;
 };
 
+/**
+ * One adjustment as the pre-payment sheet renders it. `id` is null only for a
+ * pre-migration-047 header figure with no child row behind it — such a line
+ * shows but cannot be edited until the backfill runs.
+ */
+export type PrePaymentAdjustment = {
+  id: string | null;
+  amount: number;
+  reason: string;
+  created_by_name?: string | null;
+};
+
 /** The Tuesday pre-payment summary (§3.4 of the spec). */
 export type PrePaymentSummary = {
   store_id: string;
@@ -1209,12 +1239,15 @@ export type PrePaymentSummary = {
   total_delivery_wages: number;
   grand_total_wages: number;
   /**
-   * Manual cash adjustment for this store-week (migration 039), SIGNED.
-   * Deliberately outside actual_cash_available — it settles one step later, so
-   * the cash reconciliation above it stays a record of real till movements.
+   * Manual cash adjustment for this store-week (migration 039), SIGNED, and the
+   * sum of `adjustments` since migration 047. Deliberately outside
+   * actual_cash_available — it settles one step later, so the cash
+   * reconciliation above it stays a record of real till movements.
    */
   adjustment: number;
   adjustment_reason: string | null;
+  /** The individual movements behind `adjustment`, newest last. */
+  adjustments: PrePaymentAdjustment[];
   /** grand_total_wages − (actual_cash_available − adjustment), clamped ≥ 0. */
   post_office_draw: number;
   /** (actual_cash_available − adjustment) − grand_total_wages, clamped ≥ 0. */

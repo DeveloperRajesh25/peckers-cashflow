@@ -13,7 +13,7 @@ import {
   generatePayout,
   markLinePaid,
   confirmPayout,
-  setPayoutAdjustment,
+  savePayoutAdjustment,
   unlockPayout,
 } from "@/app/actions/payouts";
 import {
@@ -27,7 +27,11 @@ import {
 import { payWeekOf, supermarketCashLabel } from "@/lib/cash-flow";
 import { HoursMinsDisplay } from "@/components/ui/HoursMinsDisplay";
 import { DeliveryCell } from "./DeliveryCell";
-import type { CashPayoutWithLines, PrePaymentSummary } from "@/lib/types";
+import type {
+  CashPayoutWithLines,
+  PrePaymentAdjustment,
+  PrePaymentSummary,
+} from "@/lib/types";
 
 type StoreOpt = { id: string; name: string };
 type DisplayLine = {
@@ -103,6 +107,7 @@ export function PrePaymentView({
         // actually settled, not whatever the live figure says now.
         adjustment: Number(payout.adjustment_amount) || 0,
         adjustment_reason: payout.adjustment_reason ?? null,
+        adjustments: frozenAdjustments(payout),
         post_office_draw: payout.post_office_draw,
         surplus: payout.surplus_carry_forward,
       }
@@ -263,26 +268,41 @@ export function PrePaymentView({
     }
   }
 
-  // The adjustment editor. Seeded from whatever is on record and re-seeded
-  // whenever the server figure changes, so a save (or another manager's edit
-  // landing on refresh) leaves the boxes agreeing with the row above them.
-  const [adjAmount, setAdjAmount] = React.useState(
-    fin.adjustment ? String(fin.adjustment) : "",
-  );
-  const [adjReason, setAdjReason] = React.useState(fin.adjustment_reason ?? "");
-  const [adjOpen, setAdjOpen] = React.useState(false);
-  React.useEffect(() => {
-    setAdjAmount(fin.adjustment ? String(fin.adjustment) : "");
-    setAdjReason(fin.adjustment_reason ?? "");
-  }, [fin.adjustment, fin.adjustment_reason]);
+  // The adjustment editor. One form serves the whole list: `adjEditing` is the
+  // id of the entry being changed, ADJ_NEW while adding, null when closed. The
+  // boxes are seeded when it opens rather than from a effect — a refresh
+  // landing mid-edit must not overwrite what is being typed.
+  const [adjEditing, setAdjEditing] = React.useState<string | null>(null);
+  const [adjAmount, setAdjAmount] = React.useState("");
+  const [adjReason, setAdjReason] = React.useState("");
 
   const adjParsed = adjAmount.trim() === "" ? 0 : Number(adjAmount);
   const adjInvalid = adjAmount.trim() !== "" && !Number.isFinite(adjParsed);
-  const adjNeedsReason = !adjInvalid && adjParsed !== 0 && !adjReason.trim();
+  const editingId = adjEditing && adjEditing !== ADJ_NEW ? adjEditing : null;
+  // Zero is only meaningful on an existing entry, where it means "remove this
+  // one" — so a reason is required for everything except that.
+  const adjRemoves = !!editingId && !adjInvalid && adjParsed === 0;
+  const adjNeedsReason = !adjInvalid && !adjRemoves && !adjReason.trim();
+
+  function openAdjustment(entry: PrePaymentAdjustment | null) {
+    setAdjEditing(entry?.id ?? ADJ_NEW);
+    setAdjAmount(entry ? String(entry.amount) : "");
+    setAdjReason(entry?.reason ?? "");
+  }
+
+  function closeAdjustment() {
+    setAdjEditing(null);
+    setAdjAmount("");
+    setAdjReason("");
+  }
 
   async function doSaveAdjustment() {
     if (adjInvalid) {
       toast.error("Enter a valid amount.");
+      return;
+    }
+    if (!editingId && adjParsed === 0) {
+      toast.error("Enter an amount.");
       return;
     }
     if (adjNeedsReason) {
@@ -291,18 +311,19 @@ export function PrePaymentView({
     }
     setBusy("adjust");
     try {
-      await setPayoutAdjustment({
+      await savePayoutAdjustment({
         store_id: store.id,
         week_start: weekStart,
+        adjustment_id: editingId,
         amount: adjParsed,
         reason: adjReason.trim() || null,
       });
       toast.success(
-        adjParsed === 0
-          ? "Adjustment cleared"
+        adjRemoves
+          ? "Adjustment removed"
           : `Adjustment saved — ${adjParsed > 0 ? "+" : "−"}${formatGBP(Math.abs(adjParsed))}`,
       );
-      setAdjOpen(false);
+      closeAdjustment();
       router.refresh();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
@@ -438,14 +459,38 @@ export function PrePaymentView({
               <SummaryRow label="Total cash wages due" value={`(${formatGBP(fin.total_cash_wages)})`} tone="bad" />
               <SummaryRow label="Total delivery wages due" value={`(${formatGBP(fin.total_delivery_wages)})`} tone="bad" />
               <SummaryRow label="Grand total wages due" value={`(${formatGBP(fin.grand_total_wages)})`} tone="bad" strong />
-              {/* Only rendered when there is something to explain — a "£0.00"
-                  adjustment row on every sheet is noise, and its absence is
-                  what makes a present one worth reading. */}
-              {Math.abs(fin.adjustment) > 0.001 && (
+              {/* One row per movement, so each keeps its own reason. Nothing is
+                  rendered when there are none — a "£0.00" adjustment row on
+                  every sheet is noise, and its absence is what makes a present
+                  one worth reading. */}
+              {fin.adjustments.map((a, i) => (
                 <SummaryRow
-                  label={`Adjustment${fin.adjustment_reason ? ` — ${fin.adjustment_reason}` : ""}`}
+                  key={a.id ?? `legacy-${i}`}
+                  label={`Adjustment${a.reason ? ` — ${a.reason}` : ""}`}
+                  value={`${a.amount > 0 ? "+" : "−"} ${formatGBP(Math.abs(a.amount))}`}
+                  tone={a.amount > 0 ? "bad" : "good"}
+                  // A pre-047 header figure has no row behind it to edit;
+                  // adding any new entry materialises it server-side.
+                  action={
+                    !confirmed && a.id ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openAdjustment(a)}
+                        disabled={!!adjEditing}
+                      >
+                        Edit
+                      </Button>
+                    ) : null
+                  }
+                />
+              ))}
+              {fin.adjustments.length > 1 && (
+                <SummaryRow
+                  label={`Total adjustments (${fin.adjustments.length})`}
                   value={`${fin.adjustment > 0 ? "+" : "−"} ${formatGBP(Math.abs(fin.adjustment))}`}
                   tone={fin.adjustment > 0 ? "bad" : "good"}
+                  strong
                 />
               )}
               {fin.post_office_draw > 0.001 ? (
@@ -469,91 +514,56 @@ export function PrePaymentView({
           </div>
         )}
 
-        {/* Manual adjustment. Every other figure on this sheet is derived, so
+        {/* Manual adjustments. Every other figure on this sheet is derived, so
             cash that moved for a reason the system doesn't model had nowhere
             to go — the alternative was mis-recording an envelope, which
-            corrupts the Vita Mojo reconciliation as well. Hidden once locked:
-            the surplus has already been carried into next week's opening
-            balance by then. */}
+            corrupts the Vita Mojo reconciliation as well. A week can hold as
+            many as it needs; each is a row above with its own reason and its
+            own Edit button, and this one form serves all of them. Hidden once
+            locked: the surplus has already been carried into next week's
+            opening balance by then. */}
         {!confirmed && (
-          <div className="mt-4 border-t border-border/60 pt-4">
-            {!adjOpen ? (
-              <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="mt-4 border-t border-border/60 pt-4 flex flex-col gap-3">
+            {adjEditing ? (
+              <>
+                <AdjustmentForm
+                  title={editingId ? "Edit adjustment" : "New adjustment"}
+                  amount={adjAmount}
+                  reason={adjReason}
+                  onAmount={setAdjAmount}
+                  onReason={setAdjReason}
+                  onSave={doSaveAdjustment}
+                  onCancel={closeAdjustment}
+                  saving={busy === "adjust"}
+                  invalid={adjInvalid}
+                  needsReason={adjNeedsReason}
+                  removes={adjRemoves}
+                />
                 <p className="text-xs text-text-muted">
-                  {Math.abs(fin.adjustment) > 0.001 ? (
-                    <>
-                      Adjusted by{" "}
-                      <span className="font-medium text-text-primary">
-                        {fin.adjustment > 0 ? "+" : "−"}
-                        {formatGBP(Math.abs(fin.adjustment))}
-                      </span>
-                      {fin.adjustment_reason ? ` — ${fin.adjustment_reason}` : ""}
-                    </>
-                  ) : (
-                    <>Need to add or take out cash this sheet doesn&apos;t know about?</>
-                  )}
-                </p>
-                <Button variant="outline" size="sm" onClick={() => setAdjOpen(true)}>
-                  {Math.abs(fin.adjustment) > 0.001 ? "Edit adjustment" : "Add adjustment"}
-                </Button>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-3">
-                <div className="flex flex-wrap items-end gap-3">
-                  <Input
-                    label="Adjustment (+ / −)"
-                    type="number"
-                    step="0.01"
-                    prefix="£"
-                    inputMode="decimal"
-                    placeholder="0.00"
-                    value={adjAmount}
-                    onChange={(e) => setAdjAmount(e.target.value)}
-                    error={adjInvalid ? "Not a valid amount" : null}
-                    containerClassName="w-40"
-                  />
-                  <Input
-                    label="Reason *"
-                    placeholder="What is this money for?"
-                    value={adjReason}
-                    onChange={(e) => setAdjReason(e.target.value)}
-                    maxLength={200}
-                    containerClassName="flex-1 min-w-[14rem]"
-                  />
-                  <div className="flex items-center gap-2 pb-0.5">
-                    <Button
-                      onClick={doSaveAdjustment}
-                      loading={busy === "adjust"}
-                      disabled={adjInvalid || adjNeedsReason}
-                    >
-                      Save
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      onClick={() => {
-                        setAdjOpen(false);
-                        setAdjAmount(fin.adjustment ? String(fin.adjustment) : "");
-                        setAdjReason(fin.adjustment_reason ?? "");
-                      }}
-                      disabled={busy === "adjust"}
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                </div>
-                <p className="text-xs text-text-muted">
-                  A <span className="font-medium text-danger">positive</span> amount is
-                  cash taken out of the pot — it grows the Post Office draw, or shrinks the
-                  surplus carried into next week. A{" "}
+                  A <span className="font-medium text-danger">positive</span> amount is cash
+                  taken out of the pot — it grows the Post Office draw, or shrinks the surplus
+                  carried into next week. A{" "}
                   <span className="font-medium text-success">negative</span> amount (e.g.{" "}
                   <span className="tabular-nums">-50</span>) is cash added and does the
-                  opposite. Set it to 0 to remove the adjustment. This does{" "}
-                  <span className="font-medium text-text-primary">not</span> change the
-                  envelope figures or anyone&apos;s wages.
-                  {!payout && (
-                    <> Saving also generates this week&apos;s payout sheet.</>
-                  )}
+                  opposite.{" "}
+                  {editingId
+                    ? "Set this one to 0 and save to remove it."
+                    : "Each adjustment is saved separately, so add as many as the week needs."}{" "}
+                  This does <span className="font-medium text-text-primary">not</span> change
+                  the envelope figures or anyone&apos;s wages.
+                  {!payout && <> Saving also generates this week&apos;s payout sheet.</>}
                 </p>
+              </>
+            ) : (
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <p className="text-xs text-text-muted">
+                  {fin.adjustments.length > 0
+                    ? "Add another movement, or edit one in the rows above."
+                    : "Need to add or take out cash this sheet doesn't know about?"}
+                </p>
+                <Button variant="outline" size="sm" onClick={() => openAdjustment(null)}>
+                  {fin.adjustments.length > 0 ? "Add another adjustment" : "Add adjustment"}
+                </Button>
               </div>
             )}
           </div>
@@ -824,6 +834,100 @@ export function PrePaymentView({
   );
 }
 
+/** Sentinel for "the form is open on a new entry", never a real adjustment id. */
+const ADJ_NEW = "new";
+
+/**
+ * The frozen entries behind a confirmed payout's adjustment total. Falls back to
+ * the header figure for a week settled before migration 047, so a locked sheet
+ * always shows the money it applied.
+ */
+function frozenAdjustments(payout: CashPayoutWithLines): PrePaymentAdjustment[] {
+  const rows = payout.adjustments ?? [];
+  if (rows.length) {
+    return rows.map((r) => ({
+      id: r.id,
+      amount: Number(r.amount) || 0,
+      reason: r.reason,
+      created_by_name: r.created_by_name,
+    }));
+  }
+  const legacy = Number(payout.adjustment_amount) || 0;
+  return legacy
+    ? [{ id: null, amount: legacy, reason: payout.adjustment_reason ?? "Adjustment" }]
+    : [];
+}
+
+/** The add/edit boxes. One instance is open at a time — see `adjEditing`. */
+function AdjustmentForm({
+  title,
+  amount,
+  reason,
+  onAmount,
+  onReason,
+  onSave,
+  onCancel,
+  saving,
+  invalid,
+  needsReason,
+  removes,
+}: {
+  title: string;
+  amount: string;
+  reason: string;
+  onAmount: (v: string) => void;
+  onReason: (v: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  saving: boolean;
+  invalid: boolean;
+  needsReason: boolean;
+  /** True when saving this form deletes the entry (an existing one set to 0). */
+  removes: boolean;
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-surface-2/40 px-3 py-3">
+      <p className="text-xs font-medium text-text-subtle mb-2">{title}</p>
+      <div className="flex flex-wrap items-end gap-3">
+        <Input
+          label="Adjustment (+ / −)"
+          type="number"
+          step="0.01"
+          prefix="£"
+          inputMode="decimal"
+          placeholder="0.00"
+          value={amount}
+          onChange={(e) => onAmount(e.target.value)}
+          error={invalid ? "Not a valid amount" : null}
+          containerClassName="w-40"
+        />
+        <Input
+          label="Reason *"
+          placeholder="What is this money for?"
+          value={reason}
+          onChange={(e) => onReason(e.target.value)}
+          maxLength={200}
+          disabled={removes}
+          containerClassName="flex-1 min-w-[14rem]"
+        />
+        <div className="flex items-center gap-2 pb-0.5">
+          <Button
+            onClick={onSave}
+            loading={saving}
+            disabled={invalid || needsReason}
+            variant={removes ? "danger" : "primary"}
+          >
+            {removes ? "Remove" : "Save"}
+          </Button>
+          <Button variant="secondary" onClick={onCancel} disabled={saving}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SummaryRow({
   label,
   value,
@@ -831,6 +935,7 @@ function SummaryRow({
   strong,
   highlight,
   hint,
+  action,
 }: {
   label: string;
   value: string;
@@ -838,6 +943,8 @@ function SummaryRow({
   strong?: boolean;
   highlight?: boolean;
   hint?: string;
+  /** Sits to the LEFT of the figure — the row's own Edit button. */
+  action?: React.ReactNode;
 }) {
   const toneCls = tone === "good" ? "text-success" : tone === "bad" ? "text-danger" : "text-text-primary";
   return (
@@ -846,7 +953,16 @@ function SummaryRow({
         {label}
         {hint && <span className="block text-[11px] text-warning mt-0.5">{hint}</span>}
       </td>
-      <td className={`px-4 py-2.5 text-right tabular-nums ${strong ? "font-semibold" : ""} ${toneCls}`}>{value}</td>
+      <td className={`px-4 py-2.5 text-right tabular-nums ${strong ? "font-semibold" : ""} ${toneCls}`}>
+        {action ? (
+          <span className="inline-flex items-center justify-end gap-3">
+            {action}
+            {value}
+          </span>
+        ) : (
+          value
+        )}
+      </td>
     </tr>
   );
 }

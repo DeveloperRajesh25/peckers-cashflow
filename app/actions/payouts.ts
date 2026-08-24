@@ -15,15 +15,19 @@ import {
   buildWageLinesForStore,
   normalisePayoutAdjustment,
   payWeekOf,
+  sumAdjustments,
+  summariseAdjustmentReasons,
   supermarketCashAmount,
   type CoverDriverPayRow,
   type ManagerPayee,
   type ManagerPayRow,
 } from "@/lib/cash-flow";
 import type {
+  CashPayoutAdjustment,
   CashPayoutWithLines,
   DailyCashEntry,
   Employee,
+  PrePaymentAdjustment,
   PrePaymentSummary,
 } from "@/lib/types";
 
@@ -91,6 +95,107 @@ async function loadOpeningBalance(
     .limit(1)
     .maybeSingle();
   return Number(data?.surplus_carry_forward ?? 0) || 0;
+}
+
+/**
+ * Mirror the week's adjustment entries onto the payout header.
+ *
+ * `cash_payouts.adjustment_amount` is what the settle maths, the alert forecast
+ * and Payout History all read, and has meant "the signed total applied this
+ * week" since migration 039 — keeping it as the roll-up is what let many
+ * entries arrive without any of those three changing.
+ */
+async function rollUpAdjustments(supabase: SupabaseClient, payoutId: string) {
+  const { data, error } = await supabase
+    .from("cash_payout_adjustments")
+    .select("amount, reason, created_at")
+    .eq("payout_id", payoutId)
+    .order("created_at");
+  if (error) throw new Error(error.message);
+  const rows = (data ?? []) as { amount: number; reason: string }[];
+  const { error: headerErr } = await supabase
+    .from("cash_payouts")
+    .update({
+      adjustment_amount: sumAdjustments(rows),
+      adjustment_reason: summariseAdjustmentReasons(rows),
+    })
+    .eq("id", payoutId);
+  if (headerErr) throw new Error(headerErr.message);
+}
+
+type AdjustmentRow = {
+  id: string;
+  amount: number | string;
+  reason: string | null;
+  created_by_name?: string | null;
+  created_at?: string | null;
+};
+
+/**
+ * Turn a pre-migration-047 header figure into the week's first entry.
+ *
+ * The 047 backfill does this for every existing payout, so this only fires on a
+ * week adjusted between the code shipping and the migration running. Without
+ * it, adding an entry to such a week would roll the header up from the child
+ * rows alone and silently drop the amount already being settled.
+ */
+async function materialiseLegacyAdjustment(
+  supabase: SupabaseClient,
+  payoutId: string,
+  headerAmount: number,
+) {
+  if (!headerAmount) return;
+  const { data } = await supabase
+    .from("cash_payout_adjustments")
+    .select("id")
+    .eq("payout_id", payoutId)
+    .limit(1);
+  if (data?.length) return;
+  const { data: header } = await supabase
+    .from("cash_payouts")
+    .select("adjustment_reason")
+    .eq("id", payoutId)
+    .maybeSingle();
+  const { error } = await supabase.from("cash_payout_adjustments").insert({
+    payout_id: payoutId,
+    amount: headerAmount,
+    reason: header?.adjustment_reason?.trim() || "Adjustment",
+  });
+  if (error) throw new Error(error.message);
+}
+
+/** Stored adjustment rows in entry order — the order the sheet lists them in. */
+function sortAdjustments(rows: unknown): CashPayoutAdjustment[] {
+  return ((rows ?? []) as CashPayoutAdjustment[])
+    .map((r) => ({ ...r, amount: Number(r.amount) || 0 }))
+    .sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""));
+}
+
+/**
+ * The week's adjustments, oldest first, from the embedded child rows.
+ *
+ * Falls back to a single un-editable entry built from the header columns for a
+ * payout the migration 047 backfill hasn't reached: the sheet must still show
+ * the money it is settling, even where there is no row behind it to edit.
+ */
+function readAdjustments(
+  header: { adjustment_amount?: number | string | null; adjustment_reason?: string | null;
+    cash_payout_adjustments?: AdjustmentRow[] | null } | null,
+): PrePaymentAdjustment[] {
+  const rows = header?.cash_payout_adjustments ?? [];
+  if (rows.length) {
+    return [...rows]
+      .sort((a, b) => (a.created_at ?? "").localeCompare(b.created_at ?? ""))
+      .map((r) => ({
+        id: r.id,
+        amount: Number(r.amount) || 0,
+        reason: r.reason ?? "",
+        created_by_name: r.created_by_name ?? null,
+      }));
+  }
+  const legacy = Number(header?.adjustment_amount) || 0;
+  if (!legacy) return [];
+  return [{ id: null, amount: legacy, reason: header?.adjustment_reason ?? "Adjustment" }];
 }
 
 /**
@@ -178,11 +283,13 @@ async function computeSummary(
     // Only needed to resolve the supermarket cash float — Hitchin's is a fixed
     // override, everywhere else reads the Settings default.
     supabase.from("stores").select("name").eq("id", storeId).maybeSingle(),
-    // The manual adjustment for this store-week (migration 039). It lives on
-    // the payout header, so a week with no sheet generated yet simply has none.
+    // The manual adjustments for this store-week (migrations 039/047). They hang
+    // off the payout header, so a week with no sheet generated yet has none.
     supabase
       .from("cash_payouts")
-      .select("adjustment_amount, adjustment_reason")
+      .select(
+        "adjustment_amount, adjustment_reason, cash_payout_adjustments(id, amount, reason, created_by_name, created_at)",
+      )
       .eq("store_id", storeId)
       .eq("week_start_date", weekStartISO)
       .maybeSingle(),
@@ -199,6 +306,9 @@ async function computeSummary(
     managerClocksRes.error?.message ??
     coverRes.error?.message ??
     entriesRes.error?.message ??
+    // A failed adjustments read is money that silently vanishes off the settle,
+    // which is exactly as wrong as a wage that does.
+    adjustmentRes.error?.message ??
     null;
 
   const settings = mergeSettings(settingsRes.data ?? []);
@@ -236,27 +346,41 @@ async function computeSummary(
       ),
       adjustment: Number(adjustmentRes.data?.adjustment_amount) || 0,
       adjustment_reason: adjustmentRes.data?.adjustment_reason ?? null,
+      adjustments: readAdjustments(adjustmentRes.data),
     }),
     load_error: loadError,
   };
 }
 
 /**
- * Set (or clear) the manual cash adjustment on a store's payout week.
+ * Add, edit or remove ONE manual cash adjustment on a store's payout week.
  *
- * The adjustment lives on the payout header, so a week with no sheet yet has
+ * A week holds as many adjustments as it needs (migration 047) — a supplier
+ * paid in cash, a float topped up and a till shortage are three separate facts.
+ * Each is a `cash_payout_adjustments` row; their SIGNED SUM is mirrored onto
+ * `cash_payouts.adjustment_amount`, which is the only figure the settle maths
+ * has ever read. Nothing about how an adjustment applies has changed.
+ *
+ * One entry point for all three operations because they are the same write:
+ *  - no `adjustment_id` → add a new entry (amount 0 is simply nothing to add)
+ *  - `adjustment_id` + non-zero amount → edit that entry
+ *  - `adjustment_id` + amount 0 → remove it, which is how the sheet deletes one
+ *
+ * The adjustments live on the payout header, so a week with no sheet yet has
  * one generated for it here rather than the manager being sent away to press
  * Generate first. Idempotent either way: generating is "create or refresh", and
- * it never touches the two adjustment columns.
+ * it never touches the adjustment columns.
  *
  * Blocked once the payout is confirmed. A locked payout is the record of what
  * was really paid out, and its surplus has already been carried into the next
  * week's opening balance — moving the number afterwards would silently restate
  * a week that is already settled. Unlock it (Super Admin) to amend.
  */
-export async function setPayoutAdjustment(input: {
+export async function savePayoutAdjustment(input: {
   store_id: string;
   week_start: string;
+  /** Omitted when adding; the row being edited (or removed) otherwise. */
+  adjustment_id?: string | null;
   amount: number;
   reason: string | null;
 }): Promise<{ ok: true }> {
@@ -266,12 +390,13 @@ export async function setPayoutAdjustment(input: {
   const weekStart = toISODate(startOfISOWeek(parseISODate(input.week_start)));
 
   // Never trust the client's arithmetic or its bounds — same rule every money
-  // path in this module follows.
+  // path in this module follows. Unchanged from the single-adjustment days: the
+  // bound and the reason rule apply per ENTRY.
   const { amount, reason } = normalisePayoutAdjustment(input.amount, input.reason);
 
   const { data: payout } = await supabase
     .from("cash_payouts")
-    .select("id, locked, adjustment_amount, adjustment_reason")
+    .select("id, locked, adjustment_amount")
     .eq("store_id", input.store_id)
     .eq("week_start_date", weekStart)
     .maybeSingle();
@@ -279,10 +404,15 @@ export async function setPayoutAdjustment(input: {
     throw new Error("This payout is confirmed and locked. A Super Admin must unlock it to amend.");
   }
 
-  // Clearing an adjustment on a week that has no sheet is a no-op, and must not
-  // conjure one: generating is a real side effect (a draft appears in Payout
-  // History) and there is nothing here to record.
-  if (!payout && amount === 0) return { ok: true };
+  if (!payout) {
+    if (input.adjustment_id) {
+      throw new Error("Adjustment not found — the payout sheet no longer exists.");
+    }
+    // Adding nothing to a week that has no sheet must not conjure one:
+    // generating is a real side effect (a draft appears in Payout History) and
+    // there is nothing here to record.
+    if (amount === 0) return { ok: true };
+  }
 
   // No sheet for this week yet: build one, so an adjustment can be entered
   // before anyone has pressed Generate. Deliberately the FULL generate path
@@ -292,16 +422,56 @@ export async function setPayoutAdjustment(input: {
   // shell row would read as a sheet on which nobody is owed anything.
   const payoutId = payout?.id ?? (await generatePayout(input)).payout_id;
 
-  const { error } = await supabase
-    .from("cash_payouts")
-    .update({ adjustment_amount: amount, adjustment_reason: reason })
-    .eq("id", payoutId);
-  if (error) throw new Error(error.message);
+  let was: { amount: number; reason: string | null } | null = null;
+  let operation: "added" | "edited" | "removed";
+
+  if (input.adjustment_id) {
+    // Scoped to this payout, not just to the id: the id arrives from the
+    // browser, and an adjustment belonging to another store's week must not be
+    // reachable by guessing one.
+    const { data: existing } = await supabase
+      .from("cash_payout_adjustments")
+      .select("id, amount, reason")
+      .eq("id", input.adjustment_id)
+      .eq("payout_id", payoutId)
+      .maybeSingle();
+    if (!existing) throw new Error("Adjustment not found on this payout week.");
+    was = { amount: Number(existing.amount) || 0, reason: existing.reason ?? null };
+
+    if (amount === 0) {
+      const { error } = await supabase
+        .from("cash_payout_adjustments")
+        .delete()
+        .eq("id", existing.id);
+      if (error) throw new Error(error.message);
+      operation = "removed";
+    } else {
+      const { error } = await supabase
+        .from("cash_payout_adjustments")
+        .update({ amount, reason })
+        .eq("id", existing.id);
+      if (error) throw new Error(error.message);
+      operation = "edited";
+    }
+  } else {
+    if (amount === 0) return { ok: true };
+    await materialiseLegacyAdjustment(supabase, payoutId, Number(payout?.adjustment_amount) || 0);
+    const { error } = await supabase.from("cash_payout_adjustments").insert({
+      payout_id: payoutId,
+      amount,
+      reason,
+      created_by_name: user.allowed!.name ?? user.email,
+    });
+    if (error) throw new Error(error.message);
+    operation = "added";
+  }
+
+  await rollUpAdjustments(supabase, payoutId);
 
   // The header's draw and surplus were derived before this adjustment existed
   // — whether the sheet was generated a moment ago or last week — so re-derive
-  // them now that it does. computeSummary reads the adjustment back off the
-  // row, which is why this runs after the write and not before it.
+  // them now that it does. computeSummary reads the entries back off the child
+  // rows, which is why this runs after the write and not before it.
   const settled = await computeSummary(supabase, input.store_id, weekStart);
   const { error: settleErr } = await supabase
     .from("cash_payouts")
@@ -313,18 +483,17 @@ export async function setPayoutAdjustment(input: {
   if (settleErr) throw new Error(settleErr.message);
 
   await writeAudit({
-    action: amount === 0 ? "payout_adjustment_cleared" : "payout_adjustment_set",
+    action: `payout_adjustment_${operation}`,
     entity: "cash_payout",
     entity_id: payoutId,
     changes: {
       store_id: input.store_id,
       week_start: weekStart,
       sheet_generated: !payout,
-      was: {
-        amount: Number(payout?.adjustment_amount) || 0,
-        reason: payout?.adjustment_reason ?? null,
-      },
-      now: { amount, reason },
+      adjustment_id: input.adjustment_id ?? null,
+      was,
+      now: operation === "removed" ? null : { amount, reason },
+      total: settled.adjustment,
       draw: settled.post_office_draw,
       surplus: settled.surplus,
       by: user.email,
@@ -684,21 +853,24 @@ export async function getPayoutForWeek(input: {
   const weekStart = toISODate(startOfISOWeek(parseISODate(input.week_start)));
   const { data } = await supabase
     .from("cash_payouts")
-    .select("*, stores(name), cash_payout_lines(*)")
+    .select("*, stores(name), cash_payout_lines(*), cash_payout_adjustments(*)")
     .eq("store_id", input.store_id)
     .eq("week_start_date", weekStart)
     .maybeSingle();
   if (!data) return null;
-  const { stores, cash_payout_lines, ...header } = data as Record<string, unknown> & {
-    stores: { name: string } | null;
-    cash_payout_lines: unknown[];
-  };
+  const { stores, cash_payout_lines, cash_payout_adjustments, ...header } =
+    data as Record<string, unknown> & {
+      stores: { name: string } | null;
+      cash_payout_lines: unknown[];
+      cash_payout_adjustments: unknown[];
+    };
   return {
     ...(header as unknown as CashPayoutWithLines),
     store_name: stores?.name ?? null,
     lines: ((cash_payout_lines ?? []) as CashPayoutWithLines["lines"]).sort(
       (a, b) => b.total_payment - a.total_payment,
     ),
+    adjustments: sortAdjustments(cash_payout_adjustments),
   };
 }
 
@@ -708,18 +880,21 @@ export async function loadPayout(input: { payout_id: string }): Promise<CashPayo
   const supabase = createServerSupabase();
   const { data } = await supabase
     .from("cash_payouts")
-    .select("*, stores(name), cash_payout_lines(*)")
+    .select("*, stores(name), cash_payout_lines(*), cash_payout_adjustments(*)")
     .eq("id", input.payout_id)
     .maybeSingle();
   if (!data) return null;
   assertStoreAccess(user, data.store_id);
-  const { stores, cash_payout_lines, ...header } = data as Record<string, unknown> & {
-    stores: { name: string } | null;
-    cash_payout_lines: unknown[];
-  };
+  const { stores, cash_payout_lines, cash_payout_adjustments, ...header } =
+    data as Record<string, unknown> & {
+      stores: { name: string } | null;
+      cash_payout_lines: unknown[];
+      cash_payout_adjustments: unknown[];
+    };
   return {
     ...(header as unknown as CashPayoutWithLines),
     store_name: stores?.name ?? null,
     lines: (cash_payout_lines ?? []) as CashPayoutWithLines["lines"],
+    adjustments: sortAdjustments(cash_payout_adjustments),
   };
 }

@@ -18,7 +18,13 @@
 //  - Opening balance carries forward last week's surplus.
 // =============================================================
 
-import type { DailyCashEntry, Employee, PrePaymentSummary, WageLine } from "./types";
+import type {
+  DailyCashEntry,
+  Employee,
+  PrePaymentAdjustment,
+  PrePaymentSummary,
+  WageLine,
+} from "./types";
 import { hasRole } from "./types";
 import {
   addDays,
@@ -294,9 +300,14 @@ export function buildPrePaymentSummary(input: {
    * Manual cash adjustment (migration 039), SIGNED: positive = cash taken out,
    * negative = cash added. Settles AFTER actual_cash_available so the cash
    * reconciliation above stays a record of real till movements only.
+   *
+   * Ignored when `adjustments` is given — the entries are then the record and
+   * this figure is derived from them, never the other way round.
    */
   adjustment?: number;
   adjustment_reason?: string | null;
+  /** The week's individual movements (migration 047). Their sum is the total. */
+  adjustments?: PrePaymentAdjustment[];
 }): PrePaymentSummary {
   const totals = summariseWeekEntries(input.entries);
   const opening = round2(input.opening_balance);
@@ -310,8 +321,12 @@ export function buildPrePaymentSummary(input: {
   const totalDeliveryWages = round2(input.lines.reduce((s, l) => s + l.delivery_wages, 0));
   const grandTotal = round2(totalCashWages + totalDeliveryWages);
   // Signed, and NOT clamped at zero — a positive adjustment (cash taken out of
-  // the pot) is the whole reason the field can hold one.
-  const adjustment = round2(Number(input.adjustment) || 0);
+  // the pot) is the whole reason the field can hold one. Many movements settle
+  // exactly as one did: the sheet applies their sum at the same single step.
+  const adjustments = input.adjustments ?? [];
+  const adjustment = adjustments.length
+    ? sumAdjustments(adjustments)
+    : round2(Number(input.adjustment) || 0);
   const diff = round2(actualCashAvailable - adjustment - grandTotal);
 
   return {
@@ -329,11 +344,34 @@ export function buildPrePaymentSummary(input: {
     adjustment,
     // Only meaningful alongside a non-zero amount; kept in step so the sheet
     // can never show a reason with nothing to explain.
-    adjustment_reason: adjustment !== 0 ? input.adjustment_reason?.trim() || null : null,
+    adjustment_reason: adjustments.length
+      ? summariseAdjustmentReasons(adjustments)
+      : adjustment !== 0
+        ? input.adjustment_reason?.trim() || null
+        : null,
+    adjustments,
     post_office_draw: diff < 0 ? round2(-diff) : 0,
     surplus: diff > 0 ? diff : 0,
     lines: input.lines,
   };
+}
+
+/**
+ * The signed total the settle applies. The ONE place the roll-up is derived —
+ * the sheet, the header column written back to cash_payouts and the alert
+ * forecast must never disagree about what a week was adjusted by.
+ */
+export function sumAdjustments(rows: { amount: number }[]): number {
+  return round2(rows.reduce((s, r) => s + (Number(r.amount) || 0), 0));
+}
+
+/**
+ * The header's one-line explanation, joined from the entries. Payout History and
+ * the alert forecast read `adjustment_reason` and have no room for a list.
+ */
+export function summariseAdjustmentReasons(rows: { reason: string }[]): string | null {
+  const parts = rows.map((r) => r.reason?.trim()).filter((r): r is string => !!r);
+  return parts.length ? parts.join(" · ") : null;
 }
 
 /**
