@@ -13,6 +13,10 @@ import {
 } from "@/app/actions/clock";
 import { upsertManualCoverDriverClockEntry } from "@/app/actions/cover-driver-clock";
 import {
+  listOpenManagerShiftsForDate,
+  upsertManualManagerClockEntry,
+} from "@/app/actions/manager-clock";
+import {
   addDays,
   formatDDMMYYYY,
   londonHHMM,
@@ -23,8 +27,14 @@ import {
   toISODate,
 } from "@/lib/utils";
 
-// One modal for all four entry points: employee / cover driver × Live board
-// (same day, clock-out optional) / Daily Approval (yesterday, both required).
+// One modal for every timed entry point: employee / cover driver / manager ×
+// Live board (same day, clock-out optional) / Daily Approval (yesterday, both
+// required).
+//
+// The MANAGER mode records real times for a manager who worked and forgot to
+// clock. It is not ManagerDeliveryEntryModal, which records drops for a day a
+// manager was never on site and deliberately writes no times at all — see
+// migration 037.
 
 /** A person who can be picked, plus the shift time used to pre-fill. */
 export type ManualEntryCandidate = {
@@ -64,10 +74,11 @@ export function ManualClockEntryModal({
   requireClockOut = false,
   title,
   stores,
+  defaultStoreId,
   onClose,
   onSaved,
 }: {
-  mode: "employee" | "cover_driver";
+  mode: "employee" | "cover_driver" | "manager";
   candidates: ManualEntryCandidate[];
   eventDate: string;
   /** Daily Approval: the day is over, so both times are needed. */
@@ -80,6 +91,13 @@ export function ManualClockEntryModal({
    * neither gets a picker. Cover drivers belong to one store and never do.
    */
   stores?: Array<{ id: string; name: string }>;
+  /**
+   * Fixes the store the entry is recorded against, replacing the picker. The
+   * Live board's cards are each one store, so an entry opened from a card
+   * belongs to THAT store — not to the person's home store, which is what the
+   * server would otherwise default an admin to for someone covering elsewhere.
+   */
+  defaultStoreId?: string | null;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -110,9 +128,22 @@ export function ManualClockEntryModal({
   const [openLookupFailed, setOpenLookupFailed] = React.useState(false);
 
   React.useEffect(() => {
-    if (mode !== "employee") return;
+    // Cover drivers work a single shift a day, so there is never one running to
+    // be offered for closing.
+    if (mode === "cover_driver") return;
     let cancelled = false;
-    listOpenShiftsForDate(eventDate).then((res) => {
+    const lookup =
+      mode === "manager"
+        ? listOpenManagerShiftsForDate(eventDate).then((res) =>
+            res.ok
+              ? {
+                  ok: true as const,
+                  shifts: res.shifts.map((s) => ({ ...s, employee_id: s.manager_id })),
+                }
+              : res,
+          )
+        : listOpenShiftsForDate(eventDate);
+    lookup.then((res) => {
       if (cancelled) return;
       if (!res.ok) return setOpenLookupFailed(true);
       setOpenLookupFailed(false);
@@ -128,7 +159,9 @@ export function ManualClockEntryModal({
   // A shift that is already running can only be completed, never left open —
   // the server refuses a second open shift for the same person.
   const mustClockOut = requireClockOut || !!openForSelected;
-  // Cover drivers all drive; employees only if their position says so.
+  // Cover drivers all drive; employees only if their position says so. NEVER a
+  // manager: their clock entry records times only, and their drops go through
+  // "Add manager entry" on Daily Approval.
   const showDeliveries = mode === "cover_driver" || !!selected?.is_driver;
 
   const extraShortNeedsReason = (Number(extraShort) || 0) > 0 && !extraShortReason.trim();
@@ -145,11 +178,16 @@ export function ManualClockEntryModal({
     const open = openShifts.get(selected.id) ?? null;
     setInTime(open?.clock_in_time ?? selected.scheduled_start?.slice(0, 5) ?? "");
     setOutTime(open || !requireClockOut ? "" : selected.scheduled_end?.slice(0, 5) ?? "");
-    // The store the open shift was recorded against, else their home store, or
-    // wherever the day's existing shifts already sit — covering elsewhere is
-    // the exception, so it stays a deliberate change.
+    // The store the open shift was recorded against, else the one the caller is
+    // acting on, else their home store or wherever the day's existing shifts
+    // already sit — covering elsewhere is the exception, so it stays a
+    // deliberate change.
     setStoreId(
-      open?.store_id ?? selected.existing_store_id ?? selected.store_id ?? "",
+      open?.store_id ??
+        defaultStoreId ??
+        selected.existing_store_id ??
+        selected.store_id ??
+        "",
     );
     // Deliberately not keyed on `openShifts` itself: it lands after the modal
     // opens, and re-running on every change would wipe a clock-out already
@@ -158,14 +196,20 @@ export function ManualClockEntryModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [personId, openForSelected?.session_id, requireClockOut]);
 
-  const showStorePicker = mode === "employee" && !!stores && stores.length > 1;
+  // A fixed store leaves nothing to choose, so `stores` is then only the name
+  // lookup the warnings below read.
+  const showStorePicker =
+    mode === "employee" && !!stores && stores.length > 1 && !defaultStoreId;
   const awayFromHome =
-    showStorePicker && !!storeId && !!selected?.store_id && storeId !== selected.store_id;
+    mode === "employee" &&
+    !!storeId &&
+    !!selected?.store_id &&
+    storeId !== selected.store_id;
   // A day carries ONE store (deriveDayHeader takes the latest shift's), and the
   // payout bills the whole day to it. So adding a shift at another store does
   // not split the day — it moves all of it, including hours already recorded.
   const movesExistingDay =
-    showStorePicker &&
+    mode === "employee" &&
     !!storeId &&
     !!selected?.existing_shifts &&
     !!selected.existing_store_id &&
@@ -210,6 +254,7 @@ export function ManualClockEntryModal({
     !!personId &&
     !!inTime &&
     (!showStorePicker || !!storeId) &&
+    (mode !== "employee" || !defaultStoreId || !!storeId) &&
     (!mustClockOut || !!outTime) &&
     !sameTime &&
     !notYetWorked &&
@@ -233,7 +278,9 @@ export function ManualClockEntryModal({
   async function save() {
     setError(null);
     if (!personId) return setError("Pick who this is for.");
-    if (showStorePicker && !storeId) return setError("Pick the store they worked at.");
+    if (mode === "employee" && !storeId && (showStorePicker || defaultStoreId)) {
+      return setError("Pick the store they worked at.");
+    }
     if (!inTime) return setError("Enter the clock-in time.");
     if (mustClockOut && !outTime) {
       return setError(
@@ -262,18 +309,29 @@ export function ManualClockEntryModal({
               clock_out_time: outTime || null,
               reason,
               deliveries,
-              // Omitted where there's no picker, which leaves the server on its
-              // existing default rather than asserting a store from the UI.
-              store_id: showStorePicker ? storeId : undefined,
+              // Omitted only where the UI knows no store at all, which leaves
+              // the server on its existing default rather than asserting one.
+              store_id: showStorePicker || defaultStoreId ? storeId : undefined,
             })
-          : await upsertManualCoverDriverClockEntry({
-              cover_driver_id: personId,
-              event_date: eventDate,
-              clock_in_time: inTime,
-              clock_out_time: outTime || null,
-              reason,
-              deliveries,
-            });
+          : mode === "manager"
+            ? await upsertManualManagerClockEntry({
+                manager_id: personId,
+                event_date: eventDate,
+                clock_in_time: inTime,
+                clock_out_time: outTime || null,
+                reason,
+                // The open shift's own store when one is being closed, else
+                // the card's — never the manager's home store.
+                store_id: storeId || defaultStoreId || undefined,
+              })
+            : await upsertManualCoverDriverClockEntry({
+                cover_driver_id: personId,
+                event_date: eventDate,
+                clock_in_time: inTime,
+                clock_out_time: outTime || null,
+                reason,
+                deliveries,
+              });
 
       if (!res.ok) {
         setError(res.error);
@@ -292,7 +350,8 @@ export function ManualClockEntryModal({
     }
   }
 
-  const label = mode === "employee" ? "Employee" : "Cover driver";
+  const label =
+    mode === "employee" ? "Employee" : mode === "manager" ? "Manager" : "Cover driver";
 
   return (
     <Modal
@@ -371,42 +430,42 @@ export function ManualClockEntryModal({
                 the person recording it knows — and it decides which store's
                 Tuesday payout pays the day. */}
             {showStorePicker && (
-              <>
-                <Select
-                  label="Store worked *"
-                  value={storeId}
-                  onChange={(e) => setStoreId(e.target.value)}
-                  disabled={!selected}
-                >
-                  <option value="">Select…</option>
-                  {stores!.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.id === selected?.store_id ? `${s.name} — home store` : s.name}
-                    </option>
-                  ))}
-                </Select>
+              <Select
+                label="Store worked *"
+                value={storeId}
+                onChange={(e) => setStoreId(e.target.value)}
+                disabled={!selected}
+              >
+                <option value="">Select…</option>
+                {stores!.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.id === selected?.store_id ? `${s.name} — home store` : s.name}
+                  </option>
+                ))}
+              </Select>
+            )}
 
-                {awayFromHome && (
-                  <p className="text-xs text-text-muted bg-bg border border-border rounded-xl px-3 py-2 -mt-1">
-                    {selected?.name} is based at {storeNameOf(selected?.store_id)}, so this
-                    day is <span className="text-text-primary">covering</span>. It goes on{" "}
-                    {storeNameOf(storeId)}&apos;s Tuesday payout, and every hour is paid in
-                    cash — hours away from the home store don&apos;t count towards their
-                    weekly NI allowance.
-                  </p>
-                )}
+            {/* Shown with or without the picker — a fixed store still decides
+                which sheet pays the day, and that is the surprise. */}
+            {awayFromHome && (
+              <p className="text-xs text-text-muted bg-bg border border-border rounded-xl px-3 py-2 -mt-1">
+                {selected?.name} is based at {storeNameOf(selected?.store_id)}, so this
+                day is <span className="text-text-primary">covering</span>. It goes on{" "}
+                {storeNameOf(storeId)}&apos;s Tuesday payout, and every hour is paid in
+                cash — hours away from the home store don&apos;t count towards their
+                weekly NI allowance.
+              </p>
+            )}
 
-                {movesExistingDay && (
-                  <p className="text-xs text-warning bg-warning/10 border border-warning/30 rounded-xl px-3 py-2 -mt-1">
-                    That day already has shifts recorded at{" "}
-                    {storeNameOf(selected?.existing_store_id)}. A day can only belong to one
-                    store, so saving this will move the WHOLE day — including the hours
-                    already there — onto {storeNameOf(storeId)}&apos;s payout. Record it at{" "}
-                    {storeNameOf(selected?.existing_store_id)} instead if that isn&apos;t
-                    what you want.
-                  </p>
-                )}
-              </>
+            {movesExistingDay && (
+              <p className="text-xs text-warning bg-warning/10 border border-warning/30 rounded-xl px-3 py-2 -mt-1">
+                That day already has shifts recorded at{" "}
+                {storeNameOf(selected?.existing_store_id)}. A day can only belong to one
+                store, so saving this will move the WHOLE day — including the hours
+                already there — onto {storeNameOf(storeId)}&apos;s payout. Record it at{" "}
+                {storeNameOf(selected?.existing_store_id)} instead if that isn&apos;t
+                what you want.
+              </p>
             )}
 
             <div className="grid grid-cols-2 gap-3">
@@ -465,6 +524,19 @@ export function ManualClockEntryModal({
               <p className="text-xs text-text-muted -mt-1">
                 Leave clock-out blank if they&apos;re still working — they can clock out
                 themselves as normal.
+              </p>
+            )}
+
+            {/* A manager's fixed daily wage turns on their clock-in existing, so
+                this is only for a shift they actually worked. The drops-only
+                path on Daily Approval is the one for a day they weren't in. */}
+            {mode === "manager" && (
+              <p className="text-xs text-text-muted bg-bg border border-border rounded-xl px-3 py-2 -mt-1">
+                Times only. Recording them marks {selected?.name ?? "them"} as having
+                worked that day, so their fixed daily wage counts towards the
+                store&apos;s wage bill on this board. Deliveries they covered go on{" "}
+                <span className="text-text-primary">Add manager entry</span> on Daily
+                Approval.
               </p>
             )}
 

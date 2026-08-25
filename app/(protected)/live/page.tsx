@@ -110,6 +110,11 @@ export default async function LivePage() {
         coverDriverShifts={(coverShiftsRes.data ?? []) as CoverDriverShift[]}
         coverDriverSchedules={(coverSchedulesRes.data ?? []) as CoverDriverScheduleDay[]}
         earlyClockIns={mapEarlyClockInRows(earlyClockInsRes.data)}
+        // One button per store card, each recording against its own store —
+        // an admin watches the whole estate, so both stores are theirs to fix.
+        canAddClockIn={user.allowed?.role === "admin"}
+        canAddManagerClockIn={user.allowed?.role === "admin"}
+        todayISO={today}
         userRole={user.allowed?.role ?? "manager"}
         userStoreId={user.allowed?.store_id ?? null}
       />

@@ -74,11 +74,19 @@ type Props = {
   coverDriverShifts?: CoverDriverShift[];
   coverDriverSchedules?: CoverDriverScheduleDay[];
   /**
-   * Show the "Add clock-in" buttons. Passed true only from /manager/live —
-   * gated on an explicit prop rather than `userRole`, so reusing this component
-   * elsewhere can't silently switch a pay-affecting write back on.
+   * Show the "Add clock-in" buttons. Passed from /manager/live and admin /live
+   * — gated on an explicit prop rather than `userRole`, so reusing this
+   * component elsewhere can't silently switch a pay-affecting write back on.
+   * The button sits on each store's card and records against THAT store, so an
+   * admin seeing both stores gets one per card.
    */
   canAddClockIn?: boolean;
+  /**
+   * Show "Add manager clock-in" as well. A separate prop from `canAddClockIn`
+   * on purpose: a manager's day carries their fixed daily wage, so recording
+   * one is admin work, and the manager board stays exactly as it was.
+   */
+  canAddManagerClockIn?: boolean;
   /** Today's early clock-in authorisations (migration 043). Defaulted to [] so
    *  anything else rendering this board is unaffected. */
   earlyClockIns?: EarlyClockInRequest[];
@@ -178,6 +186,7 @@ export function LiveDashboard({
   coverDriverShifts = [],
   coverDriverSchedules = [],
   canAddClockIn = false,
+  canAddManagerClockIn = false,
   earlyClockIns = [],
   todayISO: todayIsoProp,
   userRole,
@@ -185,7 +194,7 @@ export function LiveDashboard({
 }: Props) {
   const router = useRouter();
   const [adding, setAdding] = React.useState<{
-    mode: "employee" | "cover_driver";
+    mode: "employee" | "cover_driver" | "manager";
     storeId: string;
   } | null>(null);
   const [now, setNow] = React.useState<Date>(() => new Date());
@@ -526,16 +535,31 @@ export function LiveDashboard({
                       {sorted.length} scheduled · {onShiftCount} on shift now
                     </p>
                   </div>
-                  {canAddClockIn && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      iconLeft={<PlusIcon size={14} />}
-                      onClick={() => setAdding({ mode: "employee", storeId: store.id })}
-                      title="Record a clock-in for someone who forgot"
-                    >
-                      Add employee clock-in
-                    </Button>
+                  {(canAddClockIn || canAddManagerClockIn) && (
+                    <div className="flex flex-col items-stretch gap-2">
+                      {canAddClockIn && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          iconLeft={<PlusIcon size={14} />}
+                          onClick={() => setAdding({ mode: "employee", storeId: store.id })}
+                          title="Record a clock-in for someone who forgot"
+                        >
+                          Add employee clock-in
+                        </Button>
+                      )}
+                      {canAddManagerClockIn && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          iconLeft={<PlusIcon size={14} />}
+                          onClick={() => setAdding({ mode: "manager", storeId: store.id })}
+                          title="Record a clock-in for a manager who forgot"
+                        >
+                          Add manager clock-in
+                        </Button>
+                      )}
+                    </div>
                   )}
                 </div>
 
@@ -959,8 +983,38 @@ export function LiveDashboard({
         <ManualClockEntryModal
           mode={adding.mode}
           eventDate={todayIso}
+          // The card is one store, so that is where the shift is recorded —
+          // never the person's home store, which is what the server would
+          // otherwise pick for an admin recording someone covering elsewhere.
+          defaultStoreId={adding.storeId}
+          stores={stores}
           candidates={
-            adding.mode === "employee"
+            adding.mode === "manager"
+              ? managers
+                  .filter((m) => {
+                    if (managerTodayStoreOf(m) !== adding.storeId) return false;
+                    // Only someone CURRENTLY on shift is excluded — a manager
+                    // who already worked and clocked out can still be given a
+                    // forgotten second shift.
+                    const mc = managerClockByMgr.get(m.id);
+                    return !(mc?.clock_in_at && !mc.clock_out_at);
+                  })
+                  .map<ManualEntryCandidate>((m) => {
+                    const booked = managerShiftByMgr.get(m.id);
+                    return {
+                      id: m.id,
+                      name: m.name || m.username || "Manager",
+                      scheduled_start: booked?.is_day_off
+                        ? null
+                        : booked?.start_time ?? null,
+                      scheduled_end: booked?.is_day_off ? null : booked?.end_time ?? null,
+                      // Real shifts only — managerSessionsByMgr already drops
+                      // the deliveries-only carrier rows.
+                      existing_shifts: managerSessionsByMgr.get(m.id)?.length ?? 0,
+                    };
+                  })
+                  .sort((a, b) => a.name.localeCompare(b.name))
+              : adding.mode === "employee"
               ? employees
                   .filter((e) => {
                     if (e.employment_status !== "active") return false;
@@ -980,6 +1034,8 @@ export function LiveDashboard({
                       scheduled_start: shift?.is_day_off ? null : shift?.start_time ?? null,
                       scheduled_end: shift?.is_day_off ? null : shift?.end_time ?? null,
                       existing_shifts: sessionsByEmp.get(e.id)?.length ?? 0,
+                      store_id: e.store_id ?? null,
+                      existing_store_id: clockByEmp.get(e.id)?.store_id ?? null,
                     };
                   })
               : coverDrivers

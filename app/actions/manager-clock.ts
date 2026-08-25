@@ -3,10 +3,15 @@
 import { revalidatePath } from "next/cache";
 import { createServerSupabase, getSessionUser } from "@/lib/supabase-server";
 import { detectStoreForLocation, verifyGeofenceForClockOut } from "@/lib/geofence-verify";
-import { londonWallClockToUtc } from "@/lib/auto-clock-out";
-import { todayISO } from "@/lib/utils";
+import {
+  MAX_AUTO_SHIFT_HOURS,
+  londonWallClockToUtc,
+  resolveManualClockOut,
+} from "@/lib/auto-clock-out";
+import { formatDDMMYYYY, londonHHMM, timeToMinutes, todayISO } from "@/lib/utils";
 import { resolveActiveStoreId, type ActionResult } from "@/lib/types";
 import {
+  addManagerSession,
   adoptManagerHeaderIntoSession,
   applyManagerDayDeliveryTotal,
   approveManagerDaySessions,
@@ -22,6 +27,7 @@ import {
 } from "@/lib/manager-clock-sessions";
 import {
   normaliseDeliveryInput,
+  overlapsExistingSession,
   type DeliveryInput,
 } from "@/lib/clock-sessions";
 import { writeAudit } from "./audit";
@@ -518,6 +524,369 @@ async function performManualManagerDeliveryEntry(input: ManualManagerDeliveryInp
         extra_short: deliveries.extraShort,
         extra_long: deliveries.extraLong,
       },
+      reason: manualStamp.reason,
+      by: user.email,
+    },
+  });
+
+  revalidateManagerClockPaths();
+}
+
+// =============================================================
+// Manager-entered clock TIMES for a manager who forgot to clock in
+//
+// The sibling of the employee path in app/actions/clock.ts, and deliberately a
+// DIFFERENT thing from the deliveries-only entry above. That one is for a
+// manager who was never on site and only covered drops, so it records no times.
+// This one is for a manager who genuinely worked a shift and forgot to clock:
+// their real times are the truth, and recording them is what puts the day back
+// on the Live board, the Rota and Daily Approval.
+//
+// It BYPASSES THE GEOFENCE, so every row it writes is flagged `manual_entry`,
+// carries a reason, leaves lat/lng null, and lands in the audit log.
+//
+// What it moves, and what it does not:
+//   • Live board — the manager reads "On Shift"/"Clocked Out", and their
+//     fixed_daily_wage joins that store's wage bill, which turns on clock_in_at
+//     being set. That is CORRECT here, and is exactly why migration 037 refused
+//     to do it for a day nobody worked.
+//   • Tuesday payout — untouched. A manager's salary does not come through this
+//     app; only their DROPS are paid, and this path records NO drops. A manager
+//     who covered a round is given them on Daily Approval's "Add manager entry",
+//     which is the one place manager delivery counts are hand-entered.
+// =============================================================
+
+export type ManualManagerClockEntryInput = {
+  manager_id: string;
+  /** YYYY-MM-DD. Defaults to today on the Live board. */
+  event_date: string;
+  /** "HH:MM", UK wall clock. */
+  clock_in_time: string;
+  /** "HH:MM". Omit while the manager is still on shift. */
+  clock_out_time?: string | null;
+  reason: string;
+  /**
+   * The store the shift is attributed to — it decides which store's Live board
+   * and payout the day lands on. Admin-only; a manager is held to the store
+   * they are running.
+   */
+  store_id?: string | null;
+};
+
+/** A manager may only record against the store they're currently running. */
+function assertManagerEntryStore(
+  user: Awaited<ReturnType<typeof requireApprover>>,
+  storeId: string,
+) {
+  if (user.allowed!.role !== "manager") return;
+  const activeStore = resolveActiveStoreId(user.allowed);
+  if (!activeStore) throw new Error("No store assigned to your account.");
+  if (storeId !== activeStore) {
+    throw new Error("You can only record clock times for the store you're managing.");
+  }
+}
+
+export type OpenManagerShiftOnDay = {
+  manager_id: string;
+  session_id: string;
+  /** "HH:MM", UK wall clock — what the manual entry's clock-in box pre-fills with. */
+  clock_in_time: string;
+  store_id: string | null;
+};
+
+/**
+ * The manager shifts still RUNNING on a given day, so the manual entry can
+ * offer to close one rather than ask for a clock-in it already holds.
+ * Deliveries-only rows are excluded — they are closed by construction and are
+ * not shifts.
+ */
+export async function listOpenManagerShiftsForDate(
+  eventDate: string,
+): Promise<
+  { ok: true; shifts: OpenManagerShiftOnDay[] } | { ok: false; error: string }
+> {
+  try {
+    const user = await requireApprover();
+    if (!eventDate) throw new Error("Date is required");
+
+    const supabase = createServerSupabase();
+    let query = supabase
+      .from("manager_clock_sessions")
+      .select("id, manager_id, store_id, clock_in_at")
+      .eq("event_date", eventDate)
+      .eq("deliveries_only", false)
+      .is("clock_out_at", null);
+    // A shift open at another store is not this manager's to close.
+    if (user.allowed!.role === "manager") {
+      const activeStore = resolveActiveStoreId(user.allowed);
+      if (!activeStore) throw new Error("No store assigned to your account.");
+      query = query.eq("store_id", activeStore);
+    }
+
+    const { data, error } = await query;
+    if (error) throw new Error(error.message);
+
+    return {
+      ok: true,
+      shifts: (data ?? []).map((s) => ({
+        manager_id: s.manager_id as string,
+        session_id: s.id as string,
+        clock_in_time: londonHHMM(new Date(s.clock_in_at as string)),
+        store_id: (s.store_id as string | null) ?? null,
+      })),
+    };
+  } catch (err) {
+    console.error("[manager-clock] open shift lookup failed:", err);
+    return {
+      ok: false,
+      error:
+        err instanceof Error && err.message
+          ? err.message
+          : "Could not check for open shifts.",
+    };
+  }
+}
+
+export async function upsertManualManagerClockEntry(
+  input: ManualManagerClockEntryInput,
+): Promise<ActionResult> {
+  return asResult(() => performManualManagerClockEntry(input));
+}
+
+async function performManualManagerClockEntry(input: ManualManagerClockEntryInput) {
+  // Role gate first — a non-staff caller must not get as far as reading a row.
+  const user = await requireApprover();
+  const supabase = createServerSupabase();
+
+  if (!input.manager_id) throw new Error("Select a manager");
+  if (!input.event_date) throw new Error("Date is required");
+  if (!input.clock_in_time) throw new Error("Clock-in time is required");
+  if (!input.reason?.trim()) {
+    throw new Error("Give a reason — this records hours without a location check.");
+  }
+
+  const { data: manager } = await supabase
+    .from("allowed_users")
+    .select("id, name, username, role, store_id")
+    .eq("id", input.manager_id)
+    .maybeSingle();
+  if (!manager) throw new Error("Manager not found.");
+  if (manager.role !== "manager") throw new Error("That account isn't a manager.");
+  const managerName = manager.name || manager.username || "That manager";
+
+  const { data: existing } = await supabase
+    .from("manager_clock_events")
+    .select("*")
+    .eq("manager_id", manager.id)
+    .eq("event_date", input.event_date)
+    .maybeSingle();
+
+  // Where the shift happened. The caller says so explicitly from the Live
+  // board's store card; otherwise the day's own store, then the manager's home
+  // store. assertManagerEntryStore still holds a manager to their own store.
+  const storeId =
+    input.store_id ??
+    (user.allowed!.role === "manager"
+      ? resolveActiveStoreId(user.allowed) ?? existing?.store_id ?? manager.store_id
+      : existing?.store_id ?? manager.store_id);
+  if (!storeId) throw new Error("No store to record this shift against.");
+  assertManagerEntryStore(user, storeId);
+
+  // A client-supplied id is checked against the real roster before any row is
+  // written against it.
+  if (input.store_id) {
+    const { data: store } = await supabase
+      .from("stores")
+      .select("id")
+      .eq("id", input.store_id)
+      .maybeSingle();
+    if (!store) throw new Error("That store no longer exists.");
+  }
+
+  const clockInAt = londonWallClockToUtc(input.event_date, input.clock_in_time);
+  if (isNaN(clockInAt.getTime())) throw new Error("Clock-in time is not valid.");
+
+  const now = new Date();
+  if (clockInAt.getTime() > now.getTime()) {
+    throw new Error("Clock-in time can't be in the future.");
+  }
+
+  let clockOutAt: Date | null = null;
+  if (input.clock_out_time) {
+    if (timeToMinutes(input.clock_out_time) === timeToMinutes(input.clock_in_time)) {
+      throw new Error("Clock-out can't be the same time as clock-in.");
+    }
+    // A clock-out earlier in the day than the clock-in crossed midnight, so it
+    // lands on the following date while the day stays on event_date.
+    const resolved = resolveManualClockOut(
+      input.event_date,
+      input.clock_in_time,
+      input.clock_out_time,
+    );
+    clockOutAt = resolved.at;
+    if (isNaN(clockOutAt.getTime())) throw new Error("Clock-out time is not valid.");
+    if (clockOutAt.getTime() > now.getTime()) {
+      throw new Error(
+        `That shift ends at ${input.clock_out_time} on ${formatDDMMYYYY(resolved.date)}, which hasn't happened yet. Record it once the shift has finished — or leave clock-out blank if they're still working.`,
+      );
+    }
+    const hours = (clockOutAt.getTime() - clockInAt.getTime()) / 3_600_000;
+    if (hours > MAX_AUTO_SHIFT_HOURS) {
+      throw new Error(`That's over ${MAX_AUTO_SHIFT_HOURS} hours — check the times.`);
+    }
+  }
+
+  // A manager still working can't take an open manual shift on top — the
+  // one-open-session rule applies however the shift was recorded.
+  if (!clockOutAt) {
+    const open = await findOpenManagerSession(supabase, manager.id);
+    if (open) {
+      throw new Error(
+        `${managerName} is already clocked in. Record the clock-out time as well, or wait for them to clock out.`,
+      );
+    }
+  }
+
+  const manualStamp = {
+    by: user.id,
+    at: now.toISOString(),
+    reason: input.reason.trim(),
+  };
+
+  let clockEventId = existing?.id as string | undefined;
+  if (!existing) {
+    const { data: created, error } = await supabase
+      .from("manager_clock_events")
+      .insert({
+        manager_id: manager.id,
+        store_id: storeId,
+        event_date: input.event_date,
+        clock_in_at: clockInAt.toISOString(),
+        // Deliberately null: a row with no coordinates was never verified.
+        clock_in_lat: null,
+        clock_in_lng: null,
+        manual_entry: true,
+        manual_entry_by: manualStamp.by,
+        manual_entry_at: manualStamp.at,
+        manual_entry_reason: manualStamp.reason,
+      })
+      .select("id")
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    clockEventId = created?.id;
+  }
+  if (!clockEventId) throw new Error("Could not record those times. Please try again.");
+
+  // Adopt a pre-031 day so its existing shift is visible to the overlap check
+  // below — otherwise a second manual entry could record the same hours twice.
+  if (existing?.clock_in_at) {
+    await adoptManagerHeaderIntoSession(supabase, {
+      ...existing,
+      id: existing.id,
+      manager_id: manager.id,
+      store_id: existing.store_id,
+      event_date: input.event_date,
+    });
+  }
+
+  // Deliveries-only rows are excluded throughout: they sit at midday with no
+  // duration, so any real shift spanning lunch would read as overlapping one.
+  const daySessions = (await managerSessionsForEvent(supabase, clockEventId)).filter(
+    (s) => !s.deliveries_only,
+  );
+
+  // A window that COVERS the day's running shift is that shift being finished
+  // off, so it closes it rather than being added beside it. An open session
+  // runs to Infinity for the overlap check, so without this it could only ever
+  // be refused — leaving a manually recorded clock-in with nothing to close it.
+  const openOnDay =
+    (clockOutAt &&
+      daySessions.find(
+        (s) => !s.clock_out_at && overlapsExistingSession([s], clockInAt, clockOutAt),
+      )) ||
+    null;
+
+  const otherSessions = daySessions.filter((s) => s.id !== openOnDay?.id);
+  if (overlapsExistingSession(otherSessions, clockInAt, clockOutAt)) {
+    throw new Error(
+      "Those times overlap a shift already recorded for that day. Check the existing times first.",
+    );
+  }
+
+  const startUnchanged =
+    !!openOnDay && new Date(openOnDay.clock_in_at).getTime() === clockInAt.getTime();
+
+  let sessionSeq: number;
+  if (openOnDay) {
+    // No `deliveries` key at all, so whatever the manager logged live during
+    // the shift survives being clocked out by hand.
+    const closed = await closeManagerSession(supabase, openOnDay.id, {
+      clockInAt: clockInAt.toISOString(),
+      clockOutAt: clockOutAt!.toISOString(),
+      storeId,
+      manual: manualStamp,
+    });
+    if (!closed) {
+      throw new Error(
+        `${managerName} was clocked out while you were filling this in. Reload the day and check the times.`,
+      );
+    }
+    sessionSeq = openOnDay.seq;
+  } else {
+    // A finished shift is INSERTED closed, never opened and then closed: an
+    // open row holds the one-open slot for the width of a round-trip, which
+    // collides with whatever shift the manager has running right now.
+    const session = await addManagerSession(supabase, {
+      clockEventId,
+      managerId: manager.id,
+      storeId,
+      eventDate: input.event_date,
+      clockInAt: clockInAt.toISOString(),
+      clockOutAt: clockOutAt?.toISOString() ?? null,
+      lat: null,
+      lng: null,
+      manual: manualStamp,
+    });
+    sessionSeq = session.seq;
+  }
+
+  if (existing) {
+    // An existing day is flagged too — it now contains manager-entered time,
+    // and the badge is what tells a reviewer to look.
+    const { error } = await supabase
+      .from("manager_clock_events")
+      .update({
+        manual_entry: true,
+        manual_entry_by: manualStamp.by,
+        manual_entry_at: manualStamp.at,
+        manual_entry_reason: manualStamp.reason,
+      })
+      .eq("id", clockEventId);
+    if (error) throw new Error(error.message);
+  }
+
+  // Header last: first-in / last-out / summed hours / summed drops and the
+  // day's store all derive from the sessions.
+  const { workedHours } = await recomputeManagerDayHeader(supabase, clockEventId);
+
+  await writeAudit({
+    action: openOnDay
+      ? "manual_manager_clock_entry_closed_shift"
+      : otherSessions.length > 0
+        ? "manual_manager_clock_entry_added_shift"
+        : "manual_manager_clock_entry",
+    entity: "manager_clock_event",
+    entity_id: clockEventId,
+    changes: {
+      manager_id: manager.id,
+      manager_name: manager.name,
+      event_date: input.event_date,
+      session_seq: sessionSeq,
+      fields: !clockOutAt ? "in" : startUnchanged ? "out" : "both",
+      clock_in_at: clockInAt.toISOString(),
+      clock_out_at: clockOutAt?.toISOString() ?? null,
+      worked_hours: workedHours,
+      store_id: storeId,
       reason: manualStamp.reason,
       by: user.email,
     },

@@ -461,15 +461,86 @@ export async function openManagerSession(
   return data as ManagerClockSession;
 }
 
+/**
+ * Add a shift to a manager's day. The mirror of addSession for employees.
+ *
+ * Left OPEN when no `clockOutAt` is given; given both times the row is inserted
+ * ALREADY CLOSED, so a shift recorded after the fact never occupies the
+ * one-open slot the manager's current shift may be holding.
+ *
+ * Carries no delivery counts: a manager's drops are only ever recorded live at
+ * clock-out or by hand on Daily Approval, never alongside a manual clock entry.
+ * Never writes `deliveries_only` either — that row is a carrier for drops and
+ * belongs to insertDeliveriesOnlySession alone.
+ */
+export async function addManagerSession(
+  supabase: SupabaseClient,
+  input: {
+    clockEventId: string;
+    managerId: string;
+    storeId: string;
+    eventDate: string;
+    clockInAt: string;
+    clockOutAt?: string | null;
+    lat?: number | null;
+    lng?: number | null;
+    manual?: { by: string; at: string; reason: string } | null;
+  },
+): Promise<ManagerClockSession> {
+  const existing = await managerSessionsForEvent(supabase, input.clockEventId);
+  const seq = existing.length > 0 ? Math.max(...existing.map((s) => s.seq)) + 1 : 1;
+
+  const { data, error } = await supabase
+    .from("manager_clock_sessions")
+    .insert({
+      clock_event_id: input.clockEventId,
+      manager_id: input.managerId,
+      store_id: input.storeId,
+      event_date: input.eventDate,
+      seq,
+      clock_in_at: input.clockInAt,
+      clock_out_at: input.clockOutAt ?? null,
+      clock_in_lat: input.lat ?? null,
+      clock_in_lng: input.lng ?? null,
+      manual_entry: !!input.manual,
+      manual_entry_by: input.manual?.by ?? null,
+      manual_entry_at: input.manual?.at ?? null,
+      manual_entry_reason: input.manual?.reason ?? null,
+    })
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    if (error.code === "23505") {
+      // A closed row cannot violate the one-open index, so a collision there is
+      // a racing second write of the same shift.
+      throw new Error(
+        input.clockOutAt
+          ? "That shift was just recorded by someone else. Reload the day and check the times."
+          : "That manager is already clocked in. Record the clock-out time as well.",
+      );
+    }
+    throw new Error(error.message);
+  }
+  if (!data) throw new Error("Could not record that shift. Please try again.");
+  return data as ManagerClockSession;
+}
+
 /** Close a session. Guarded on it still being open so a race can't double-close. */
 export async function closeManagerSession(
   supabase: SupabaseClient,
   sessionId: string,
   input: {
     clockOutAt: string;
+    /** Corrects the start too — whoever completes a shift by hand may also be
+     *  fixing the time it was recorded as starting. */
+    clockInAt?: string;
+    /** Only the manual path sets this: the store the shift is recorded against. */
+    storeId?: string;
     lat?: number | null;
     lng?: number | null;
     auto?: { source: string; at: string } | null;
+    manual?: { by: string; at: string; reason: string } | null;
     /** Drops this shift covered. Omitted leaves the session's counts alone. */
     deliveries?: DeliveryCounts | null;
   },
@@ -479,6 +550,14 @@ export async function closeManagerSession(
     clock_out_lat: input.lat ?? null,
     clock_out_lng: input.lng ?? null,
   };
+  if (input.clockInAt) payload.clock_in_at = input.clockInAt;
+  if (input.storeId) payload.store_id = input.storeId;
+  if (input.manual) {
+    payload.manual_entry = true;
+    payload.manual_entry_by = input.manual.by;
+    payload.manual_entry_at = input.manual.at;
+    payload.manual_entry_reason = input.manual.reason;
+  }
   if (input.deliveries) {
     payload.short_deliveries_count = input.deliveries.short;
     payload.long_deliveries_count = input.deliveries.long;
