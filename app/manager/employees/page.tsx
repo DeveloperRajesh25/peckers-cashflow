@@ -9,9 +9,13 @@ import { mapManagerDaysToApproval } from "@/lib/manager-clock-sessions";
 import type {
   CoverDriver,
   CoverDriverClockEvent,
+  Employee,
   EmployeeSummary,
+  EntryEmployeeDay,
   ManagerClockEvent,
 } from "@/lib/types";
+
+type EntryEmployee = Pick<Employee, "id" | "name" | "position" | "store_id">;
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +34,10 @@ export default async function ManagerEmployeesPage() {
 
   const [
     empRes,
+    entryEmpRes,
+    entryDaysRes,
     storesRes,
+    allStoresRes,
     clocksRes,
     sessionsRes,
     coverDriversRes,
@@ -45,7 +52,29 @@ export default async function ManagerEmployeesPage() {
       .eq("store_id", storeId)
       .order("employment_status")
       .order("name"),
+    // The whole estate's active staff, for the missed-entry picker ONLY — staff
+    // cross-cover, so someone who forgot to clock in here may be based at the
+    // other store. Everything else on this screen stays scoped to storeId, and
+    // this store's own people are deduped out downstream.
+    supabase
+      .from("employees")
+      .select("id, name, position, store_id")
+      .eq("employment_status", "active")
+      .order("name"),
+    // The days those people already have recorded at their OWN store, over the
+    // same window this screen navigates. Without them a visiting employee reads
+    // as having worked nothing that day, and the modal cannot warn that saving
+    // here moves the WHOLE day onto this store's payout. Non-sensitive columns
+    // only — no hours, no rates, no delivery counts.
+    supabase
+      .from("clock_events")
+      .select("employee_id, event_date, store_id, session_count, clock_in_at")
+      .neq("store_id", storeId)
+      .gte("event_date", eightWeeksBack),
     supabase.from("stores").select("*").eq("id", storeId),
+    // Names only, so the missed-entry modal can say which store a visitor is
+    // based at. Kept apart from `stores` above, which scopes the rest of the page.
+    supabase.from("stores").select("id, name").order("name"),
     supabase
       .from("clock_events")
       .select("id, employee_id, store_id, event_date, clock_in_at, clock_out_at, worked_hours, hours_approved, approved_hours, auto_clocked_out, manual_entry, manual_entry_reason, short_deliveries_count, long_deliveries_count, extra_short_deliveries, extra_long_deliveries, extra_short_reason, extra_long_reason")
@@ -156,6 +185,9 @@ export default async function ManagerEmployeesPage() {
         loadError={clocksRes.error?.message ?? null}
         todayISO={todayISO()}
         stores={storesRes.data ?? []}
+        entryStores={allStoresRes.data ?? []}
+        entryEmployees={(entryEmpRes.data ?? []) as EntryEmployee[]}
+        entryEmployeeDays={(entryDaysRes.data ?? []) as EntryEmployeeDay[]}
         defaultStoreId={storeId || null}
         minWageBands={settings.min_wage_bands}
         lockToStore

@@ -43,15 +43,19 @@ export default async function ManagerLivePage() {
   const supabase = createServerSupabase();
   const today = todayISO();
 
-  // Staff aren't locked to one store, so the board must consider everyone
-  // relevant to THIS store today: the store's own staff, plus anyone who clocked
-  // in or was scheduled here (a visitor covering a shift). We resolve that set
-  // first so we only pull those people's records — not every store's roster.
+  // Staff aren't locked to one store, so the board loads the whole estate's
+  // active roster and today's rows for it — the same set the admin board reads.
+  // Two things need it. The board itself must resolve a visiting worker to the
+  // store they actually clocked in at, and the manual clock-in picker must be
+  // able to reach someone based at the OTHER store who covered a shift here and
+  // has no clock row or rota cell to be found by. Display is still scoped: the
+  // cards below render `visibleStores`, which is this manager's store alone.
   const [
     storesRes,
-    homeEmpIdsRes,
-    clocksHereRes,
-    shiftsHereRes,
+    employeesRes,
+    clocksRes,
+    sessionsRes,
+    shiftsRes,
     schedulesRes,
     cashRes,
     managerClockRes,
@@ -67,11 +71,16 @@ export default async function ManagerLivePage() {
     supabase.from("stores").select("*").order("name"),
     supabase
       .from("employees")
-      .select("id")
-      .eq("store_id", storeId ?? "")
+      .select(LIVE_EMPLOYEE_COLUMNS)
       .neq("employment_status", "left"),
-    supabase.from("clock_events").select("employee_id").eq("event_date", today).eq("store_id", storeId ?? ""),
-    supabase.from("rota_shifts").select("employee_id").eq("shift_date", today).eq("store_id", storeId ?? ""),
+    supabase.from("clock_events").select("*").eq("event_date", today),
+    // The day's individual shifts — the clock row above is only its header.
+    supabase
+      .from("clock_sessions")
+      .select(LIVE_CLOCK_SESSION_COLUMNS)
+      .eq("event_date", today)
+      .order("clock_in_at", { ascending: true }),
+    supabase.from("rota_shifts").select("*").eq("shift_date", today),
     supabase.from("employee_schedules").select(SCHEDULE_COLUMNS),
     storeId
       ? supabase
@@ -128,36 +137,6 @@ export default async function ManagerLivePage() {
       .in("status", ["pending", "used"])
       .order("requested_at", { ascending: false }),
   ]);
-
-  const relevantIds = Array.from(
-    new Set<string>([
-      ...(homeEmpIdsRes.data ?? []).map((r) => r.id as string),
-      ...(clocksHereRes.data ?? []).map((r) => r.employee_id as string),
-      ...(shiftsHereRes.data ?? []).map((r) => r.employee_id as string),
-    ]),
-  );
-
-  // Full records for just those people — clocks/shifts across ALL stores (so a
-  // home employee who clocked in elsewhere resolves away from this store rather
-  // than showing as absent here).
-  const [employeesRes, shiftsRes, clocksRes, sessionsRes] = relevantIds.length
-    ? await Promise.all([
-        supabase
-          .from("employees")
-          .select(LIVE_EMPLOYEE_COLUMNS)
-          .in("id", relevantIds)
-          .neq("employment_status", "left"),
-        supabase.from("rota_shifts").select("*").eq("shift_date", today).in("employee_id", relevantIds),
-        supabase.from("clock_events").select("*").eq("event_date", today).in("employee_id", relevantIds),
-        // The day's individual shifts — the clock row above is only its header.
-        supabase
-          .from("clock_sessions")
-          .select(LIVE_CLOCK_SESSION_COLUMNS)
-          .eq("event_date", today)
-          .in("employee_id", relevantIds)
-          .order("clock_in_at", { ascending: true }),
-      ])
-    : [{ data: [] }, { data: [] }, { data: [] }, { data: [] }];
 
   const todayEntry = (cashRes.data ?? null) as DailyCashEntry | null;
   const stores = (storesRes.data ?? []) as Store[];

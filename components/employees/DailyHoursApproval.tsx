@@ -29,6 +29,7 @@ import { ManagerDeliveryEntryModal } from "@/components/clock/ManagerDeliveryEnt
 import type {
   ClockDailySummary,
   CoverDailyApprovalRow,
+  EntryEmployeeDay,
   ManagerDailyApprovalRow,
   Store,
 } from "@/lib/types";
@@ -324,6 +325,10 @@ export function DailyHoursApproval({
   todayISO,
   showStore,
   employees = [],
+  entryEmployees = [],
+  entryEmployeeDays = [],
+  entryStores,
+  entryStoreId = null,
   canChooseStore = false,
   coverDrivers = [],
   managers = [],
@@ -352,6 +357,37 @@ export function DailyHoursApproval({
     /** Home store — the missed-entry store picker defaults to it. */
     store_id?: string | null;
   }>;
+  /**
+   * Extra people the missed-entry picker may reach who are NOT on this screen's
+   * roster — the other store's active staff. Staff cross-cover, so the person
+   * who forgot to clock here may well be based elsewhere; approval rows stay
+   * scoped to this store, only the picker widens.
+   */
+  entryEmployees?: Array<{
+    id: string;
+    name: string;
+    is_driver?: boolean;
+    store_id?: string | null;
+  }>;
+  /**
+   * The days those extra people already have recorded AT ANOTHER STORE. This
+   * screen's `summaries` stop at its own store, so without these a visiting
+   * employee reads as having no shifts that day and neither the "already has N
+   * shifts" nor the "this moves the WHOLE day" warning could ever fire — for
+   * exactly the people the picker was widened to reach.
+   */
+  entryEmployeeDays?: EntryEmployeeDay[];
+  /**
+   * Every store's name, for the covering warnings in the missed-entry modal.
+   * Defaults to `stores`, which on a manager's screen holds their store only.
+   */
+  entryStores?: Array<{ id: string; name: string }>;
+  /**
+   * Fixes the store a missed entry is recorded against, replacing the picker —
+   * the store a manager is running. Without it the modal would default a
+   * visiting employee to their HOME store, which the server then refuses.
+   */
+  entryStoreId?: string | null;
   /**
    * Lets a missed entry be booked to a store other than the employee's own —
    * admins only. A manager is held to their own store server-side either way.
@@ -571,7 +607,19 @@ export function DailyHoursApproval({
       shiftsThatDay.set(s.employee_id, Math.max(1, s.sessions.length));
       storeThatDay.set(s.employee_id, s.store_id);
     }
-    return employees
+    // A day recorded at another store. There is one clock_events row per person
+    // per date, so this can never contradict the loop above — it only fills in
+    // the days this store never sees.
+    for (const d of entryEmployeeDays) {
+      if (d.event_date !== selectedDate) continue;
+      if (shiftsThatDay.has(d.employee_id)) continue;
+      shiftsThatDay.set(d.employee_id, d.session_count ?? (d.clock_in_at ? 1 : 0));
+      storeThatDay.set(d.employee_id, d.store_id);
+    }
+    // The other store's staff sit behind this screen's own roster, so the
+    // everyday pick stays at the top and a visitor is a deliberate choice.
+    const here = new Set(employees.map((e) => e.id));
+    return [...employees, ...entryEmployees.filter((e) => !here.has(e.id))]
       .map((e) => ({
         id: e.id,
         name: e.name,
@@ -580,8 +628,13 @@ export function DailyHoursApproval({
         store_id: e.store_id ?? null,
         existing_store_id: storeThatDay.get(e.id) ?? null,
       }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [employees, summaries, selectedDate]);
+      .sort((a, b) => {
+        const aHere = here.has(a.id);
+        const bHere = here.has(b.id);
+        if (aHere !== bHere) return aHere ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+  }, [employees, entryEmployees, entryEmployeeDays, summaries, selectedDate]);
 
   // Every manager stays pickable, unlike cover drivers: a manager row only
   // exists on this screen once drops have been logged, so "already has a
@@ -1384,7 +1437,8 @@ export function DailyHoursApproval({
           candidates={
             showAddMissed === "cover_driver" ? coverManualCandidates : manualCandidates
           }
-          stores={canChooseStore ? stores : undefined}
+          stores={canChooseStore || entryStoreId ? entryStores ?? stores : undefined}
+          defaultStoreId={entryStoreId}
           requireClockOut
           title={
             showAddMissed === "cover_driver"

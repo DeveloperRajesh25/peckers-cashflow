@@ -45,6 +45,7 @@ import type {
   CoverDriverDaySummary,
   CoverDriverHoursComputed,
   Employee,
+  EntryEmployeeDay,
   EmployeeHoursComputed,
   EmployeeSummary,
   ManagerDailyApprovalRow,
@@ -93,6 +94,25 @@ type Props = {
   todayISO: string;
   stores: Store[];
   defaultStoreId?: string | null;
+  /**
+   * Active staff based at the OTHER stores, for the missed-entry picker only —
+   * never for the roster, the approval rows or the weekly log. Staff
+   * cross-cover, so the person who forgot to clock here may be based elsewhere.
+   * Passed by the manager portal, where `initialEmployees` is one store's own.
+   */
+  entryEmployees?: Array<Pick<Employee, "id" | "name" | "position" | "store_id">>;
+  /**
+   * The days those people already have recorded at their own store, so the
+   * missed-entry modal can warn that saving here MOVES the whole day. Only the
+   * manager portal needs it — an admin's `clockDailySummaries` already span
+   * every store.
+   */
+  entryEmployeeDays?: EntryEmployeeDay[];
+  /**
+   * Every store's name, so the missed-entry modal can say WHICH store someone
+   * is visiting from. The manager portal's `stores` holds only their own.
+   */
+  entryStores?: Array<{ id: string; name: string }>;
   minWageBands?: MinWageBands;
   /**
    * A failed data query, surfaced instead of swallowed. An empty approval list
@@ -132,6 +152,9 @@ export function EmployeesView({
   todayISO,
   stores,
   defaultStoreId,
+  entryEmployees = [],
+  entryEmployeeDays = [],
+  entryStores,
   minWageBands,
   lockToStore = false,
   canManualLog = true,
@@ -521,6 +544,18 @@ export function EmployeesView({
           todayISO={todayISO}
           showStore={showStore}
           canChooseStore={!lockToStore}
+          // A manager can't pick the store, so the entry is fixed to the one
+          // they're running — otherwise a visiting employee would default to
+          // their home store, which the server refuses to write for a manager.
+          entryStoreId={lockToStore ? defaultStoreId ?? null : null}
+          entryStores={entryStores}
+          entryEmployeeDays={entryEmployeeDays}
+          entryEmployees={entryEmployees.map((e) => ({
+            id: e.id,
+            name: e.name,
+            is_driver: hasRole(e.position, "Driver"),
+            store_id: e.store_id,
+          }))}
           employees={employees
             .filter(
               (e) =>

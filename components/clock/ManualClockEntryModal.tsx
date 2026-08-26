@@ -399,9 +399,11 @@ export function ManualClockEntryModal({
       <div className="flex flex-col gap-4">
         {candidates.length === 0 ? (
           <p className="text-sm text-text-muted">
-            {mode === "manager"
-              ? "Nobody available to record right now — every manager is already clocked in."
-              : `Nobody available to record right now — everyone ${mode === "employee" ? "on shift" : "working"} is either currently clocked in or not attached to this store today.`}
+            {mode === "cover_driver"
+              ? "Nobody available to record right now — every cover driver working is either currently clocked in or not attached to this store today."
+              : mode === "manager"
+                ? "Nobody available to record right now — every manager is already clocked in."
+                : "Nobody available to record right now — everyone on shift is already clocked in."}
           </p>
         ) : (
           <>

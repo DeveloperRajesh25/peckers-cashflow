@@ -976,6 +976,22 @@ export type ClockWeeklySummary = {
 // clock_events still holds exactly one row per (employee, day), so this maps
 // 1:1 — but that day may contain several shifts, carried in `sessions`.
 // Approval is per DAY on the total, with the shifts shown for context.
+/**
+ * A clocked DAY seen from outside its own store — just enough for the
+ * missed-entry picker to say "they already have shifts recorded, at Hitchin".
+ * A manager's Daily Approval loads only their own store's days, so a visiting
+ * employee's day (which sits at their HOME store) reaches the picker through
+ * this and nothing else.
+ */
+export type EntryEmployeeDay = {
+  employee_id: string;
+  event_date: string; // YYYY-MM-DD
+  store_id: string | null;
+  /** Null on a pre-029 row; a set clock_in_at then means the day holds one shift. */
+  session_count: number | null;
+  clock_in_at: string | null;
+};
+
 export type ClockDailySummary = {
   employee_id: string;
   employee_name: string;

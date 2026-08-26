@@ -30,7 +30,7 @@ export function AuthShell({
 
       <div className="relative w-full max-w-md">
         <div className="mb-8 flex items-center justify-center">
-          <Logo />
+          <Logo tagline="Management software" variant="auth" />
         </div>
 
         <div className="rounded-2xl bg-surface border border-border p-7 shadow-2xl shadow-black/40">
@@ -55,9 +55,14 @@ export function AuthShell({
           </div>
         )}
 
-        <p className="text-center text-xs text-text-muted mt-6">
-          Peckers Restaurant Group
-        </p>
+        <div className="mt-6 flex justify-center">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/peckers-logo.png"
+            alt="Peckers — Seriously Good Chicken"
+            className="h-9 w-auto opacity-80 invert dark:invert-0"
+          />
+        </div>
       </div>
     </main>
   );

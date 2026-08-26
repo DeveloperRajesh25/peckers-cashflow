@@ -1034,13 +1034,27 @@ export function LiveDashboard({
               ? employees
                   .filter((e) => {
                     if (e.employment_status !== "active") return false;
-                    if (todayStoreOf(e) !== adding.storeId) return false;
+                    // Deliberately NOT filtered to the card's store, for the
+                    // same reason managers aren't: staff cross-cover, and
+                    // someone who covered here without a clock row or a rota
+                    // cell here still resolves to their HOME store — so the
+                    // card that actually saw them would not hold them at all.
+                    // Where the shift lands is decided by defaultStoreId above.
+                    //
                     // Only someone CURRENTLY on shift is excluded. Having
                     // already worked and clocked out is no bar — a day can hold
                     // several shifts, and recording a forgotten second one is
                     // exactly what this is for.
                     const c = clockByEmp.get(e.id);
                     return !(c?.clock_in_at && !c.clock_out_at);
+                  })
+                  // Whoever is at THIS store today first, so the common pick is
+                  // still the top of the list and a visitor is a deliberate one.
+                  .sort((a, b) => {
+                    const aHere = todayStoreOf(a) === adding.storeId;
+                    const bHere = todayStoreOf(b) === adding.storeId;
+                    if (aHere !== bHere) return aHere ? -1 : 1;
+                    return a.name.localeCompare(b.name);
                   })
                   .map<ManualEntryCandidate>((e) => {
                     const { shift } = effectiveShiftFor(e.id);
