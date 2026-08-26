@@ -992,12 +992,27 @@ export function LiveDashboard({
             adding.mode === "manager"
               ? managers
                   .filter((m) => {
-                    if (managerTodayStoreOf(m) !== adding.storeId) return false;
+                    // Deliberately NOT filtered to the card's store. Managers
+                    // cover for each other across stores, so a Hitchin manager
+                    // who worked a Stevenage shift has to be pickable from
+                    // Stevenage's card or their day cannot be recorded at all.
+                    // Where it lands is decided by defaultStoreId below.
+                    //
                     // Only someone CURRENTLY on shift is excluded — a manager
                     // who already worked and clocked out can still be given a
                     // forgotten second shift.
                     const mc = managerClockByMgr.get(m.id);
                     return !(mc?.clock_in_at && !mc.clock_out_at);
+                  })
+                  // Whoever is at THIS store today first, so the common case is
+                  // still the top of the list and a visitor is a deliberate pick.
+                  .sort((a, b) => {
+                    const aHere = managerTodayStoreOf(a) === adding.storeId;
+                    const bHere = managerTodayStoreOf(b) === adding.storeId;
+                    if (aHere !== bHere) return aHere ? -1 : 1;
+                    return (a.name || a.username || "").localeCompare(
+                      b.name || b.username || "",
+                    );
                   })
                   .map<ManualEntryCandidate>((m) => {
                     const booked = managerShiftByMgr.get(m.id);
@@ -1011,9 +1026,10 @@ export function LiveDashboard({
                       // Real shifts only — managerSessionsByMgr already drops
                       // the deliveries-only carrier rows.
                       existing_shifts: managerSessionsByMgr.get(m.id)?.length ?? 0,
+                      store_id: m.store_id ?? null,
+                      existing_store_id: managerClockByMgr.get(m.id)?.store_id ?? null,
                     };
                   })
-                  .sort((a, b) => a.name.localeCompare(b.name))
               : adding.mode === "employee"
               ? employees
                   .filter((e) => {

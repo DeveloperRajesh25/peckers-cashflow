@@ -200,24 +200,49 @@ export function ManualClockEntryModal({
   // lookup the warnings below read.
   const showStorePicker =
     mode === "employee" && !!stores && stores.length > 1 && !defaultStoreId;
+  // Managers cross-cover as well as employees, so the covering warnings apply
+  // to both. Cover drivers belong to one store and never move.
+  const canCover = mode === "employee" || mode === "manager";
   const awayFromHome =
-    mode === "employee" &&
-    !!storeId &&
-    !!selected?.store_id &&
-    storeId !== selected.store_id;
+    canCover && !!storeId && !!selected?.store_id && storeId !== selected.store_id;
   // A day carries ONE store (deriveDayHeader takes the latest shift's), and the
   // payout bills the whole day to it. So adding a shift at another store does
   // not split the day — it moves all of it, including hours already recorded.
   const movesExistingDay =
-    mode === "employee" &&
+    canCover &&
     !!storeId &&
     !!selected?.existing_shifts &&
     !!selected.existing_store_id &&
     selected.existing_store_id !== storeId;
   const storeNameOf = (id: string | null | undefined) =>
     stores?.find((s) => s.id === id)?.name ?? "another store";
+  /** Named store only — an unresolvable id is worse than no label at all. */
+  const knownStoreName = (id: string | null | undefined) =>
+    (id && stores?.find((s) => s.id === id)?.name) || null;
 
   const reason = preset === "Other" ? otherReason.trim() : preset;
+
+  /**
+   * One string, never two children: React joins multiple option children with a
+   * comma, which rendered names as "Harish,".
+   *
+   * The home-store suffix is what makes the manager list usable now that it
+   * spans both stores — without it two names sit side by side with nothing
+   * saying which one is the visitor.
+   */
+  function optionLabel(c: ManualEntryCandidate) {
+    const open = openShifts.get(c.id);
+    const base = open
+      ? `${c.name} — still clocked in from ${open.clock_in_time}`
+      : c.existing_shifts
+        ? `${c.name} — ${c.existing_shifts} shift${c.existing_shifts > 1 ? "s" : ""} already today`
+        : c.scheduled_start
+          ? `${c.name} — scheduled ${c.scheduled_start.slice(0, 5)}`
+          : c.name;
+    const home =
+      defaultStoreId && c.store_id !== defaultStoreId ? knownStoreName(c.store_id) : null;
+    return home ? `${base} (${home})` : base;
+  }
 
   // A clock-out at or before the clock-in crossed midnight (14:00 → 00:00 is a
   // ten-hour shift). Shown before saving so the next-day end isn't a surprise.
@@ -374,8 +399,9 @@ export function ManualClockEntryModal({
       <div className="flex flex-col gap-4">
         {candidates.length === 0 ? (
           <p className="text-sm text-text-muted">
-            Nobody available to record right now — everyone {mode === "employee" ? "on shift" : "working"}{" "}
-            is either currently clocked in or not attached to this store today.
+            {mode === "manager"
+              ? "Nobody available to record right now — every manager is already clocked in."
+              : `Nobody available to record right now — everyone ${mode === "employee" ? "on shift" : "working"} is either currently clocked in or not attached to this store today.`}
           </p>
         ) : (
           <>
@@ -387,15 +413,7 @@ export function ManualClockEntryModal({
               <option value="">Select…</option>
               {candidates.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {/* One child, not two: React joins multiple option children
-                      with a comma, which rendered names as "Harish,". */}
-                  {openShifts.has(c.id)
-                    ? `${c.name} — still clocked in from ${openShifts.get(c.id)!.clock_in_time}`
-                    : c.existing_shifts
-                      ? `${c.name} — ${c.existing_shifts} shift${c.existing_shifts > 1 ? "s" : ""} already today`
-                      : c.scheduled_start
-                        ? `${c.name} — scheduled ${c.scheduled_start.slice(0, 5)}`
-                        : c.name}
+                  {optionLabel(c)}
                 </option>
               ))}
             </Select>
@@ -450,10 +468,21 @@ export function ManualClockEntryModal({
             {awayFromHome && (
               <p className="text-xs text-text-muted bg-bg border border-border rounded-xl px-3 py-2 -mt-1">
                 {selected?.name} is based at {storeNameOf(selected?.store_id)}, so this
-                day is <span className="text-text-primary">covering</span>. It goes on{" "}
-                {storeNameOf(storeId)}&apos;s Tuesday payout, and every hour is paid in
-                cash — hours away from the home store don&apos;t count towards their
-                weekly NI allowance.
+                day is <span className="text-text-primary">covering</span>.{" "}
+                {mode === "manager" ? (
+                  <>
+                    It moves them onto {storeNameOf(storeId)}&apos;s Live board for the
+                    day, their fixed daily wage counts towards that store&apos;s wage
+                    bill, and any drops signed off on the day are paid from{" "}
+                    {storeNameOf(storeId)}&apos;s Tuesday payout.
+                  </>
+                ) : (
+                  <>
+                    It goes on {storeNameOf(storeId)}&apos;s Tuesday payout, and every
+                    hour is paid in cash — hours away from the home store don&apos;t
+                    count towards their weekly NI allowance.
+                  </>
+                )}
               </p>
             )}
 
