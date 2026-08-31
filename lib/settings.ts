@@ -75,12 +75,23 @@ export type ShiftTimeSettings = {
   close: string;
 };
 
+/** Who the locked Weekly Report is mailed to, and whether lock gates sending. */
+export type WeeklyReportSettings = {
+  /** Superiors' inboxes. Empty = the send action refuses, loudly. */
+  recipients: string[];
+  cc: string[];
+  /** Refuse to send a report still in draft. On by default — a draft is not a
+   *  frozen snapshot, so what the superiors read could change under them. */
+  require_lock_to_send: boolean;
+};
+
 export type AppSettings = {
   alert_thresholds: AlertThresholds;
   min_wage_bands: MinWageBands;
   email_alerts: EmailAlertSettings;
   cash_flow: CashFlowSettings;
   shift_times: ShiftTimeSettings;
+  weekly_report: WeeklyReportSettings;
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -116,6 +127,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
     evening_start: "17:00",
     close: "23:00",
   },
+  weekly_report: {
+    recipients: [],
+    cc: [],
+    require_lock_to_send: true,
+  },
 };
 
 export const SETTINGS_KEYS = [
@@ -124,6 +140,7 @@ export const SETTINGS_KEYS = [
   "email_alerts",
   "cash_flow",
   "shift_times",
+  "weekly_report",
 ] as const;
 export type SettingsKey = (typeof SETTINGS_KEYS)[number];
 
@@ -148,6 +165,7 @@ export function mergeSettings(
     email_alerts: pick("email_alerts"),
     cash_flow: pick("cash_flow"),
     shift_times: pick("shift_times"),
+    weekly_report: pick("weekly_report"),
   };
 }
 

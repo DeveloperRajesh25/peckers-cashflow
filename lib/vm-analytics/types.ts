@@ -38,6 +38,12 @@ export interface ExecChannelRow {
   orders: Num;
 }
 
+export interface ChannelGrossRow {
+  store: string;
+  channel: string;
+  gross_sales: number;
+}
+
 export interface ProductRow {
   store: string;
   week_start: string;

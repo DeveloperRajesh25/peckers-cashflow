@@ -12,6 +12,7 @@ import { AuditLogList } from "@/components/settings/AuditLogList";
 import { GeofenceFailuresList } from "@/components/settings/GeofenceFailuresList";
 import { CashFlowSettingsCard } from "@/components/settings/CashFlowSettingsCard";
 import { ShiftTimesSettingsCard } from "@/components/settings/ShiftTimesSettingsCard";
+import { WeeklyReportSettingsCard } from "@/components/settings/WeeklyReportSettingsCard";
 import { ChangePasswordCard } from "@/components/employee/ChangePasswordCard";
 import { getAppSettings } from "@/app/actions/settings";
 
@@ -86,6 +87,7 @@ export default async function SettingsPage() {
 
       <div className="mt-6 flex flex-col gap-5">
         <CashFlowSettingsCard initial={settings} />
+        <WeeklyReportSettingsCard initial={settings} />
         <ShiftTimesSettingsCard stores={storesRes.data ?? []} />
         <StoresAdmin stores={storesRes.data ?? []} />
         <GeofenceFailuresList entries={geofenceFailuresRes.data ?? []} />

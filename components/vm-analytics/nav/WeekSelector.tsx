@@ -15,12 +15,18 @@ import { weekRange } from "@/lib/vm-analytics/format";
 // The Labor Cost dashboard reads from a different Supabase (cashflow) whose
 // available weeks differ from the VM sales weeks, so the layout passes that
 // dashboard's weeks separately and we switch on the current route.
+//
+// The Weekly Report gets a THIRD list: it ends at last week like the others,
+// but adds the Sunday of the closing week and any week the sales sync is late
+// on, which vm_v_available_weeks cannot hold. See reportWeekOptions.
 export function WeekSelector({
   weeks,
   laborWeeks = [],
+  reportWeeks = [],
 }: {
   weeks: WeekOption[];
   laborWeeks?: WeekOption[];
+  reportWeeks?: WeekOption[];
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -29,7 +35,8 @@ export function WeekSelector({
 
   const isLaborCost = pathname.includes("/labor-cost");
   const isExecutive = pathname.includes("/executive");
-  const list = isLaborCost ? laborWeeks : weeks;
+  const isWeeklyReport = pathname.includes("/weekly-summary");
+  const list = isLaborCost ? laborWeeks : isWeeklyReport ? reportWeeks : weeks;
 
   const rawMode = search.get("mode");
   const mode: ExecMode = rawMode === "4w" ? "4w" : rawMode === "12w" ? "12w" : "week";

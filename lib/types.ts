@@ -25,6 +25,9 @@ export type Store = {
   geofence_radius_m: number;
   /** Open/Evening/Close times used by this store's rota presets. */
   shift_times: StoreShiftTimes;
+  /** This store's name in the VM Analytics project ("Peckers Stevenage").
+   *  The only bridge between the two Supabase projects — migration 048. */
+  vm_store_name: string | null;
   created_at: string;
 };
 

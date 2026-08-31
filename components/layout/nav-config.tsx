@@ -9,6 +9,7 @@ import {
   KeyIcon,
   ListIcon,
   RadioIcon,
+  ShoppingBagIcon,
   SettingsIcon,
   UserCircleIcon,
   UsersIcon,
@@ -53,6 +54,9 @@ export const managerNav: NavItem[] = [
   { href: "/manager/cash-flow/history", label: "Payout History", icon: ListIcon, group: "Finance" },
   { href: "/manager/ni-monthly", label: "NI (Monthly)", icon: CalendarIcon, group: "Finance" },
   { href: "/manager/analytics", label: "Analytics", icon: ChartIcon, group: "Finance" },
+  // The manager's twin of the admin Weekly Report. VM Analytics itself stays
+  // admin-only, so this is the one screen from that module they can reach.
+  { href: "/manager/weekly-report", label: "Weekly Report", icon: ShoppingBagIcon, group: "Finance" },
   { href: "/manager/settings", label: "Settings", icon: SettingsIcon },
 ];
 

@@ -3,6 +3,7 @@ import { DashboardSelector } from "@/components/vm-analytics/nav/DashboardSelect
 import { WeekSelector } from "@/components/vm-analytics/nav/WeekSelector";
 import { StoreSelector } from "@/components/vm-analytics/nav/StoreSelector";
 import { getWeeks, getLaborCostWeeks } from "@/lib/vm-analytics/queries";
+import { reportWeekOptions } from "@/lib/weekly-report";
 
 export default async function VmAnalyticsLayout({
   children,
@@ -40,7 +41,11 @@ export default async function VmAnalyticsLayout({
               </span>
             )}
             <StoreSelector />
-            <WeekSelector weeks={weeks} laborWeeks={laborWeeks} />
+            <WeekSelector
+              weeks={weeks}
+              laborWeeks={laborWeeks}
+              reportWeeks={reportWeekOptions(weeks)}
+            />
           </div>
         </Suspense>
       </div>

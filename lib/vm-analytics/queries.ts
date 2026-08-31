@@ -3,6 +3,7 @@ import { getCashflowSupabaseServer } from "@/lib/supabase-cashflow";
 import type {
   ExecRow,
   ExecChannelRow,
+  ChannelGrossRow,
   LunchDealItemRow,
   LunchDealChannelRow,
   LunchDealChannelDetailRow,
@@ -149,6 +150,28 @@ export async function getExecChannelsMulti(weekIsos: string[]): Promise<ExecChan
     const k = key(r.store, r.channel);
     const cur = merged.get(k) ?? { store: r.store, channel: r.channel, net_sales: 0, orders: 0 };
     cur.orders = (cur.orders as number) + numOf(r.number_of_orders);
+    merged.set(k, cur);
+  }
+  return Array.from(merged.values());
+}
+
+// Per (store, channel) GROSS sales for a week, from the raw vm_sales_store_channel
+// ingest. One store is ingested per-week (hour null) and the other per-HOUR, so
+// always SUM per key rather than reading a single row. Amounts are TEXT.
+export async function getGrossSalesByChannel(weekIso: string): Promise<ChannelGrossRow[]> {
+  const sb = getVMSupabaseServer();
+  const { data, error } = await sb
+    .from("vm_sales_store_channel")
+    .select("store, channel, gross_sales")
+    .eq("week_start", weekIso)
+    .limit(20000);
+  if (error) throw new Error(`getGrossSalesByChannel: ${error.message}`);
+
+  const merged = new Map<string, ChannelGrossRow>();
+  for (const r of (data ?? []) as { store: string; channel: string; gross_sales: string }[]) {
+    const k = `${r.store}||${r.channel}`;
+    const cur = merged.get(k) ?? { store: r.store, channel: r.channel, gross_sales: 0 };
+    cur.gross_sales += numOf(r.gross_sales);
     merged.set(k, cur);
   }
   return Array.from(merged.values());

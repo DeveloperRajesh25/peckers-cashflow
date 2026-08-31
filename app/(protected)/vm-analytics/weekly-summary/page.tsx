@@ -1,255 +1,180 @@
-import { getComparison, getExec, getWeeks, getWeeklySummaryInputs, getWeeklySummaryInputsForWeek } from "@/lib/vm-analytics/queries";
-import { n, weekRange } from "@/lib/vm-analytics/format";
+import { createServerSupabase } from "@/lib/supabase-server";
+import { getWeeks } from "@/lib/vm-analytics/queries";
+import { weekRange } from "@/lib/vm-analytics/format";
 import { shortStore, STORES, resolveStore as resolveStoreParam } from "@/lib/vm-analytics/constants";
-import { generateWeeklySummary, type WeeklySummaryInputs } from "@/lib/vm-analytics/weekly-summary";
+import { generateWeeklySummary } from "@/lib/vm-analytics/weekly-summary";
+import { PageTitle, ErrorState } from "@/components/vm-analytics/PageState";
 import { Section } from "@/components/vm-analytics/Section";
-import { PageTitle, EmptyWeek, ErrorState } from "@/components/vm-analytics/PageState";
-import { WeeklySummaryForm } from "@/components/vm-analytics/WeeklySummaryForm";
 import { WeeklySummaryTable } from "@/components/vm-analytics/WeeklySummaryTable";
+import { WeeklyReportScreen } from "@/components/weekly-report/WeeklyReportScreen";
+import { loadWeeklyReport } from "@/app/actions/weekly-report";
+import { loadVmSales } from "@/lib/weekly-report-sales";
+import {
+  combineInputs,
+  reportWeekOptions,
+  resolveReportWeek,
+  rollUpInputs,
+  type ReportTab,
+} from "@/lib/weekly-report";
+import type { Store } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+
+const TABS = new Set<ReportTab>([
+  "summary",
+  "cogs",
+  "walkern",
+  "hitchin",
+  "fillings",
+  "labour",
+  "occupancy",
+  "aggregator",
+  "expenses",
+  "channels",
+]);
+
+function resolveTab(param?: string): ReportTab {
+  return param && TABS.has(param as ReportTab) ? (param as ReportTab) : "summary";
+}
 
 export default async function WeeklySummaryPage({
   searchParams,
 }: {
-  searchParams: { week?: string; store?: string };
+  searchParams: { week?: string; store?: string; tab?: string };
 }) {
-  let weekIso: string | null;
-  let selectedStore: string | null;
-  let weeks = [] as Awaited<ReturnType<typeof getWeeks>>;
-  let weekEnd = "";
+  // VM weeks alone would miss a week the sync is late on — see
+  // reportWeekOptions. A failure there is not fatal: the local Mondays stand in.
+  // ?week= is SHARED with the other dashboards, whose lists differ, so it is
+  // resolved against this one rather than trusted.
+  const vmWeeks = await getWeeks().catch(() => []);
+  const weeks = reportWeekOptions(vmWeeks);
+  const weekIso = resolveReportWeek(weeks, searchParams.week);
+  if (!weekIso) return <ErrorState message="No weeks available." />;
 
-  try {
-    weeks = await getWeeks(); 
-    weekIso = searchParams.week ?? weeks[0]?.week_start_iso ?? null;
-    if (!weekIso) return <EmptyWeek />;
+  const weekOption = weeks.find((w) => w.week_start_iso === weekIso);
+  const weekLabel = weekRange(weekIso, weekOption?.week_end);
+  const selectedVmStore = resolveStoreParam(searchParams.store);
 
-    weekEnd = weeks.find((w) => w.week_start_iso === weekIso)?.week_end ?? "";
-    selectedStore = resolveStoreParam(searchParams.store);
-  } catch (e) {
-    return <ErrorState message={e instanceof Error ? e.message : "Unknown error"} />;
-  }
+  const supabase = createServerSupabase();
+  const { data: storeRows, error: storesError } = await supabase
+    .from("stores")
+    .select("id, code, name, vm_store_name")
+    .order("name");
+  if (storesError) return <ErrorState message={storesError.message} />;
+  const stores = (storeRows ?? []) as Pick<Store, "id" | "code" | "name" | "vm_store_name">[];
 
-  try {
-    const [comparisonData, execData, inputsData] = await Promise.all([
-      getComparison(weekIso),
-      getExec(weekIso),
-      selectedStore
-        ? getWeeklySummaryInputs(selectedStore, weekIso).then((r) => r ? [r] : [])
-        : getWeeklySummaryInputsForWeek(weekIso),
-    ]);
-
-    // net_sales: use the exec dashboard view (same source as Executive dashboard —
-    // vm_v_store_comparison.net_sales has historically returned wrong values).
-    // gross_sales: use the comparison view (exec view does not expose gross_sales).
-    const execMap = new Map(execData.map((r) => [r.store, r]));
-    const storeDataMap = new Map(
-      STORES.map((store) => {
-        const compRow = comparisonData.find((r) => r.store === store);
-        const execRow = execMap.get(store);
-        return [
-          store,
-          {
-            gross_sales: n(compRow?.gross_sales),
-            net_sales: n(execRow?.net_sales ?? compRow?.net_sales),
-          },
-        ];
-      })
-    );
-
-    if (selectedStore) {
-      const sales = storeDataMap.get(selectedStore as "Peckers Hitchin" | "Peckers Stevenage") || { gross_sales: 0, net_sales: 0 };
-      const inputs = inputsData[0];
-
-      if (!inputs) {
-        return (
-          <>
-            <PageTitle
-              title="Weekly Summary"
-              subtitle={`${shortStore(selectedStore)} · ${weekRange(weekIso, weekEnd)}`}
-            />
-            <Section title="Getting Started">
-              <div className="space-y-4">
-                <p className="text-text-secondary">
-                  No data entered yet for {shortStore(selectedStore)} this week.
-                  Enter the operational costs below to generate your weekly summary.
-                </p>
-                <WeeklySummaryForm store={selectedStore} week={weekIso} />
-              </div>
-            </Section>
-          </>
-        );
-      }
-
-      const summary = generateWeeklySummary(sales, inputs as unknown as WeeklySummaryInputs);
-
+  if (selectedVmStore) {
+    const store = stores.find((s) => s.vm_store_name === selectedVmStore);
+    if (!store) {
       return (
-        <div className="space-y-7">
-          <PageTitle
-            title="Weekly Summary"
-            subtitle={`${shortStore(selectedStore)} · ${weekRange(weekIso, weekEnd)}`}
-          />
-          <Section title="Results">
-            <WeeklySummaryTable data={summary} store={selectedStore} />
-          </Section>
-          <Section title="Manager Inputs">
-            <WeeklySummaryForm
-              store={selectedStore}
-              week={weekIso}
-              initialData={inputs}
-            />
-          </Section>
-        </div>
-      );
-    } else {
-      // Combined view
-      const hitchinData = storeDataMap.get("Peckers Hitchin") || { gross_sales: 0, net_sales: 0 };
-      const stevenageData = storeDataMap.get("Peckers Stevenage") || { gross_sales: 0, net_sales: 0 };
-
-      const combinedSales = {
-        gross_sales: hitchinData.gross_sales + stevenageData.gross_sales,
-        net_sales: hitchinData.net_sales + stevenageData.net_sales,
-      };
-
-      const hitchinInputs = inputsData.find((i) => i.store === "Peckers Hitchin");
-      const stevenageInputs = inputsData.find((i) => i.store === "Peckers Stevenage");
-
-      const avgBudgetPct = (
-        hVal: number | string | null | undefined,
-        sVal: number | string | null | undefined,
-      ): number | undefined => {
-        const h = n(hVal);
-        const s = n(sVal);
-        if (hitchinInputs && stevenageInputs) return (h + s) / 2;
-        if (hitchinInputs) return h || undefined;
-        if (stevenageInputs) return s || undefined;
-        return undefined;
-      };
-
-      const combinedInputs = {
-        cogs: n(hitchinInputs?.cogs) + n(stevenageInputs?.cogs),
-        cogs_hitchin: n(hitchinInputs?.cogs_hitchin) + n(stevenageInputs?.cogs_hitchin),
-        fillings_and_samosas: n(hitchinInputs?.fillings_and_samosas) + n(stevenageInputs?.fillings_and_samosas),
-        packaging_costs: n(hitchinInputs?.packaging_costs) + n(stevenageInputs?.packaging_costs),
-        marketing: n(hitchinInputs?.marketing) + n(stevenageInputs?.marketing),
-        labour_cost: n(hitchinInputs?.labour_cost) + n(stevenageInputs?.labour_cost),
-        occupancy_cost: n(hitchinInputs?.occupancy_cost) + n(stevenageInputs?.occupancy_cost),
-        aggregator_costs: n(hitchinInputs?.aggregator_costs) + n(stevenageInputs?.aggregator_costs),
-        gross_margin_budget_pct: avgBudgetPct(
-          hitchinInputs?.gross_margin_budget_pct,
-          stevenageInputs?.gross_margin_budget_pct,
-        ),
-        labour_budget_pct: avgBudgetPct(
-          hitchinInputs?.labour_budget_pct,
-          stevenageInputs?.labour_budget_pct,
-        ),
-      };
-
-      const missingStore = !hitchinInputs
-        ? "Hitchin"
-        : !stevenageInputs
-        ? "Stevenage"
-        : null;
-
-      if (!hitchinInputs && !stevenageInputs) {
-        return (
-          <>
-            <PageTitle
-              title="Weekly Summary"
-              subtitle={`Combined · ${weekRange(weekIso, weekEnd)}`}
-            />
-            <div className="grid grid-cols-2 gap-4">
-              {STORES.map((store) => (
-                <div key={store} className="vm-card p-4">
-                  <div className="text-xs font-medium uppercase tracking-wide text-text-muted">{shortStore(store)}</div>
-                  <div className="mt-2 text-sm text-text-muted">No data yet</div>
-                </div>
-              ))}
-            </div>
-            <div className="vm-card p-6">
-              <p className="text-text-secondary text-center">
-                No data available. Enter operational costs for Hitchin and Stevenage individually.
-              </p>
-            </div>
-          </>
-        );
-      }
-
-      const summary = generateWeeklySummary(combinedSales, combinedInputs);
-
-      return (
-        <div className="space-y-7">
-          <PageTitle
-            title="Weekly Summary"
-            subtitle={`Combined (Hitchin + Stevenage) · ${weekRange(weekIso, weekEnd)}`}
-          />
-
-          <div className="grid grid-cols-2 gap-4">
-            {STORES.map((store) => {
-              const storeSales = storeDataMap.get(store) || { gross_sales: 0, net_sales: 0 };
-              const storeInputs = inputsData.find((i) => i.store === store);
-              return (
-                <div key={store} className="vm-card p-4">
-                  <div className="text-xs font-medium uppercase tracking-wide text-text-muted">{shortStore(store)}</div>
-                  <div className="mt-2 flex justify-between items-end">
-                    <div>
-                      <div className="text-sm text-text-secondary">Net Sales</div>
-                      <div className="text-xl font-semibold text-text-primary">£{storeSales.net_sales.toFixed(2)}</div>
-                    </div>
-                    {storeInputs
-                      ? <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">Data entered ✓</span>
-                      : <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded">No data yet</span>
-                    }
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {missingStore && (
-            <div className="px-4 py-3 rounded border border-amber-200 bg-amber-50 text-sm text-amber-800">
-              Warning: {missingStore} data has not been entered yet. The combined figures below are incomplete.
-            </div>
-          )}
-
-          <Section title="Combined Results">
-            <WeeklySummaryTable data={summary} />
-          </Section>
-
-          <Section title="Individual Store Data">
-            <div className="space-y-4">
-              {STORES.map((store) => {
-                const storeInputs = inputsData.find((i) => i.store === store);
-                const storeSales = storeDataMap.get(store) || { gross_sales: 0, net_sales: 0 };
-
-                if (!storeInputs) {
-                  return (
-                    <div key={store} className="vm-card p-4">
-                      <h4 className="font-semibold text-text-primary mb-2">{shortStore(store)}</h4>
-                      <p className="text-sm text-text-muted">No data entered yet</p>
-                    </div>
-                  );
-                }
-
-                const storeSummary = generateWeeklySummary(storeSales, storeInputs as unknown as WeeklySummaryInputs);
-
-                return (
-                  <details key={store} className="vm-card p-4">
-                    <summary className="cursor-pointer font-semibold text-text-primary">
-                      {shortStore(store)} Details
-                    </summary>
-                    <div className="mt-4">
-                      <WeeklySummaryTable data={storeSummary} store={store} />
-                    </div>
-                  </details>
-                );
-              })}
-            </div>
-          </Section>
-        </div>
+        <ErrorState
+          message={`No store in the operations database is mapped to "${selectedVmStore}". Set its vm_store_name (migration 048).`}
+        />
       );
     }
-  } catch (e) {
-    return <ErrorState message={e instanceof Error ? e.message : "Unknown error"} />;
+    return (
+      <WeeklyReportScreen
+        storeId={store.id}
+        storeName={shortStore(selectedVmStore)}
+        vmStoreName={store.vm_store_name}
+        weekIso={weekIso}
+        weekLabel={weekLabel}
+        tab={resolveTab(searchParams.tab)}
+        canUnlock
+      />
+    );
   }
+
+  return <CombinedView stores={stores} weekIso={weekIso} weekLabel={weekLabel} />;
+}
+
+/**
+ * Both stores at once — READ ONLY. It is a roll-up, and there is no such thing
+ * as editing "the combined week": every line belongs to one store's report.
+ */
+async function CombinedView({
+  stores,
+  weekIso,
+  weekLabel,
+}: {
+  stores: Pick<Store, "id" | "code" | "name" | "vm_store_name">[];
+  weekIso: string;
+  weekLabel: string;
+}) {
+  const perStore = await Promise.all(
+    STORES.map(async (vmName) => {
+      const store = stores.find((s) => s.vm_store_name === vmName);
+      if (!store) return { vmName, store: null, sales: null, inputs: null };
+      const [bundle, sales] = await Promise.all([
+        loadWeeklyReport({ store_id: store.id, week_start: weekIso }),
+        loadVmSales(vmName, weekIso),
+      ]);
+      const frozen = bundle.report?.status !== "draft" ? bundle.report?.snapshot ?? null : null;
+      return {
+        vmName,
+        store,
+        sales: frozen ? { gross_sales: frozen.gross_sales, net_sales: frozen.net_sales } : sales,
+        inputs: bundle.report
+          ? frozen?.inputs ?? rollUpInputs(bundle.report, bundle.lines, bundle.labour)
+          : null,
+      };
+    }),
+  );
+
+  const combinedSales = perStore.reduce(
+    (t, s) => ({
+      gross_sales: t.gross_sales + (s.sales?.gross_sales ?? 0),
+      net_sales: t.net_sales + (s.sales?.net_sales ?? 0),
+    }),
+    { gross_sales: 0, net_sales: 0 },
+  );
+  const combined = combineInputs(perStore[0]?.inputs ?? null, perStore[1]?.inputs ?? null);
+  const missing = perStore.filter((s) => !s.inputs).map((s) => shortStore(s.vmName));
+
+  return (
+    <div className="space-y-7">
+      <PageTitle title="Weekly Report" subtitle={`Combined · ${weekLabel}`} />
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {perStore.map((s) => (
+          <div key={s.vmName} className="vm-card p-4">
+            <div className="text-xs font-medium uppercase tracking-wide text-text-muted">
+              {shortStore(s.vmName)}
+            </div>
+            <div className="mt-2 flex items-end justify-between">
+              <div>
+                <div className="text-sm text-text-secondary">Net Sales</div>
+                <div className="text-xl font-semibold text-text-primary">
+                  £{(s.sales?.net_sales ?? 0).toFixed(2)}
+                </div>
+              </div>
+              {s.inputs ? (
+                <span className="rounded bg-green-100 px-2 py-1 text-xs text-green-700">
+                  Report started ✓
+                </span>
+              ) : (
+                <span className="rounded bg-amber-100 px-2 py-1 text-xs text-amber-700">
+                  No report yet
+                </span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {missing.length > 0 && (
+        <div className="rounded border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          {missing.join(" and ")} {missing.length === 1 ? "has" : "have"} no report for this week, so
+          the combined figures below are incomplete. Pick a store above to enter one.
+        </div>
+      )}
+
+      <Section
+        title="Combined Results"
+        description="Sums for money, averages for the budget percentages. Read-only — edit each store's week on its own report."
+      >
+        <WeeklySummaryTable data={generateWeeklySummary(combinedSales, combined)} />
+      </Section>
+    </div>
+  );
 }

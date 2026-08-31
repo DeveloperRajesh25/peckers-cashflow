@@ -184,8 +184,8 @@ export const DASHBOARDS: DashboardDef[] = [
   {
     key: "weekly-summary",
     href: "/vm-analytics/weekly-summary",
-    title: "Weekly Summary",
-    blurb: "Manager P&L: costs, margins & net margin by store",
+    title: "Weekly Report",
+    blurb: "The manager's weekly P&L: COGS, labour, occupancy, aggregator & margins",
   },
   {
     key: "labor-cost",
