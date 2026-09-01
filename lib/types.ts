@@ -28,6 +28,9 @@ export type Store = {
   /** This store's name in the VM Analytics project ("Peckers Stevenage").
    *  The only bridge between the two Supabase projects — migration 048. */
   vm_store_name: string | null;
+  /** Standing weekly Meppershall credit, seeded onto each new weekly report.
+   *  Null = this store does not supply Meppershall — migration 051. */
+  meppershall_default: number | null;
   created_at: string;
 };
 

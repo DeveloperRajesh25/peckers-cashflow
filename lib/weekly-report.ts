@@ -74,6 +74,8 @@ export type WeeklyReport = {
   status: WeeklyReportStatus;
   packaging_costs: number | string | null;
   marketing: number | string | null;
+  /** Null on a store that does not supply Meppershall — migration 051. */
+  meppershall: number | string | null;
   cogs_hitchin: number | string | null;
   gross_margin_budget_pct: number | string | null;
   labour_budget_pct: number | string | null;
@@ -447,7 +449,12 @@ export function aggregatorRows(
 export function rollUpInputs(
   report: Pick<
     WeeklyReport,
-    "packaging_costs" | "marketing" | "cogs_hitchin" | "gross_margin_budget_pct" | "labour_budget_pct"
+    | "packaging_costs"
+    | "marketing"
+    | "meppershall"
+    | "cogs_hitchin"
+    | "gross_margin_budget_pct"
+    | "labour_budget_pct"
   >,
   lines: WeeklyReportLine[],
   labourLines: WeeklyReportLabourLine[],
@@ -462,6 +469,7 @@ export function rollUpInputs(
     fillings_and_samosas: round2(
       FILLINGS_SECTIONS.reduce((t, s) => t + totals[s], 0),
     ),
+    meppershall: num(report.meppershall),
     packaging_costs: num(report.packaging_costs),
     marketing: num(report.marketing),
     labour_cost: labourTotal(labourLines),
@@ -488,6 +496,7 @@ export function combineInputs(
     cogs: add("cogs"),
     cogs_hitchin: add("cogs_hitchin"),
     fillings_and_samosas: add("fillings_and_samosas"),
+    meppershall: add("meppershall"),
     packaging_costs: add("packaging_costs"),
     marketing: add("marketing"),
     labour_cost: add("labour_cost"),
@@ -515,6 +524,7 @@ export function snapshotDrift(
     cogs: "COGS",
     cogs_hitchin: "COGS transfer",
     fillings_and_samosas: "Fillings and Samosas",
+    meppershall: "Meppershall",
     packaging_costs: "Packaging",
     marketing: "Marketing",
     labour_cost: "Labour",

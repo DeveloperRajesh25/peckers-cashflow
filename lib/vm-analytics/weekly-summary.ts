@@ -7,6 +7,8 @@ export interface WeeklySummaryInputs {
   cogs?: number;
   cogs_hitchin?: number;
   fillings_and_samosas?: number;
+  /** Stock supplied to Meppershall — credited back, like the COGS transfer. */
+  meppershall?: number;
   packaging_costs?: number;
   marketing?: number;
   labour_cost?: number;
@@ -53,7 +55,8 @@ function toNum(val: unknown): number {
 /**
  * Calculate Gross Margin metrics
  *
- * Gross Margin actual = NET SALES – COGS + COGS_HITCHIN (other store) + FILLINGS AND SAMOSAS
+ * Gross Margin actual = NET SALES – COGS + COGS_HITCHIN (other store)
+ *                        + FILLINGS AND SAMOSAS + MEPPERSHALL
  * Gross Margin actual % = Actual / NET SALES
  * Budget = Budget% * NET SALES
  * Budget % = Budget / NET SALES
@@ -67,9 +70,10 @@ export function calculateGrossMargin(
   const cogs = toNum(inputs.cogs) || 0;
   const cogs_hitchin = toNum(inputs.cogs_hitchin) || 0;
   const fillings = toNum(inputs.fillings_and_samosas) || 0;
+  const meppershall = toNum(inputs.meppershall) || 0;
   const budgetPct = toNum(inputs.gross_margin_budget_pct) || 0;
 
-  const actual = netSales - cogs + cogs_hitchin + fillings;
+  const actual = netSales - cogs + cogs_hitchin + fillings + meppershall;
   const actualPct = netSales > 0 ? actual / netSales : 0;
   const budget = budgetPct * netSales;
   const budgetPct_calc = budgetPct;
@@ -203,6 +207,7 @@ export function generateWeeklySummary(
   const cogs = toNum(inputs.cogs) || 0;
   const cogs_hitchin = toNum(inputs.cogs_hitchin) || 0;
   const fillings = toNum(inputs.fillings_and_samosas) || 0;
+  const meppershall = toNum(inputs.meppershall) || 0;
   const aggregator = toNum(inputs.aggregator_costs) || 0;
 
   const { contribution, contribution_pct } = calculateStoreContribution(
@@ -240,6 +245,9 @@ export function generateWeeklySummary(
       entity: "Fillings and Samosas",
       actual: fillings,
     },
+    // Only on the stores that supply it — a £0.00 row everywhere else would
+    // read as a figure someone forgot to enter.
+    ...(meppershall !== 0 ? [{ entity: "Meppershall", actual: meppershall }] : []),
     {
       entity: "Gross Margin",
       actual: grossMargin.actual,

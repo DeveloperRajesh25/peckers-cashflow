@@ -238,12 +238,21 @@ export async function ensureWeeklyReport(input: {
   let reportId = existing.data?.id as string | undefined;
 
   if (!reportId) {
+    // The standing Meppershall credit is per-store data, not a constant — only
+    // the store that supplies it carries one (migration 051).
+    const { data: store } = await supabase
+      .from("stores")
+      .select("meppershall_default")
+      .eq("id", input.store_id)
+      .maybeSingle();
+
     const { data, error } = await supabase
       .from("weekly_reports")
       .insert({
         store_id: input.store_id,
         week_start: input.week_start,
         status: "draft",
+        meppershall: store?.meppershall_default ?? null,
       })
       .select("id")
       .single();
@@ -274,7 +283,7 @@ async function seedFromPreviousWeek(
   const prevWeek = toISODate(addDays(parseISODate(input.week_start), -7));
   const { data: prevReport } = await supabase
     .from("weekly_reports")
-    .select("id, packaging_costs, marketing, gross_margin_budget_pct, labour_budget_pct")
+    .select("id, packaging_costs, marketing, meppershall, gross_margin_budget_pct, labour_budget_pct")
     .eq("store_id", input.store_id)
     .eq("week_start", prevWeek)
     .maybeSingle();
@@ -297,12 +306,14 @@ async function seedFromPreviousWeek(
     }));
 
   // The budget percentages are a standing target, not a weekly figure, so they
-  // carry across even though every amount is blanked.
+  // carry across even though every amount is blanked. So is Meppershall, which
+  // is the same £ every week until someone changes the arrangement.
   await supabase
     .from("weekly_reports")
     .update({
       gross_margin_budget_pct: prevReport.gross_margin_budget_pct,
       labour_budget_pct: prevReport.labour_budget_pct,
+      ...(prevReport.meppershall == null ? {} : { meppershall: prevReport.meppershall }),
     })
     .eq("id", reportId);
 
@@ -320,6 +331,7 @@ export async function saveReportHeader(input: {
   report_id: string;
   packaging_costs?: number | null;
   marketing?: number | null;
+  meppershall?: number | null;
   gross_margin_budget_pct?: number | null;
   labour_budget_pct?: number | null;
 }): Promise<{ ok: true }> {
@@ -348,6 +360,10 @@ export async function saveReportHeader(input: {
     .update({
       packaging_costs: money(input.packaging_costs),
       marketing: money(input.marketing),
+      // Only when the card asked for it — a store that does not supply
+      // Meppershall never shows the field, and an absent field must not be
+      // read as the manager clearing the figure.
+      ...("meppershall" in input ? { meppershall: money(input.meppershall) } : {}),
       gross_margin_budget_pct: pct(input.gross_margin_budget_pct),
       labour_budget_pct: pct(input.labour_budget_pct),
     })

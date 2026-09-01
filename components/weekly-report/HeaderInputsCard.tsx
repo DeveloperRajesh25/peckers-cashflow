@@ -19,9 +19,12 @@ import { num, type WeeklyReport } from "@/lib/weekly-report";
 export function HeaderInputsCard({
   report,
   readOnly,
+  showMeppershall,
 }: {
   report: WeeklyReport;
   readOnly: boolean;
+  /** Only the store that supplies Meppershall carries the figure — migration 051. */
+  showMeppershall: boolean;
 }) {
   const router = useRouter();
   const toast = useToast();
@@ -29,6 +32,7 @@ export function HeaderInputsCard({
   const [form, setForm] = React.useState({
     packaging_costs: report.packaging_costs == null ? "" : String(num(report.packaging_costs)),
     marketing: report.marketing == null ? "" : String(num(report.marketing)),
+    meppershall: report.meppershall == null ? "" : String(num(report.meppershall)),
     // Stored as a decimal, edited as a whole number.
     gross_margin_budget_pct:
       report.gross_margin_budget_pct == null
@@ -47,6 +51,9 @@ export function HeaderInputsCard({
         report_id: report.id,
         packaging_costs: form.packaging_costs === "" ? null : num(form.packaging_costs),
         marketing: form.marketing === "" ? null : num(form.marketing),
+        ...(showMeppershall
+          ? { meppershall: form.meppershall === "" ? null : num(form.meppershall) }
+          : {}),
         gross_margin_budget_pct:
           form.gross_margin_budget_pct === "" ? null : num(form.gross_margin_budget_pct),
         labour_budget_pct: form.labour_budget_pct === "" ? null : num(form.labour_budget_pct),
@@ -94,6 +101,19 @@ export function HeaderInputsCard({
           onChange={set("marketing")}
           hint="Informational — not deducted anywhere"
         />
+        {showMeppershall && (
+          <Input
+            type="number"
+            step="0.01"
+            label="Meppershall"
+            prefix="£"
+            value={form.meppershall}
+            disabled={readOnly}
+            {...select}
+            onChange={set("meppershall")}
+            hint="Credited back into gross margin"
+          />
+        )}
         <Input
           type="number"
           step="0.1"

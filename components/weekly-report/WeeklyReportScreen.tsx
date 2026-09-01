@@ -14,6 +14,7 @@ import {
   FILLINGS_SECTIONS,
   SECTION_DEFS,
   labourTotal,
+  num,
   rollUpInputs,
   round2,
   sectionTotals,
@@ -58,13 +59,14 @@ export async function WeeklyReportScreen({
 }) {
   const supabase = createServerSupabase();
 
-  const [bundle, sales, platformSales, settingsRes] = await Promise.all([
+  const [bundle, sales, platformSales, settingsRes, storeRes] = await Promise.all([
     loadWeeklyReport({ store_id: storeId, week_start: weekIso }),
     loadVmSales(vmStoreName, weekIso),
     tab === "aggregator"
       ? loadVmPlatformSales(vmStoreName, weekIso)
       : Promise.resolve({ basis: "gross" as const, rows: [] }),
     supabase.from("app_settings").select("key, value"),
+    supabase.from("stores").select("meppershall_default").eq("id", storeId).maybeSingle(),
   ]);
 
   const transferLabel = transferTitle(storeName);
@@ -81,6 +83,11 @@ export async function WeeklyReportScreen({
 
   const { report, lines, labour } = bundle;
   const readOnly = !report || report.status !== "draft";
+  // The store that supplies Meppershall carries a standing figure; the other
+  // one never sees the field. A report that already holds a value keeps it
+  // editable even if the arrangement is later cleared off the store.
+  const showMeppershall =
+    storeRes.data?.meppershall_default != null || report?.meppershall != null;
 
   return (
     <div className="flex flex-col gap-5">
@@ -114,6 +121,7 @@ export async function WeeklyReportScreen({
               storeName={storeName}
               transferLabel={transferLabel}
               readOnly={readOnly}
+              showMeppershall={showMeppershall}
             />
           )}
 
@@ -179,7 +187,11 @@ export async function WeeklyReportScreen({
           )}
 
           {tab === "summary" && (
-            <HeaderInputsCard report={report} readOnly={readOnly} />
+            <HeaderInputsCard
+              report={report}
+              readOnly={readOnly}
+              showMeppershall={showMeppershall}
+            />
           )}
         </>
       )}
@@ -213,12 +225,14 @@ function SummaryTab({
   storeName,
   transferLabel,
   readOnly,
+  showMeppershall,
 }: {
   bundle: Awaited<ReturnType<typeof loadWeeklyReport>>;
   sales: { gross_sales: number; net_sales: number };
   storeName: string;
   transferLabel: string;
   readOnly: boolean;
+  showMeppershall: boolean;
 }) {
   const report = bundle.report!;
   const liveInputs = rollUpInputs(report, bundle.lines, bundle.labour);
@@ -277,6 +291,13 @@ function SummaryTab({
             note={`${transferLabel} tab — credited back against COGS`}
           />
           <Row label="Weekly expenses" value={totals.expense} note="Record only" />
+          {showMeppershall && (
+            <Row
+              label="Meppershall"
+              value={num(report.meppershall)}
+              note="Typed in below — credited back against COGS"
+            />
+          )}
         </dl>
       </div>
 

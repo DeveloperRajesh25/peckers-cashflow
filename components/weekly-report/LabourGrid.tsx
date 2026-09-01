@@ -57,9 +57,13 @@ export function LabourGrid({
   const [busy, setBusy] = React.useState(false);
   const [adding, setAdding] = React.useState(false);
   const [newName, setNewName] = React.useState("");
+  const [newDeliveries, setNewDeliveries] = React.useState("");
 
   const signature = lines
-    .map((l) => `${l.id}:${l.ni_hours}:${l.ni_rate}:${l.cash_hours}:${l.cash_rate}:${l.delivery_pay}`)
+    .map(
+      (l) =>
+        `${l.id}:${l.ni_hours}:${l.ni_rate}:${l.cash_hours}:${l.cash_rate}:${l.deliveries}:${l.delivery_pay}`,
+    )
     .join("|");
   const sync = useDeferredSync(signature, () => setEdits({}));
 
@@ -79,6 +83,7 @@ export function LabourGrid({
       ni_rate: e.ni_rate !== undefined ? num(e.ni_rate) : line.ni_rate,
       cash_hours: e.cash_hours !== undefined ? num(e.cash_hours) : line.cash_hours,
       cash_rate: e.cash_rate !== undefined ? num(e.cash_rate) : line.cash_rate,
+      deliveries: e.deliveries !== undefined ? Math.round(num(e.deliveries)) : line.deliveries,
       delivery_pay: e.delivery_pay !== undefined ? num(e.delivery_pay) : line.delivery_pay,
       person_name: e.person_name !== undefined ? e.person_name : line.person_name,
     };
@@ -135,9 +140,11 @@ export function LabourGrid({
         report_id: reportId,
         person_name: name,
         source: "adhoc",
+        deliveries: newDeliveries === "" ? null : Math.round(num(newDeliveries)),
         sort_order: lines.length,
       });
       setNewName("");
+      setNewDeliveries("");
       setAdding(false);
       router.refresh();
     } catch (err) {
@@ -261,9 +268,7 @@ export function LabourGrid({
                     <td className="px-3 py-1.5 text-right font-mono text-text-secondary">
                       £{t.cash_total.toFixed(2)}
                     </td>
-                    <td className="px-3 py-1.5 text-right font-mono text-text-muted">
-                      {line.deliveries ?? 0}
-                    </td>
+                    <td className="px-3 py-1.5 text-right">{numField("deliveries", "1")}</td>
                     <td className="px-3 py-1.5 text-right">{numField("delivery_pay")}</td>
                     <td className="px-3 py-1.5 text-right font-mono font-semibold text-text-primary">
                       £{t.total_pay.toFixed(2)}
@@ -315,6 +320,17 @@ export function LabourGrid({
                   placeholder="Name"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addAdhoc()}
+                />
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  className={cellNum}
+                  placeholder="Drops"
+                  aria-label="Deliveries"
+                  value={newDeliveries}
+                  onChange={(e) => setNewDeliveries(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && addAdhoc()}
                 />
                 <Button size="sm" onClick={addAdhoc} loading={busy}>
