@@ -12,6 +12,8 @@ import {
   startOfISOWeek,
   toISODate,
   todayISO,
+  londonHHMM,
+  timeToMinutes,
   shiftHours,
   percentDelta,
   weekdayIndex,
@@ -49,8 +51,6 @@ type NewAlert = {
 // Alert helpers
 // =============================================================
 
-const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
-
 async function upsertAlert(
   supabase: SupabaseClient,
   input: {
@@ -65,15 +65,27 @@ async function upsertAlert(
   },
   collector?: NewAlert[],
 ) {
-  // Don't create a duplicate open alert
-  const { data: existing } = await supabase
+  // Don't create a duplicate open alert. Each key column is matched with `is`
+  // when it's null: a sentinel UUID compared with `eq` never matches a NULL
+  // column, so every store-level alert and every alert without a shift row was
+  // re-inserted on each scan instead of being updated in place.
+  // store_id is part of the key -- two stores raise the same store-level alert.
+  let dupQuery = supabase
     .from("alerts")
     .select("id")
     .eq("alert_type", input.alert_type)
-    .eq("resolved", false)
-    .eq("employee_id", input.employee_id ?? ZERO_UUID)
-    .eq("shift_id", input.shift_id ?? ZERO_UUID)
-    .maybeSingle();
+    .eq("resolved", false);
+  for (const [col, val] of [
+    ["store_id", input.store_id],
+    ["employee_id", input.employee_id],
+    ["shift_id", input.shift_id],
+  ] as const) {
+    dupQuery = val ? dupQuery.eq(col, val) : dupQuery.is(col, null);
+  }
+  // limit(1), not maybeSingle: the broken key already left duplicates behind,
+  // and erroring on them would keep the scan from ever settling.
+  const { data: dupRows } = await dupQuery.order("created_at", { ascending: false }).limit(1);
+  const existing = dupRows?.[0];
 
   if (existing) {
     await supabase
@@ -102,7 +114,8 @@ async function upsertAlert(
     .select("id")
     .maybeSingle();
 
-  // Suppress duplicate-key errors from the partial unique index
+  // Dedup is app-side (no unique index -- see supabase/schema.sql), but a
+  // concurrent scan can still race us to the insert.
   if (error && !String(error.message).toLowerCase().includes("duplicate")) {
     console.error("[alerts] insert error", error.message);
   }
@@ -235,10 +248,17 @@ async function resolveRecipients(
 // =============================================================
 async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: number }> {
   const today = todayISO();
-  const weekStart = toISODate(startOfISOWeek(new Date()));
+  const weekStartDate = startOfISOWeek(new Date());
+  const weekStart = toISODate(weekStartDate);
   // Tuesday pays the PREVIOUS Mon–Sun — the wage forecast must use that week.
   const payWeek = payWeekOf(weekStart);
-  const fourWeeksAgo = toISODate(addDays(new Date(), -28));
+  // Whole ISO weeks, never "the last 28 days". The variance alerts compare this
+  // week's SCHEDULE against prior weeks, so both bounds must be week edges: an
+  // upper bound of today drops the rota's Thu–Sun and reports a drop nobody
+  // scheduled, and a lower bound of today−28 lands mid-week, leaving the oldest
+  // baseline week partial and dragging the average down.
+  const historyStart = toISODate(addDays(weekStartDate, -28));
+  const weekEnd = toISODate(addDays(weekStartDate, 6));
 
   const [
     shiftsRes,
@@ -255,19 +275,19 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
       supabase
         .from("rota_shifts")
         .select("*")
-        .gte("shift_date", fourWeeksAgo)
-        .lte("shift_date", today)
+        .gte("shift_date", historyStart)
+        .lte("shift_date", weekEnd)
         .order("shift_date"),
       supabase
         .from("clock_events")
         .select("*")
-        .gte("event_date", fourWeeksAgo)
-        .lte("event_date", today),
+        .gte("event_date", historyStart)
+        .lte("event_date", weekEnd),
       supabase.from("employees").select("*"),
       supabase
         .from("weekly_deliveries")
         .select("*")
-        .gte("week_start_date", fourWeeksAgo),
+        .gte("week_start_date", historyStart),
       supabase.from("employee_schedules").select("*"),
       supabase.from("app_settings").select("key, value"),
       supabase.from("stores").select("id, name"),
@@ -307,6 +327,13 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
 
   const newAlerts: NewAlert[] = [];
 
+  // Ids raised this scan, for the stale sweep below.
+  const touchedIds = new Set<string>();
+  const raise = async (input: Parameters<typeof upsertAlert>[1]) => {
+    const id = await upsertAlert(supabase, input, newAlerts);
+    if (id) touchedIds.add(id);
+  };
+
   // -------- wage_variance: this-week vs 4-week avg hours per employee --------
   const hoursByEmpWeek = new Map<string, Map<string, number>>();
   for (const s of shifts) {
@@ -319,29 +346,28 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
 
   for (const [empId, weeks] of Array.from(hoursByEmpWeek.entries())) {
     const emp = employeeById.get(empId);
-    if (!emp) continue;
+    if (!emp || emp.employment_status !== "active") continue;
     const thisWeek = weeks.get(weekStart) ?? 0;
+    // Sorted, not insertion-ordered: clock_events comes back unordered, so
+    // "the last four entries" was four arbitrary weeks.
     const priorWeeks = Array.from(weeks.entries())
-      .filter(([wk]) => wk !== weekStart)
+      .filter(([wk]) => wk < weekStart)
+      .sort(([a], [b]) => a.localeCompare(b))
       .slice(-4)
       .map(([, h]) => h);
     if (priorWeeks.length < 2) continue;
     const avg = priorWeeks.reduce((a, b) => a + b, 0) / priorWeeks.length;
     const delta = percentDelta(thisWeek, avg);
     if (Math.abs(delta) > t.wage_variance_pct) {
-      await upsertAlert(
-        supabase,
-        {
-          alert_type: "wage_variance",
-          severity: "warning",
-          store_id: emp.store_id,
-          employee_id: emp.id,
-          title: `${emp.name}: hours vary ${delta > 0 ? "+" : ""}${delta.toFixed(0)}%`,
-          message: `Scheduled ${formatHoursMinsWords(thisWeek)} this week vs ${formatHoursMinsWords(avg)} 4-week average (>${t.wage_variance_pct}% deviation).`,
-          payload: { this_week: thisWeek, avg_4wk: avg, delta_percent: delta },
-        },
-        newAlerts,
-      );
+      await raise({
+        alert_type: "wage_variance",
+        severity: "warning",
+        store_id: emp.store_id,
+        employee_id: emp.id,
+        title: `${emp.name}: hours vary ${delta > 0 ? "+" : ""}${delta.toFixed(0)}%`,
+        message: `Scheduled ${formatHoursMinsWords(thisWeek)} this week vs ${formatHoursMinsWords(avg)} 4-week average (>${t.wage_variance_pct}% deviation).`,
+        payload: { this_week: thisWeek, avg_4wk: avg, delta_percent: delta },
+      });
     }
   }
 
@@ -351,24 +377,20 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
       if (emp.employment_status !== "active") continue;
       const wc = wageComplianceForEmployee(emp, settings.min_wage_bands);
       if (wc && !wc.compliant) {
-        await upsertAlert(
-          supabase,
-          {
-            alert_type: "min_wage_violation",
-            severity: "critical",
-            store_id: emp.store_id,
-            employee_id: emp.id,
-            title: `${emp.name}: pay below minimum wage`,
-            message: `On £${wc.rate.toFixed(2)}/h, but the legal minimum for age ${wc.age} is £${wc.required.toFixed(2)}/h (${settings.min_wage_bands.effective_label}). Short by £${wc.shortfall.toFixed(2)}/h.`,
-            payload: {
-              age: wc.age,
-              rate: wc.rate,
-              required: wc.required,
-              shortfall: wc.shortfall,
-            },
+        await raise({
+          alert_type: "min_wage_violation",
+          severity: "critical",
+          store_id: emp.store_id,
+          employee_id: emp.id,
+          title: `${emp.name}: pay below minimum wage`,
+          message: `On £${wc.rate.toFixed(2)}/h, but the legal minimum for age ${wc.age} is £${wc.required.toFixed(2)}/h (${settings.min_wage_bands.effective_label}). Short by £${wc.shortfall.toFixed(2)}/h.`,
+          payload: {
+            age: wc.age,
+            rate: wc.rate,
+            required: wc.required,
+            shortfall: wc.shortfall,
           },
-          newAlerts,
-        );
+        });
       }
     }
   }
@@ -380,19 +402,15 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
       const vita = Number(wd.vita_mojo_count);
       if (live - vita > 0 && !wd.reason) {
         const driver = employeeById.get(wd.driver_id);
-        await upsertAlert(
-          supabase,
-          {
-            alert_type: "delivery_unassigned",
-            severity: "warning",
-            store_id: wd.store_id,
-            employee_id: wd.driver_id,
-            title: `${driver?.name ?? "Driver"}: ${live - vita} unassigned deliveries`,
-            message: `Live driver count (${live}) exceeds Vita Mojo total (${vita}). Reason required.`,
-            payload: { live, vita, week: wd.week_start_date },
-          },
-          newAlerts,
-        );
+        await raise({
+          alert_type: "delivery_unassigned",
+          severity: "warning",
+          store_id: wd.store_id,
+          employee_id: wd.driver_id,
+          title: `${driver?.name ?? "Driver"}: ${live - vita} unassigned deliveries`,
+          message: `Live driver count (${live}) exceeds Vita Mojo total (${vita}). Reason required.`,
+          payload: { live, vita, week: wd.week_start_date },
+        });
       }
     }
   }
@@ -412,26 +430,58 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
     if (!driver || !hasRole(driver.position, "Driver")) continue;
     const thisWeek = weeks.get(weekStart) ?? 0;
     const priorWeeks = Array.from(weeks.entries())
-      .filter(([wk]) => wk !== weekStart)
+      .filter(([wk]) => wk < weekStart)
+      .sort(([a], [b]) => a.localeCompare(b))
       .slice(-4)
       .map(([, c]) => c);
     if (priorWeeks.length < 2) continue;
     const avg = priorWeeks.reduce((a, b) => a + b, 0) / priorWeeks.length;
     if (thisWeek > 0 && thisWeek > avg * t.delivery_spike_multiplier) {
-      await upsertAlert(
-        supabase,
-        {
-          alert_type: "delivery_payout_high",
-          severity: "warning",
-          store_id: driver.store_id,
-          employee_id: driver.id,
-          title: `${driver.name}: high delivery count this week`,
-          message: `${thisWeek} deliveries this week vs ${avg.toFixed(0)} 4-week average.`,
-          payload: { this_week: thisWeek, avg_4wk: avg },
-        },
-        newAlerts,
-      );
+      await raise({
+        alert_type: "delivery_payout_high",
+        severity: "warning",
+        store_id: driver.store_id,
+        employee_id: driver.id,
+        title: `${driver.name}: high delivery count this week`,
+        message: `${thisWeek} deliveries this week vs ${avg.toFixed(0)} 4-week average.`,
+        payload: { this_week: thisWeek, avg_4wk: avg },
+      });
     }
+  }
+
+  // -------- retire alerts whose condition has cleared --------
+  // These types are recomputed in full on every scan, unconditionally, so an
+  // open one the scan did not just re-raise no longer holds. Without this a
+  // corrected figure never reaches the board: the alert simply stops being
+  // raised and its stale message sits there indefinitely.
+  // The today-scoped and cash-flow types are deliberately excluded -- they are
+  // only evaluated on certain days or after certain hours, so "not re-raised"
+  // there means "not checked", not "cleared".
+  const recomputedTypes: AlertType[] = [
+    "wage_variance",
+    "delivery_unassigned",
+    "delivery_payout_high",
+  ];
+  // Only sweepable while the check runs; with the bands off it is never raised.
+  if (settings.min_wage_bands.enabled) recomputedTypes.push("min_wage_violation");
+
+  const { data: openRecomputed } = await supabase
+    .from("alerts")
+    .select("id")
+    .eq("resolved", false)
+    .in("alert_type", recomputedTypes);
+  const staleIds = (openRecomputed ?? [])
+    .map((r: { id: string }) => r.id)
+    .filter((id: string) => !touchedIds.has(id));
+  if (staleIds.length) {
+    await supabase
+      .from("alerts")
+      .update({
+        resolved: true,
+        resolved_at: new Date().toISOString(),
+        resolution_note: "Auto-resolved: no longer applies as of the latest scan.",
+      })
+      .in("id", staleIds);
   }
 
   // -------- today: late / absence / early-out / variance --------
@@ -493,14 +543,15 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
     clocks.filter((c) => c.event_date === today).map((c) => [c.employee_id, c]),
   );
   const now = new Date();
+  // Shift times are plain UK time-of-day and the server runs UTC, so lateness
+  // is measured in London wall-clock minutes -- `setHours` on a UTC server made
+  // everyone an hour late (or early) throughout BST.
+  const nowMinutes = timeToMinutes(londonHHMM(now));
   for (const s of effectiveToday) {
     if (!s.start_time) continue;
     const emp = employeeById.get(s.employee_id);
     if (!emp) continue;
-    const [hh, mm] = s.start_time.split(":").map(Number);
-    const scheduledStart = new Date();
-    scheduledStart.setHours(hh, mm, 0, 0);
-    const diffMin = (now.getTime() - scheduledStart.getTime()) / 60000;
+    const diffMin = nowMinutes - timeToMinutes(s.start_time);
     const clk = todayClocks.get(s.employee_id);
 
     if (!clk?.clock_in_at) {
@@ -535,12 +586,16 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
           newAlerts,
         );
       }
-    } else if (clk.clock_out_at && s.end_time) {
-      const [eh, em] = s.end_time.split(":").map(Number);
-      const scheduledEnd = new Date(s.shift_date);
-      scheduledEnd.setHours(eh, em, 0, 0);
-      const actualEnd = new Date(clk.clock_out_at);
-      const earlyMin = (scheduledEnd.getTime() - actualEnd.getTime()) / 60000;
+    } else if (clk.clock_out_at && s.end_time && s.start_time) {
+      // Both sides in London minutes-from-shift-start, so an overnight shift
+      // unrolls past midnight the way shiftHours does -- 22:00–02:00 clocked out
+      // at 02:00 is on time, not 20 hours early.
+      const startMin = timeToMinutes(s.start_time);
+      const endMin = timeToMinutes(s.end_time);
+      const scheduledEndMin = endMin < startMin ? endMin + 1440 : endMin;
+      let actualEndMin = timeToMinutes(londonHHMM(new Date(clk.clock_out_at)));
+      if (actualEndMin < startMin) actualEndMin += 1440;
+      const earlyMin = scheduledEndMin - actualEndMin;
       if (earlyMin > t.early_clock_out_min && !s.same_day_edit_reason) {
         await upsertAlert(
           supabase,
@@ -625,7 +680,9 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
 
   const payoutByStore = new Map(weekPayouts.map((p) => [p.store_id, p]));
   const todayWd = weekdayIndex(now); // 0=Mon .. 5=Sat .. 6=Sun
-  const nowHour = now.getHours();
+  // London hour: the "have the books been done by 6pm" thresholds are UK
+  // wall-clock times, and the server's own hour is UTC.
+  const nowHour = Number(londonHHMM(now).slice(0, 2));
 
   // The pay week's clock rows across ALL stores. The wage forecast per store
   // needs the whole week (not just the store's own rows) so an employee whose
