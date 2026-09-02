@@ -44,6 +44,15 @@ export const EMPTY_PAYOUT_FILTERS: PayoutHistoryFilters = {
  */
 export const PAYOUT_HISTORY_MAX_ROWS = 500;
 
+/**
+ * Payout History is a record of money actually PAID, so it lists confirmed
+ * payouts only. A draft is a working sheet that can still be regenerated or
+ * deleted on the Tuesday Payout page; showing one here read as a payment that
+ * had already happened. Every query into this screen filters on it — the
+ * constant exists so the two pages and the list action cannot drift apart.
+ */
+export const PAYOUT_HISTORY_STATUS = "confirmed";
+
 /** What an expanded card gets: the lines plus the week's VM delivery orders. */
 export type PayoutLinesResult = {
   lines: CashPayoutLine[];

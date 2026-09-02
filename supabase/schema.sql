@@ -537,16 +537,31 @@ create table if not exists public.alerts (
   resolved_at         timestamptz,
   resolved_by         uuid references auth.users(id) on delete set null,
   resolution_note     text,
-  created_at          timestamptz not null default now()
+  created_at          timestamptz not null default now(),
+  -- Open alerts are updated in PLACE by upsertAlert, so created_at is when the
+  -- condition was first noticed, not when the figures beside it were last true.
+  updated_at          timestamptz not null default now()
 );
+
+drop trigger if exists set_alerts_updated_at on public.alerts;
+create trigger set_alerts_updated_at
+  before update on public.alerts
+  for each row execute function public.set_updated_at();
 
 create index if not exists alerts_resolved_idx on public.alerts (resolved, created_at desc);
 create index if not exists alerts_store_idx on public.alerts (store_id);
 create index if not exists alerts_type_idx on public.alerts (alert_type);
 
--- Dedup of open alerts is handled in app code (app/actions/alerts.ts -> upsertAlert).
--- We can't use a partial unique index keyed on created_at::date because timestamptz->date
--- is STABLE (timezone-dependent), not IMMUTABLE, which Postgres requires for index expressions.
+-- Dedup of open alerts is enforced BOTH in app code (app/actions/alerts.ts ->
+-- upsertAlert) and by the partial unique index added in migration 054. The app
+-- read-then-insert is the fast path; the index is what makes two concurrent
+-- scans -- and the scan runs on every clock event -- unable to both win.
+-- The key is (alert_type, store_id, employee_id, shift_id, subject_date), with
+-- subject_date added by migration 053 so one store's cash and delivery alerts
+-- stop collapsing every date onto a single row.
+-- It is still NOT keyed on created_at::date: timestamptz->date is STABLE
+-- (timezone-dependent), not IMMUTABLE, which Postgres requires of an index
+-- expression. subject_date is a plain date column precisely to sidestep that.
 
 -- =============================================================
 -- TABLE: audit_log

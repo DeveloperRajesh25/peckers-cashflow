@@ -6,6 +6,7 @@ import { PayoutHistoryView } from "@/components/cash-flow/PayoutHistoryView";
 import {
   PAYOUT_HISTORY_MAX_ROWS,
   PAYOUT_HISTORY_SELECT,
+  PAYOUT_HISTORY_STATUS,
   mapPayoutHeaders,
 } from "@/lib/payout-history-paging";
 import type { Store } from "@/lib/types";
@@ -34,6 +35,7 @@ export default async function ManagerCashFlowHistoryPage() {
     supabase
       .from("cash_payouts")
       .select(PAYOUT_HISTORY_SELECT)
+      .eq("status", PAYOUT_HISTORY_STATUS)
       .eq("store_id", storeId)
       .order("week_start_date", { ascending: false })
       .order("store_id")
@@ -47,7 +49,7 @@ export default async function ManagerCashFlowHistoryPage() {
     <>
       <PageHeader
         title="Weekly Payout Summaries"
-        description="Permanent record of cash wages paid each week. Searchable and exportable."
+        description="Permanent record of confirmed cash wage payments. Searchable and exportable."
       />
       <PayoutHistoryView
         initialPayouts={payouts}

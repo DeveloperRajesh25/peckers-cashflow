@@ -8,11 +8,13 @@ import { writeAudit } from "./audit";
 import {
   addDays,
   dayWorkedHours,
+  formatDDMMYYYY,
   formatHoursMinsWords,
   startOfISOWeek,
   toISODate,
-  todayISO,
+  parseISODate,
   londonHHMM,
+  londonISODate,
   timeToMinutes,
   shiftHours,
   percentDelta,
@@ -21,10 +23,15 @@ import {
 import { autoCloseOpenClocks } from "@/lib/auto-clock-out";
 import { mergeSettings, type AppSettings } from "@/lib/settings";
 import {
+  buildCoverDriverWageLines,
+  buildManagerWageLines,
   buildPrePaymentSummary,
   buildWageLinesForStore,
   payWeekOf,
   supermarketCashAmount,
+  type CoverDriverPayRow,
+  type ManagerPayee,
+  type ManagerPayRow,
 } from "@/lib/cash-flow";
 import { wageComplianceForEmployee } from "@/lib/compliance";
 import { isCredentialEmail } from "@/lib/credentials";
@@ -59,44 +66,61 @@ async function upsertAlert(
     store_id?: string | null;
     employee_id?: string | null;
     shift_id?: string | null;
+    /** The day (or week) the alert is ABOUT, where that is what makes it
+     *  distinct. created_at is when it was noticed, which is not the same. */
+    subject_date?: string | null;
     title: string;
     message: string;
     payload?: Record<string, unknown> | null;
   },
   collector?: NewAlert[],
-) {
+): Promise<{ id: string | null; failed: boolean }> {
+  const findOpen = async () => {
+    let q = supabase
+      .from("alerts")
+      .select("id")
+      .eq("alert_type", input.alert_type)
+      .eq("resolved", false);
+    for (const [col, val] of [
+      ["store_id", input.store_id],
+      ["employee_id", input.employee_id],
+      ["shift_id", input.shift_id],
+      ["subject_date", input.subject_date],
+    ] as const) {
+      q = val ? q.eq(col, val) : q.is(col, null);
+    }
+    // limit(1), not maybeSingle: a broken key left duplicates behind before
+    // migration 054, and erroring on them would keep the scan from settling.
+    const { data } = await q.order("created_at", { ascending: false }).limit(1);
+    return data?.[0]?.id ?? null;
+  };
+
+  const applyTo = async (id: string) => {
+    // severity too: an alert that escalates from warning to critical kept the
+    // old badge, because only the text was ever refreshed.
+    await supabase
+      .from("alerts")
+      .update({
+        severity: input.severity ?? "warning",
+        message: input.message,
+        payload: input.payload ?? null,
+        title: input.title,
+      })
+      .eq("id", id);
+  };
+
   // Don't create a duplicate open alert. Each key column is matched with `is`
   // when it's null: a sentinel UUID compared with `eq` never matches a NULL
   // column, so every store-level alert and every alert without a shift row was
   // re-inserted on each scan instead of being updated in place.
   // store_id is part of the key -- two stores raise the same store-level alert.
-  let dupQuery = supabase
-    .from("alerts")
-    .select("id")
-    .eq("alert_type", input.alert_type)
-    .eq("resolved", false);
-  for (const [col, val] of [
-    ["store_id", input.store_id],
-    ["employee_id", input.employee_id],
-    ["shift_id", input.shift_id],
-  ] as const) {
-    dupQuery = val ? dupQuery.eq(col, val) : dupQuery.is(col, null);
-  }
-  // limit(1), not maybeSingle: the broken key already left duplicates behind,
-  // and erroring on them would keep the scan from ever settling.
-  const { data: dupRows } = await dupQuery.order("created_at", { ascending: false }).limit(1);
-  const existing = dupRows?.[0];
-
-  if (existing) {
-    await supabase
-      .from("alerts")
-      .update({
-        message: input.message,
-        payload: input.payload ?? null,
-        title: input.title,
-      })
-      .eq("id", existing.id);
-    return existing.id;
+  // So is subject_date (migration 053): the cash and delivery alerts carry
+  // neither an employee nor a shift, so without it every date of the week
+  // collapsed onto one row per store and each new day overwrote the last.
+  const existingId = await findOpen();
+  if (existingId) {
+    await applyTo(existingId);
+    return { id: existingId, failed: false };
   }
 
   const { data, error } = await supabase
@@ -107,6 +131,7 @@ async function upsertAlert(
       store_id: input.store_id ?? null,
       employee_id: input.employee_id ?? null,
       shift_id: input.shift_id ?? null,
+      subject_date: input.subject_date ?? null,
       title: input.title,
       message: input.message,
       payload: input.payload ?? null,
@@ -114,12 +139,26 @@ async function upsertAlert(
     .select("id")
     .maybeSingle();
 
-  // Dedup is app-side (no unique index -- see supabase/schema.sql), but a
-  // concurrent scan can still race us to the insert.
-  if (error && !String(error.message).toLowerCase().includes("duplicate")) {
+  if (error) {
+    // Migration 054's partial unique index makes the race lose here rather than
+    // duplicating. The other scan's row IS the alert, so adopt it and apply
+    // this scan's figures -- dropping the write would leave the board showing
+    // whichever of two near-simultaneous reads happened to land first.
+    if (String(error.message).toLowerCase().includes("duplicate")) {
+      const winnerId = await findOpen();
+      if (winnerId) {
+        await applyTo(winnerId);
+        return { id: winnerId, failed: false };
+      }
+    }
+    // Anything else is a write that silently did not happen. An alert nobody
+    // can see is indistinguishable from a condition that never occurred, so
+    // the count is carried back to the caller rather than swallowed here.
     console.error("[alerts] insert error", error.message);
+    return { id: null, failed: true };
   }
-  if (!error && data?.id && collector) {
+
+  if (data?.id && collector) {
     collector.push({
       alert_type: input.alert_type,
       severity: input.severity ?? "warning",
@@ -127,7 +166,7 @@ async function upsertAlert(
       message: input.message,
     });
   }
-  return data?.id ?? null;
+  return { id: data?.id ?? null, failed: false };
 }
 
 /**
@@ -246,9 +285,22 @@ async function resolveRecipients(
 // Reads thresholds + min-wage bands from app_settings and emails a digest of
 // any newly-created alerts when email is enabled.
 // =============================================================
-async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: number }> {
-  const today = todayISO();
-  const weekStartDate = startOfISOWeek(new Date());
+async function runScan(
+  supabase: SupabaseClient,
+): Promise<{ ok: true; created: number; failed: number }> {
+  // ONE London "now" for the whole scan. Every date the scan reasons about is a
+  // UK business date -- which day's rota, which ISO week, whether it is Tuesday
+  // yet -- and the server runs UTC. Update 157 moved the clock-time reads to
+  // London but left the date reads on the server, so between 23:00 and midnight
+  // UTC during BST the scan compared tomorrow's wall clock against yesterday's
+  // roster. Derive both from the same instant, in London, or neither.
+  const now = new Date();
+  const today = londonISODate(now);
+  const nowMinutes = timeToMinutes(londonHHMM(now));
+  const nowHour = Number(londonHHMM(now).slice(0, 2));
+  // 0=Mon .. 5=Sat .. 6=Sun, off the London date rather than the server's.
+  const todayWeekday = weekdayIndex(parseISODate(today));
+  const weekStartDate = startOfISOWeek(parseISODate(today));
   const weekStart = toISODate(weekStartDate);
   // Tuesday pays the PREVIOUS Mon–Sun — the wage forecast must use that week.
   const payWeek = payWeekOf(weekStart);
@@ -271,6 +323,9 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
     cashEntriesRes,
     payoutsRes,
     priorPayoutsRes,
+    coverRes,
+    managersRes,
+    managerClocksRes,
   ] = await Promise.all([
       supabase
         .from("rota_shifts")
@@ -291,10 +346,14 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
       supabase.from("employee_schedules").select("*"),
       supabase.from("app_settings").select("key, value"),
       supabase.from("stores").select("id, name"),
+      // Spans BOTH cash windows: the current week feeds the reconciliation
+      // alerts, the pay week funds the Tuesday forecast. Bounded at both ends
+      // so a mistyped future date can't inflate either.
       supabase
         .from("daily_cash_entries")
         .select("store_id, entry_date, vita_mojo_sales, envelope_amount, difference, reason")
-        .gte("entry_date", weekStart),
+        .gte("entry_date", payWeek.start)
+        .lte("entry_date", weekEnd),
       supabase
         .from("cash_payouts")
         .select(
@@ -307,6 +366,30 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
         .eq("status", "confirmed")
         .lt("week_start_date", weekStart)
         .order("week_start_date", { ascending: false }),
+      // The rest of the payout sheet's wage lines. Fetched estate-wide and
+      // filtered per store by the builders, the same way payWeekClocks is --
+      // one read for two stores rather than a query pair inside the loop.
+      supabase
+        .from("cover_driver_hours_computed")
+        .select(
+          "cover_driver_id, driver_name, store_id, work_date, total_hours_worked, hourly_rate_snapshot, short_deliveries, long_deliveries, extra_short_deliveries, extra_long_deliveries, short_rate_snapshot, long_rate_snapshot, approved",
+        )
+        .eq("approved", true)
+        .gte("work_date", payWeek.start)
+        .lte("work_date", payWeek.end),
+      supabase
+        .from("allowed_users")
+        .select(
+          "id, name, short_delivery_rate, long_delivery_rate, extra_short_delivery_rate, extra_long_delivery_rate",
+        )
+        .eq("role", "manager"),
+      supabase
+        .from("manager_clock_events")
+        .select(
+          "manager_id, store_id, event_date, approved_short_deliveries_count, approved_long_deliveries_count, approved_extra_short_deliveries, approved_extra_long_deliveries",
+        )
+        .gte("event_date", payWeek.start)
+        .lte("event_date", payWeek.end),
     ]);
 
   const shifts = shiftsRes.data ?? [];
@@ -327,11 +410,15 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
 
   const newAlerts: NewAlert[] = [];
 
-  // Ids raised this scan, for the stale sweep below.
+  // Ids raised this scan, for the sweeps at the end.
   const touchedIds = new Set<string>();
+  // Writes that failed outright. Reported back so a scan that could not record
+  // what it found never reads as a scan that found nothing.
+  let writeFailures = 0;
   const raise = async (input: Parameters<typeof upsertAlert>[1]) => {
-    const id = await upsertAlert(supabase, input, newAlerts);
+    const { id, failed } = await upsertAlert(supabase, input, newAlerts);
     if (id) touchedIds.add(id);
+    if (failed) writeFailures += 1;
   };
 
   // -------- wage_variance: this-week vs 4-week avg hours per employee --------
@@ -344,9 +431,21 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
     hoursByEmpWeek.set(s.employee_id, map);
   }
 
+  // A week nobody has published yet is not a 100% cut to anyone's hours. Until
+  // a store's rota exists there is no this-week figure to compare, and treating
+  // the absence as zero alerted that store's ENTIRE roster every Monday morning
+  // and emailed the lot. Once the rota is up, an employee genuinely left off it
+  // still reads as -100% and still alerts, which is the case worth seeing.
+  const storesWithRotaThisWeek = new Set(
+    shifts
+      .filter((s) => s.shift_date >= weekStart && !s.is_day_off)
+      .map((s) => s.store_id),
+  );
+
   for (const [empId, weeks] of Array.from(hoursByEmpWeek.entries())) {
     const emp = employeeById.get(empId);
     if (!emp || emp.employment_status !== "active") continue;
+    if (!storesWithRotaThisWeek.has(emp.store_id)) continue;
     const thisWeek = weeks.get(weekStart) ?? 0;
     // Sorted, not insertion-ordered: clock_events comes back unordered, so
     // "the last four entries" was four arbitrary weeks.
@@ -407,6 +506,7 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
           severity: "warning",
           store_id: wd.store_id,
           employee_id: wd.driver_id,
+          subject_date: wd.week_start_date,
           title: `${driver?.name ?? "Driver"}: ${live - vita} unassigned deliveries`,
           message: `Live driver count (${live}) exceeds Vita Mojo total (${vita}). Reason required.`,
           payload: { live, vita, week: wd.week_start_date },
@@ -449,39 +549,43 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
     }
   }
 
-  // -------- retire alerts whose condition has cleared --------
-  // These types are recomputed in full on every scan, unconditionally, so an
-  // open one the scan did not just re-raise no longer holds. Without this a
-  // corrected figure never reaches the board: the alert simply stops being
-  // raised and its stale message sits there indefinitely.
-  // The today-scoped and cash-flow types are deliberately excluded -- they are
-  // only evaluated on certain days or after certain hours, so "not re-raised"
-  // there means "not checked", not "cleared".
-  const recomputedTypes: AlertType[] = [
-    "wage_variance",
-    "delivery_unassigned",
-    "delivery_payout_high",
+  // -------- retire day-scoped alerts once their day has passed --------
+  // These four are raised ONLY from the effectiveToday loop, so each one
+  // describes one particular day and is keyed on that day's rota row. A new
+  // shift_id every morning means the dedup can never match yesterday's, and
+  // nothing else closed them -- so every working day left roughly two more
+  // open rows per employee on the board, permanently, which is what pinned the
+  // badge at its 200 cap.
+  // Swept by DATE, not by whether this scan re-raised them: within the day
+  // "not re-raised" still means "the lateness happened and was fixed", and
+  // that alert must stand until the day is over.
+  const dayScopedTypes: AlertType[] = [
+    "late_clock_in",
+    "unexpected_absence",
+    "early_clock_out",
+    "scheduled_vs_actual",
   ];
-  // Only sweepable while the check runs; with the bands off it is never raised.
-  if (settings.min_wage_bands.enabled) recomputedTypes.push("min_wage_violation");
-
-  const { data: openRecomputed } = await supabase
+  // Start of today in London, less an hour: London is UTC+0 or +1, so this is
+  // at or before its true midnight and can never sweep an alert raised today.
+  // Erring the other way would delete a live alert an hour after it was made.
+  const londonDayStart = new Date(`${today}T00:00:00Z`);
+  const dayCutoff = new Date(londonDayStart.getTime() - 3600_000).toISOString();
+  const { data: openDayScoped } = await supabase
     .from("alerts")
     .select("id")
     .eq("resolved", false)
-    .in("alert_type", recomputedTypes);
-  const staleIds = (openRecomputed ?? [])
-    .map((r: { id: string }) => r.id)
-    .filter((id: string) => !touchedIds.has(id));
-  if (staleIds.length) {
+    .in("alert_type", dayScopedTypes)
+    .lt("created_at", dayCutoff);
+  const agedIds = (openDayScoped ?? []).map((r: { id: string }) => r.id);
+  if (agedIds.length) {
     await supabase
       .from("alerts")
       .update({
         resolved: true,
         resolved_at: new Date().toISOString(),
-        resolution_note: "Auto-resolved: no longer applies as of the latest scan.",
+        resolution_note: "Auto-resolved: the shift day this alert covers has passed.",
       })
-      .in("id", staleIds);
+      .in("id", agedIds);
   }
 
   // -------- today: late / absence / early-out / variance --------
@@ -491,7 +595,6 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
   // detection work even when the manager hasn't published a rota.
   const realToday = shifts.filter((s) => s.shift_date === today);
   const realTodayById = new Set(realToday.map((s) => s.employee_id));
-  const todayWeekday = weekdayIndex(new Date());
 
   type EffShift = {
     id: string | null;
@@ -542,11 +645,6 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
   const todayClocks = new Map(
     clocks.filter((c) => c.event_date === today).map((c) => [c.employee_id, c]),
   );
-  const now = new Date();
-  // Shift times are plain UK time-of-day and the server runs UTC, so lateness
-  // is measured in London wall-clock minutes -- `setHours` on a UTC server made
-  // everyone an hour late (or early) throughout BST.
-  const nowMinutes = timeToMinutes(londonHHMM(now));
   for (const s of effectiveToday) {
     if (!s.start_time) continue;
     const emp = employeeById.get(s.employee_id);
@@ -556,35 +654,27 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
 
     if (!clk?.clock_in_at) {
       if (diffMin > t.absence_min && !s.same_day_edit_reason) {
-        await upsertAlert(
-          supabase,
-          {
-            alert_type: "unexpected_absence",
-            severity: "critical",
-            store_id: s.store_id,
-            employee_id: emp.id,
-            shift_id: s.id,
-            title: `${emp.name}: unexpected absence`,
-            message: `Scheduled at ${s.start_time} but not clocked in (${Math.round(diffMin)}m late). No reason recorded.`,
-            payload: { scheduled_start: s.start_time, late_minutes: diffMin },
-          },
-          newAlerts,
-        );
+        await raise({
+          alert_type: "unexpected_absence",
+          severity: "critical",
+          store_id: s.store_id,
+          employee_id: emp.id,
+          shift_id: s.id,
+          title: `${emp.name}: unexpected absence`,
+          message: `Scheduled at ${s.start_time} but not clocked in (${Math.round(diffMin)}m late). No reason recorded.`,
+          payload: { scheduled_start: s.start_time, late_minutes: diffMin },
+        });
       } else if (diffMin > t.late_clock_in_min) {
-        await upsertAlert(
-          supabase,
-          {
-            alert_type: "late_clock_in",
-            severity: "warning",
-            store_id: s.store_id,
-            employee_id: emp.id,
-            shift_id: s.id,
-            title: `${emp.name}: late clock-in`,
-            message: `Scheduled at ${s.start_time} — ${Math.round(diffMin)}m late.`,
-            payload: { scheduled_start: s.start_time, late_minutes: diffMin },
-          },
-          newAlerts,
-        );
+        await raise({
+          alert_type: "late_clock_in",
+          severity: "warning",
+          store_id: s.store_id,
+          employee_id: emp.id,
+          shift_id: s.id,
+          title: `${emp.name}: late clock-in`,
+          message: `Scheduled at ${s.start_time} — ${Math.round(diffMin)}m late.`,
+          payload: { scheduled_start: s.start_time, late_minutes: diffMin },
+        });
       }
     } else if (clk.clock_out_at && s.end_time && s.start_time) {
       // Both sides in London minutes-from-shift-start, so an overnight shift
@@ -597,20 +687,16 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
       if (actualEndMin < startMin) actualEndMin += 1440;
       const earlyMin = scheduledEndMin - actualEndMin;
       if (earlyMin > t.early_clock_out_min && !s.same_day_edit_reason) {
-        await upsertAlert(
-          supabase,
-          {
-            alert_type: "early_clock_out",
-            severity: "warning",
-            store_id: s.store_id,
-            employee_id: emp.id,
-            shift_id: s.id,
-            title: `${emp.name}: early clock-out`,
-            message: `Clocked out ${Math.round(earlyMin)}m before scheduled end (${s.end_time}). No reason entered.`,
-            payload: { scheduled_end: s.end_time, early_minutes: earlyMin },
-          },
-          newAlerts,
-        );
+        await raise({
+          alert_type: "early_clock_out",
+          severity: "warning",
+          store_id: s.store_id,
+          employee_id: emp.id,
+          shift_id: s.id,
+          title: `${emp.name}: early clock-out`,
+          message: `Clocked out ${Math.round(earlyMin)}m before scheduled end (${s.end_time}). No reason entered.`,
+          payload: { scheduled_end: s.end_time, early_minutes: earlyMin },
+        });
       }
     }
 
@@ -623,20 +709,16 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
       if (scheduled > 0) {
         const delta = percentDelta(actualHours, scheduled);
         if (Math.abs(delta) > t.scheduled_vs_actual_pct) {
-          await upsertAlert(
-            supabase,
-            {
-              alert_type: "scheduled_vs_actual",
-              severity: "info",
-              store_id: s.store_id,
-              employee_id: emp.id,
-              shift_id: s.id,
-              title: `${emp.name}: scheduled vs actual variance`,
-              message: `Worked ${formatHoursMinsWords(actualHours)} vs ${formatHoursMinsWords(scheduled)} scheduled (${delta > 0 ? "+" : ""}${delta.toFixed(0)}%).`,
-              payload: { actual: actualHours, scheduled, delta_percent: delta },
-            },
-            newAlerts,
-          );
+          await raise({
+            alert_type: "scheduled_vs_actual",
+            severity: "info",
+            store_id: s.store_id,
+            employee_id: emp.id,
+            shift_id: s.id,
+            title: `${emp.name}: scheduled vs actual variance`,
+            message: `Worked ${formatHoursMinsWords(actualHours)} vs ${formatHoursMinsWords(scheduled)} scheduled (${delta > 0 ? "+" : ""}${delta.toFixed(0)}%).`,
+            payload: { actual: actualHours, scheduled, delta_percent: delta },
+          });
         }
       }
     }
@@ -662,6 +744,9 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
     adjustment_amount: number | null;
     adjustment_reason: string | null;
   }>;
+  const coverRows = (coverRes.data ?? []) as CoverDriverPayRow[];
+  const managerPayees = (managersRes.data ?? []) as ManagerPayee[];
+  const managerPayRows = (managerClocksRes.data ?? []) as ManagerPayRow[];
   const priorPayouts = (priorPayoutsRes.data ?? []) as Array<{
     store_id: string;
     surplus_carry_forward: number;
@@ -679,10 +764,6 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
   }
 
   const payoutByStore = new Map(weekPayouts.map((p) => [p.store_id, p]));
-  const todayWd = weekdayIndex(now); // 0=Mon .. 5=Sat .. 6=Sun
-  // London hour: the "have the books been done by 6pm" thresholds are UK
-  // wall-clock times, and the server's own hour is UTC.
-  const nowHour = Number(londonHHMM(now).slice(0, 2));
 
   // The pay week's clock rows across ALL stores. The wage forecast per store
   // needs the whole week (not just the store's own rows) so an employee whose
@@ -692,63 +773,84 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
     (c) => c.event_date >= payWeek.start && c.event_date <= payWeek.end,
   );
 
+  // Which stores' pay-week cash this client could actually READ. `alerts` is
+  // is_staff() but daily_cash_entries is can_access_store, so on a MANAGER's
+  // manual "Scan now" the other store comes back empty -- indistinguishable
+  // from a week that banked nothing, which forecasts a draw of the entire wage
+  // bill and would overwrite the correct figure. Guarding the raise (not just
+  // the sweep) is what closes the follow-up left open by Update 160; it matters
+  // more now that the forecast runs on every scan rather than twice a week. The
+  // background scan runs service-role and sees every store.
+  const cashReadableStores = new Set(
+    cashEntries.filter((e) => e.entry_date <= payWeek.end).map((e) => e.store_id),
+  );
+  const payday = formatDDMMYYYY(addDays(parseISODate(weekStart), 1));
+  const payWeekLabel = `${formatDDMMYYYY(payWeek.start)} - ${formatDDMMYYYY(payWeek.end)}`;
+
   for (const store of stores) {
-    const storeEntries = cashEntries.filter((e) => e.store_id === store.id);
+    const forStore = cashEntries.filter((e) => e.store_id === store.id);
+    // The reconciliation alerts are about the week in progress...
+    const storeEntries = forStore.filter((e) => e.entry_date >= weekStart);
+    // ...the Tuesday forecast is funded by the pay week's envelopes, the same
+    // window computeSummary bounds its query with. Reading the current week
+    // here reported a draw against a Monday that has collected almost nothing.
+    const payWeekEntries = forStore.filter(
+      (e) => e.entry_date >= payWeek.start && e.entry_date <= payWeek.end,
+    );
     const todayEntry = storeEntries.find((e) => e.entry_date === today);
 
     // ----- Missing daily entry -----
     if (!todayEntry && nowHour >= settings.cash_flow.missing_entry_hour) {
-      await upsertAlert(
-        supabase,
-        {
-          alert_type: "missing_daily_entry",
-          severity: "warning",
-          store_id: store.id,
-          title: `${store.name}: daily cash entry missing`,
-          message: `No cash entry has been submitted for ${store.name} today. Please complete the daily reconciliation.`,
-          payload: { date: today },
-        },
-        newAlerts,
-      );
+      await raise({
+        alert_type: "missing_daily_entry",
+        severity: "warning",
+        store_id: store.id,
+        subject_date: today,
+        title: `${store.name}: daily cash entry missing`,
+        message: `No cash entry has been submitted for ${store.name} today. Please complete the daily reconciliation.`,
+        payload: { date: today },
+      });
     }
 
     // ----- Unresolved discrepancy (difference logged without a reason) -----
     for (const e of storeEntries) {
       const diff = Number(e.difference) || 0;
       if (Math.abs(diff) > 0.001 && !e.reason) {
-        await upsertAlert(
-          supabase,
-          {
-            alert_type: "unresolved_discrepancy",
-            severity: "warning",
-            store_id: store.id,
-            title: `${store.name}: unresolved discrepancy (£${Math.abs(diff).toFixed(2)})`,
-            message: `A £${Math.abs(diff).toFixed(2)} ${diff > 0 ? "shortfall" : "surplus"} on ${e.entry_date} has no reason recorded.`,
-            payload: { date: e.entry_date, difference: diff },
-          },
-          newAlerts,
-        );
+        await raise({
+          alert_type: "unresolved_discrepancy",
+          severity: "warning",
+          store_id: store.id,
+          subject_date: e.entry_date,
+          title: `${store.name}: unresolved discrepancy (£${Math.abs(diff).toFixed(2)})`,
+          message: `A £${Math.abs(diff).toFixed(2)} ${diff > 0 ? "shortfall" : "surplus"} on ${e.entry_date} has no reason recorded.`,
+          payload: { date: e.entry_date, difference: diff },
+        });
       }
     }
 
-    // ----- Running balance below zero (more cash used than collected) -----
+    // ----- Running balance below zero -----
+    // Cash on hand = opening + envelopes banked, exactly as runningBalanceRows
+    // defines it. It does NOT also subtract each day's `difference`: the
+    // envelope is `vita_mojo_sales - supermarket_expenses` by construction (see
+    // the daily_cash_entries CHECK), so the money spent is already missing from
+    // it and taking it off again charged the same spend twice. That turned any
+    // day banked as 0 -- counted later, entered short -- into a critical.
+    // Consequence worth knowing: surplus_carry_forward is written from
+    // buildPrePaymentSummary's `surplus`, which is clamped at 0, so with the
+    // double-count gone the only thing that can still trip this is a negative
+    // opening the payout sheet cannot currently produce.
     const opening = openingByStore.get(store.id) ?? 0;
     const envelopes = storeEntries.reduce((s, e) => s + (Number(e.envelope_amount) || 0), 0);
-    const cashUsed = storeEntries.reduce((s, e) => s + Math.max(Number(e.difference) || 0, 0), 0);
-    const netOfUsage = opening + envelopes - cashUsed;
-    if (netOfUsage < -0.001) {
-      await upsertAlert(
-        supabase,
-        {
-          alert_type: "negative_cash_balance",
-          severity: "critical",
-          store_id: store.id,
-          title: `${store.name}: cash balance negative`,
-          message: `Running cash balance is £${netOfUsage.toFixed(2)} — more cash has been used (£${cashUsed.toFixed(2)}) than collected this week.`,
-          payload: { net: netOfUsage, opening, envelopes, cash_used: cashUsed },
-        },
-        newAlerts,
-      );
+    const onHand = opening + envelopes;
+    if (onHand < -0.001) {
+      await raise({
+        alert_type: "negative_cash_balance",
+        severity: "critical",
+        store_id: store.id,
+        title: `${store.name}: cash balance negative`,
+        message: `Running cash balance is £${onHand.toFixed(2)} — the £${opening.toFixed(2)} carried forward is not covered by the £${envelopes.toFixed(2)} banked so far this week.`,
+        payload: { net: onHand, opening, envelopes },
+      });
     }
 
     // ----- Tuesday wage forecast: Post Office draw -----
@@ -757,13 +859,20 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
     // Leavers stay included: they're still owed for the pay week they worked.
     // Whoever worked at this store counts (including visitors from the other
     // store); buildWageLinesForStore keeps only those with pay due here.
-    const lines = buildWageLinesForStore(store.id, employees, payWeekClocks);
+    // All THREE payee kinds, merged exactly as computeSummary merges them --
+    // a cover driver's day and a manager's drops are cash out of the same pot,
+    // so omitting them understated wages due and hid draws the sheet showed.
+    const lines = [
+      ...buildWageLinesForStore(store.id, employees, payWeekClocks),
+      ...buildCoverDriverWageLines(store.id, coverRows),
+      ...buildManagerWageLines(store.id, managerPayees, managerPayRows),
+    ].sort((a, b) => b.total_payment - a.total_payment);
     const payout = payoutByStore.get(store.id);
     const summary = buildPrePaymentSummary({
       store_id: store.id,
       week_start_date: weekStart,
       opening_balance: opening,
-      entries: storeEntries,
+      entries: payWeekEntries,
       lines,
       supermarket_cash: supermarketCashAmount(
         store.name,
@@ -776,47 +885,50 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
       adjustment_reason: payout?.adjustment_reason ?? null,
     });
 
-    // Post Office draw required — flag on the Monday before and on payday Tuesday.
-    if (summary.post_office_draw > 0.001 && todayWd <= 1) {
-      await upsertAlert(
-        supabase,
-        {
-          alert_type: "post_office_draw",
-          severity: "critical",
-          store_id: store.id,
-          title: `${store.name}: draw £${summary.post_office_draw.toFixed(2)} from the Post Office`,
-          message: `You need to draw £${summary.post_office_draw.toFixed(2)} from the Post Office before paying wages this Tuesday. Wages due £${summary.grand_total_wages.toFixed(2)}; cash available £${summary.actual_cash_available.toFixed(2)}.`,
-          payload: {
-            draw: summary.post_office_draw,
-            wages_due: summary.grand_total_wages,
-            available: summary.actual_cash_available,
-          },
+    // ----- Post Office draw required -----
+    // Recomputed on EVERY scan. It used to be written only on the Monday and
+    // Tuesday it is acted on, and never revisited: an hour approved or a cash
+    // entry corrected midweek moved the payout sheet and left the board showing
+    // a draw the sheet disagreed with, with no way to tell which was current.
+    // subject_date pins it to the PAY WEEK, so the row can no longer be reused
+    // across weeks -- an undated draw could not say which week it meant, and
+    // the sweep below could not tell a stale one from a live one.
+    if (summary.post_office_draw > 0.001 && cashReadableStores.has(store.id)) {
+      await raise({
+        alert_type: "post_office_draw",
+        severity: "critical",
+        store_id: store.id,
+        subject_date: payWeek.start,
+        title: `${store.name}: draw £${summary.post_office_draw.toFixed(2)} from the Post Office`,
+        message: `Draw £${summary.post_office_draw.toFixed(2)} from the Post Office to pay wages on Tuesday ${payday}, for the week ${payWeekLabel}. Wages due £${summary.grand_total_wages.toFixed(2)}; cash available £${summary.actual_cash_available.toFixed(2)}.`,
+        payload: {
+          draw: summary.post_office_draw,
+          wages_due: summary.grand_total_wages,
+          available: summary.actual_cash_available,
+          pay_week_start: payWeek.start,
+          pay_week_end: payWeek.end,
+          payday_week_start: weekStart,
         },
-        newAlerts,
-      );
+      });
     }
 
     // Tuesday after the confirm deadline: wages / payments not finalised.
-    if (todayWd === 1 && nowHour >= settings.cash_flow.wages_confirm_hour) {
+    if (todayWeekday === 1 && nowHour >= settings.cash_flow.wages_confirm_hour) {
       if (!payout || payout.status !== "confirmed") {
-        await upsertAlert(
-          supabase,
-          {
-            alert_type: "wages_not_confirmed",
-            severity: "warning",
-            store_id: store.id,
-            title: `${store.name}: wages not yet confirmed`,
-            message: `Tuesday wage payments for ${store.name} have not been confirmed in the system. Please confirm once all employees are paid.`,
-            payload: { week_start: weekStart },
-          },
-          newAlerts,
-        );
+        await raise({
+          alert_type: "wages_not_confirmed",
+          severity: "warning",
+          store_id: store.id,
+          title: `${store.name}: wages not yet confirmed`,
+          message: `Tuesday wage payments for ${store.name} have not been confirmed in the system. Please confirm once all employees are paid.`,
+          payload: { week_start: weekStart },
+        });
       }
     }
   }
 
   // ----- Unconfirmed payment for an employee (some paid, some not) on Tuesday -----
-  if (todayWd === 1 && nowHour >= settings.cash_flow.wages_confirm_hour) {
+  if (todayWeekday === 1 && nowHour >= settings.cash_flow.wages_confirm_hour) {
     const draftPayoutIds = weekPayouts.filter((p) => !p.locked).map((p) => p.id);
     if (draftPayoutIds.length) {
       const { data: lineRows } = await supabase
@@ -834,21 +946,107 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
         const agg = byPayout.get(p.id);
         if (agg && agg.paid > 0 && agg.unpaid > 0) {
           const store = stores.find((s) => s.id === p.store_id);
-          await upsertAlert(
-            supabase,
-            {
-              alert_type: "unconfirmed_payment",
-              severity: "warning",
-              store_id: p.store_id,
-              title: `${store?.name ?? "Store"}: ${agg.unpaid} employee${agg.unpaid === 1 ? "" : "s"} unpaid`,
-              message: `${agg.paid} employee${agg.paid === 1 ? "" : "s"} marked paid but ${agg.unpaid} still unconfirmed for this Tuesday.`,
-              payload: { paid: agg.paid, unpaid: agg.unpaid },
-            },
-            newAlerts,
-          );
+          await raise({
+            alert_type: "unconfirmed_payment",
+            severity: "warning",
+            store_id: p.store_id,
+            title: `${store?.name ?? "Store"}: ${agg.unpaid} employee${agg.unpaid === 1 ? "" : "s"} unpaid`,
+            message: `${agg.paid} employee${agg.paid === 1 ? "" : "s"} marked paid but ${agg.unpaid} still unconfirmed for this Tuesday.`,
+            payload: { paid: agg.paid, unpaid: agg.unpaid },
+          });
         }
       }
     }
+  }
+
+  // -------- retire alerts whose condition has cleared --------
+  // Runs LAST, once touchedIds holds everything this scan raised. An open alert
+  // of a recomputed type that was not re-raised no longer holds; without this a
+  // corrected figure never reaches the board, because the alert simply stops
+  // being raised and its stale message sits there indefinitely.
+  //
+  // `since` bounds a sweep to the dates the scan actually recomputed. Only a
+  // date-keyed type can be bounded, and only a bounded sweep can tell "the
+  // reason was filled in" from "that week fell out of the read window" -- an
+  // unbounded one closes the second as though it were the first.
+  // `storeIds` bounds it to the stores it could READ. `alerts` is is_staff() so
+  // this client can resolve any store's rows, but daily_cash_entries is
+  // can_access_store -- on a manager's manual scan the other store returns no
+  // entries, which without this would look exactly like every discrepancy there
+  // having been explained.
+  const sweepUnraised = async (
+    types: AlertType[],
+    opts?: { since?: string; storeIds?: string[] },
+  ) => {
+    if (!types.length) return;
+    if (opts?.storeIds && !opts.storeIds.length) return;
+    let q = supabase.from("alerts").select("id").eq("resolved", false).in("alert_type", types);
+    if (opts?.since) q = q.gte("subject_date", opts.since);
+    if (opts?.storeIds) q = q.in("store_id", opts.storeIds);
+    const { data } = await q;
+    const ids = (data ?? [])
+      .map((r: { id: string }) => r.id)
+      .filter((id: string) => !touchedIds.has(id));
+    if (!ids.length) return;
+    await supabase
+      .from("alerts")
+      .update({
+        resolved: true,
+        resolved_at: new Date().toISOString(),
+        resolution_note: "Auto-resolved: no longer applies as of the latest scan.",
+      })
+      .in("id", ids);
+  };
+
+  // Current-state types: one row per employee, recomputed unconditionally, no
+  // date to bound them by. min_wage_violation only when the bands are on --
+  // with them off it is never raised, so every open one would look cleared.
+  const stateTypes: AlertType[] = ["wage_variance", "delivery_payout_high"];
+  if (settings.min_wage_bands.enabled) stateTypes.push("min_wage_violation");
+  await sweepUnraised(stateTypes);
+  // weekly_deliveries is is_staff(), so this one is read estate-wide by any
+  // client the scan runs under and needs no store bound.
+  await sweepUnraised(["delivery_unassigned"], { since: historyStart });
+  await sweepUnraised(["unresolved_discrepancy"], {
+    since: weekStart,
+    storeIds: Array.from(new Set(cashEntries.map((e) => e.store_id))),
+  });
+
+  // post_office_draw takes NO `since`. Every other dated type is swept within
+  // the window it was recomputed over, because outside it "not re-raised" only
+  // means "not looked at". A draw is different: exactly one pay week is ever
+  // live, so an open draw for any OTHER week is finished business — that
+  // Tuesday has been and gone — and one for THIS week that the scan did not
+  // re-raise is a shortfall that has since been covered. Both should close.
+  // Still store-bounded, for the RLS reason above.
+  await sweepUnraised(["post_office_draw"], {
+    storeIds: Array.from(cashReadableStores),
+  });
+
+  // missing_daily_entry is raised for TODAY only, and only after the cut-off
+  // hour, so "not re-raised" can never mean "cleared" for a past day. Its
+  // condition is simply whether the entry now exists, so read that directly.
+  const enteredKeys = new Set(cashEntries.map((e) => `${e.store_id}|${e.entry_date}`));
+  const { data: openMissing } = await supabase
+    .from("alerts")
+    .select("id, store_id, subject_date")
+    .eq("resolved", false)
+    .eq("alert_type", "missing_daily_entry")
+    .gte("subject_date", payWeek.start);
+  const filledIds = (openMissing ?? [])
+    .filter((r: { store_id: string | null; subject_date: string | null }) =>
+      enteredKeys.has(`${r.store_id}|${r.subject_date}`),
+    )
+    .map((r: { id: string }) => r.id);
+  if (filledIds.length) {
+    await supabase
+      .from("alerts")
+      .update({
+        resolved: true,
+        resolved_at: new Date().toISOString(),
+        resolution_note: "Auto-resolved: the cash entry for this day has since been submitted.",
+      })
+      .in("id", filledIds);
   }
 
   // -------- email digest of newly-created alerts --------
@@ -860,7 +1058,7 @@ async function runScan(supabase: SupabaseClient): Promise<{ ok: true; created: n
     }
   }
 
-  return { ok: true, created: newAlerts.length };
+  return { ok: true, created: newAlerts.length, failed: writeFailures };
 }
 
 // =============================================================
@@ -916,7 +1114,10 @@ export async function scanForAlertsBackground() {
     if (!isProvisioningConfigured()) return { ok: false as const };
     const admin = createAdminClient();
     await sweepForgottenClockOuts();
-    await runScan(admin as unknown as SupabaseClient);
+    const { failed } = await runScan(admin as unknown as SupabaseClient);
+    // Nobody reads this return -- it is fired and forgotten from the clock
+    // paths -- so a failed write only exists if it is logged here.
+    if (failed > 0) console.warn(`[alerts] ${failed} alert write(s) failed`);
     revalidatePath("/alerts");
     revalidatePath("/manager/alerts");
     revalidatePath("/dashboard");

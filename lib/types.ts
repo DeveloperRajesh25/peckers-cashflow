@@ -888,6 +888,9 @@ export type SystemAlert = {
   store_id: string | null;
   employee_id: string | null;
   shift_id: string | null;
+  /** The day or week the alert is about (migration 053); null where its
+   *  subject is a current state rather than a date. Part of the dedup key. */
+  subject_date: string | null;
   title: string;
   message: string;
   payload: Record<string, unknown> | null;
@@ -896,6 +899,9 @@ export type SystemAlert = {
   resolved_by: string | null;
   resolution_note: string | null;
   created_at: string;
+  /** When the row was last rewritten (migration 055). An open alert is updated
+   *  in place, so its figures can be much newer than created_at. */
+  updated_at: string;
 };
 
 export type AuditLogEntry = {

@@ -20,6 +20,13 @@ import {
   ChevronRightIcon,
 } from "@/components/ui/icons";
 
+// The trigger stamps updated_at on every write, including the insert, so a
+// never-rechecked alert would otherwise show a "rechecked" line identical to
+// its own creation. Minute granularity is what the card prints.
+function sameMinute(a: string, b: string): boolean {
+  return Math.abs(new Date(a).getTime() - new Date(b).getTime()) < 60_000;
+}
+
 const ALERT_LABELS: Record<string, { title: string; variant: "warning" | "danger" | "neutral" | "gold" }> = {
   wage_variance: { title: "Wage variance", variant: "warning" },
   min_wage_violation: { title: "Minimum wage", variant: "danger" },
@@ -118,8 +125,16 @@ export function AlertsView({
   async function runScan() {
     setScanning(true);
     try {
-      await scanForAlerts();
-      toast.success("Scan complete");
+      const { failed } = await scanForAlerts();
+      // A scan that could not write what it found must not report success: an
+      // alert nobody can see reads exactly like a condition that never occurred.
+      if (failed > 0) {
+        toast.error(
+          `Scan complete, but ${failed} alert${failed === 1 ? "" : "s"} could not be saved. Check the server log.`,
+        );
+      } else {
+        toast.success("Scan complete");
+      }
       await fetchPage(1);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
@@ -226,6 +241,17 @@ export function AlertsView({
                       <span className="text-xs text-text-muted">
                         {formatDDMMYYYY(a.created_at)} · {formatTimeOnly(a.created_at)}
                       </span>
+                      {/* An open alert is rewritten in place by each scan, so
+                          the figures in its title can be far newer than the
+                          date it was first raised. Show when they were last
+                          confirmed, or the board looks stale when it isn't --
+                          and stale when it is. */}
+                      {a.updated_at && !sameMinute(a.created_at, a.updated_at) && (
+                        <span className="text-xs text-text-muted">
+                          · rechecked {formatDDMMYYYY(a.updated_at)}{" "}
+                          {formatTimeOnly(a.updated_at)}
+                        </span>
+                      )}
                     </div>
                     <h3 className="font-medium mt-2 text-text-primary">
                       {a.title}

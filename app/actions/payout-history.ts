@@ -8,6 +8,7 @@ import type { CashPayoutLine } from "@/lib/types";
 import {
   PAYOUT_HISTORY_MAX_ROWS,
   PAYOUT_HISTORY_SELECT,
+  PAYOUT_HISTORY_STATUS,
   mapPayoutHeaders,
   type PayoutHistoryExportRow,
   type PayoutHistoryFilters,
@@ -81,7 +82,10 @@ export async function listPayoutHistory(
     if (matchingIds.length === 0) return [];
   }
 
-  let q = supabase.from("cash_payouts").select(PAYOUT_HISTORY_SELECT);
+  let q = supabase
+    .from("cash_payouts")
+    .select(PAYOUT_HISTORY_SELECT)
+    .eq("status", PAYOUT_HISTORY_STATUS);
 
   if (filters.from) q = q.gte("week_start_date", filters.from);
   if (filters.to) q = q.lte("week_start_date", filters.to);
@@ -115,11 +119,14 @@ export async function loadPayoutLines(payoutId: string): Promise<PayoutLinesResu
   // that would read as "nobody was paid that week".
   const { data: header, error: headerErr } = await supabase
     .from("cash_payouts")
-    .select("store_id, week_start_date, stores(name)")
+    .select("status, store_id, week_start_date, stores(name)")
     .eq("id", payoutId)
     .maybeSingle();
   if (headerErr) throw new Error(headerErr.message);
   if (!header) throw new Error("Payout not found");
+  // The list can no longer surface a draft, so an id for one was not obtained
+  // from this screen.
+  if (header.status !== PAYOUT_HISTORY_STATUS) throw new Error("Payout not found");
 
   if (user.allowed!.role === "manager") {
     const storeId = resolveActiveStoreId(user.allowed) ?? null;
