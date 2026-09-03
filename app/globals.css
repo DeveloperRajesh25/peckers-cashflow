@@ -112,9 +112,31 @@
   .focus-ring {
     @apply outline-none focus:ring-2 focus:ring-gold/40 focus:border-gold/60;
   }
+  /* A horizontally scrolled strip (tab bars, chip rows) reads as clipped
+     content on a phone; the bar itself just adds noise. */
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* A frozen first column in a sideways-scrolling grid (Rota) needs a visible
+     edge, or the columns sliding under it read as overlapping text. */
+  .sticky-col::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 1px;
+    background: rgb(var(--color-border));
+  }
+
   .btn-base {
     @apply inline-flex items-center justify-center gap-2 rounded-xl font-medium transition-all duration-150
-           disabled:opacity-50 disabled:cursor-not-allowed select-none;
+           text-center leading-tight max-w-full disabled:opacity-50 disabled:cursor-not-allowed select-none;
   }
 
   /* Theme-aware utilities for VM Dashboard */
@@ -222,6 +244,76 @@
 }
 .table-scroll::-webkit-scrollbar-thumb {
   @apply bg-slate-300 rounded-full;
+}
+
+/* ---------------------------------------------------------------------------
+   Stacked tables (mobile)
+
+   A row-per-person table with 8+ columns is unreadable on a 375px phone, and
+   sideways scrolling hides the columns that matter. Under `md` these tables
+   turn each <tr> into a card and each <td> into a "label — value" line; the
+   label comes from the cell's own `data-label`, so the markup stays one table
+   and the desktop layout is untouched.
+
+   Usage: `<table className="table-stack …">` + `data-label="Shift"` on each td.
+   A cell with no data-label (or data-label="") renders full width with no
+   label — use it for the name/heading cell.
+--------------------------------------------------------------------------- */
+@media screen and (max-width: 767px) {
+  .table-stack,
+  .table-stack tbody,
+  .table-stack tfoot,
+  .table-stack tr,
+  .table-stack td {
+    display: block;
+    width: 100%;
+  }
+  .table-stack thead {
+    display: none;
+  }
+  .table-stack tr {
+    padding: 0.625rem 0.875rem 0.75rem;
+    border-top: 1px solid rgb(var(--color-border));
+  }
+  .table-stack td {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.1875rem 0 !important;
+    text-align: right !important;
+    overflow-wrap: anywhere;
+  }
+  .table-stack td[data-label]:not([data-label=""])::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    text-align: left;
+    font-size: 10px;
+    line-height: 1.6;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: rgb(var(--color-text-muted));
+    white-space: nowrap;
+  }
+  /* The heading cell (no label): full-width, left aligned, a touch larger. */
+  .table-stack td:not([data-label]),
+  .table-stack td[data-label=""] {
+    text-align: left !important;
+    font-size: 0.9375rem;
+    padding-bottom: 0.375rem !important;
+  }
+  /* An empty-state row spans the card, not a label/value pair. */
+  .table-stack td[colspan]:not([data-label]) {
+    text-align: center !important;
+  }
+  /* Spacer cells only exist to keep the desktop grid square. */
+  .table-stack td:empty {
+    display: none;
+  }
+  /* Wrappers around these tables must stop forcing a min width. */
+  .table-stack {
+    min-width: 0 !important;
+  }
 }
 
 /* Printing (Payout history PDF, NI monthly). The app chrome is `md:` and up, so

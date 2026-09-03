@@ -871,7 +871,7 @@ export function DailyHoursApproval({
           s.approved && "opacity-75",
         )}
       >
-        <div className="flex-1 min-w-[8rem]">
+        <div className="flex-1 min-w-[8rem] basis-full sm:basis-auto">
           <p className="font-medium truncate">
             {s.name}
             {s.kind === "cover" && (
@@ -1026,7 +1026,7 @@ export function DailyHoursApproval({
         </div>
 
         {s.approved ? (
-          <div className="flex items-center gap-2">
+          <div className="flex w-full sm:w-auto items-center gap-2 flex-wrap justify-start sm:justify-end">
             <Badge variant="success">
               <CheckIcon size={12} />
               {s.kind === "manager"
@@ -1066,7 +1066,7 @@ export function DailyHoursApproval({
             </Button>
           </div>
         ) : (
-          <div className="flex items-center gap-2 flex-wrap justify-end">
+          <div className="flex w-full sm:w-auto items-center gap-2 flex-wrap justify-start sm:justify-end">
             {/* No hours box on a manager row: their pay is a fixed daily wage
                 that this app never touches, so an editable figure here would
                 imply a correction that changes nothing. */}
@@ -1186,7 +1186,7 @@ export function DailyHoursApproval({
                     }
                     placeholder="Reason for extra SD"
                     aria-label={`Reason for extra short deliveries for ${s.name} on ${longDate(s.event_date)}`}
-                    className="w-36 rounded-lg border border-warning/50 bg-surface px-2 py-1 text-xs outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/30"
+                    className="w-full sm:w-36 rounded-lg border border-warning/50 bg-surface px-2 py-1 text-xs outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/30"
                   />
                 )}
                 {extraNeedsReason(s, "extraLong") && (
@@ -1201,7 +1201,7 @@ export function DailyHoursApproval({
                     }
                     placeholder="Reason for extra LD"
                     aria-label={`Reason for extra long deliveries for ${s.name} on ${longDate(s.event_date)}`}
-                    className="w-36 rounded-lg border border-warning/50 bg-surface px-2 py-1 text-xs outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/30"
+                    className="w-full sm:w-36 rounded-lg border border-warning/50 bg-surface px-2 py-1 text-xs outline-none focus:border-gold/60 focus:ring-2 focus:ring-gold/30"
                   />
                 )}
               </>
@@ -1232,14 +1232,14 @@ export function DailyHoursApproval({
   return (
     <div className="flex flex-col gap-5">
       {/* Controls */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex items-end gap-2">
+      <div className="flex flex-col lg:flex-row lg:flex-wrap lg:items-end lg:justify-between gap-3">
+        <div className="flex items-end gap-2 min-w-0">
           <DatePicker
             label="Approve day"
             value={selectedDate}
             onChange={(v) => setSelectedDate(v || todayISO)}
             max={todayISO}
-            containerClassName="w-44"
+            containerClassName="flex-1 min-w-0 sm:flex-none sm:w-44"
           />
           <div className="flex items-center gap-1 pb-0.5">
             <Button
@@ -1271,8 +1271,8 @@ export function DailyHoursApproval({
           </div>
         </div>
 
-        <div className="flex items-center gap-3 pb-2">
-          <label className="flex items-center gap-2 text-sm text-text-subtle cursor-pointer select-none">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3 lg:pb-2">
+          <label className="flex items-center gap-2 text-sm text-text-subtle cursor-pointer select-none w-full sm:w-auto">
             <input
               type="checkbox"
               checked={hideApproved}
@@ -1285,6 +1285,7 @@ export function DailyHoursApproval({
             <Button
               size="sm"
               variant="outline"
+              className="flex-1 min-w-[9.5rem] sm:flex-none"
               onClick={() => setShowAddMissed("employee")}
               title="Record a shift an employee forgot to clock in for — a second shift on a day they already worked, or the clock-out for one still running"
             >
@@ -1295,6 +1296,7 @@ export function DailyHoursApproval({
             <Button
               size="sm"
               variant="outline"
+              className="flex-1 min-w-[9.5rem] sm:flex-none"
               onClick={() => setShowAddMissed("cover_driver")}
               title="Record a day for a cover driver who forgot to clock in"
             >
@@ -1305,6 +1307,7 @@ export function DailyHoursApproval({
             <Button
               size="sm"
               variant="outline"
+              className="flex-1 min-w-[9.5rem] sm:flex-none"
               onClick={() => setShowAddMissed("manager")}
               title="Record deliveries a manager covered — no clock times, only the drops they're paid for"
             >
@@ -1316,9 +1319,9 @@ export function DailyHoursApproval({
 
       {/* Selected day */}
       <section className="rounded-xl border border-border bg-surface">
-        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b border-border">
-          <div>
-            <h3 className="text-base font-semibold text-text-primary">
+        <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center sm:justify-between gap-3 px-4 py-3 border-b border-border">
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-text-primary break-words">
               {selRel ? `${selRel} · ` : ""}
               {longDate(selectedDate)}
             </h3>
@@ -1341,6 +1344,7 @@ export function DailyHoursApproval({
               onClick={() => doApproveDate(selectedDate, selectedRows)}
               loading={busyDate === selectedDate}
               iconLeft={<CheckIcon size={16} />}
+              className="w-full sm:w-auto"
             >
               Approve all {pendingCount}
             </Button>
@@ -1360,7 +1364,7 @@ export function DailyHoursApproval({
             All hours for this day are approved. Un-tick “Hide approved” to review them.
           </p>
         ) : (
-          <div className="px-4 divide-y divide-border/60">
+          <div className="px-3 sm:px-4 divide-y divide-border/60">
             {visibleSelected.map((s) => renderRow(s))}
           </div>
         )}
@@ -1368,7 +1372,7 @@ export function DailyHoursApproval({
 
       {/* Other dates still needing approval */}
       {otherPendingByDate.length > 0 && (
-        <section className="rounded-xl border border-warning/30 bg-warning/5 p-4 flex flex-col gap-3">
+        <section className="rounded-xl border border-warning/30 bg-warning/5 p-3 sm:p-4 flex flex-col gap-3">
           <div className="flex items-center gap-2 text-warning">
             <AlertIcon size={16} />
             <p className="text-sm font-medium">
@@ -1390,7 +1394,7 @@ export function DailyHoursApproval({
                   <button
                     type="button"
                     onClick={() => setSelectedDate(date)}
-                    className="text-sm font-medium text-text-primary hover:text-gold transition-colors"
+                    className="text-left text-sm font-medium text-text-primary hover:text-gold transition-colors"
                     title="Open this day"
                   >
                     {rel ? `${rel} · ` : ""}
@@ -1405,6 +1409,7 @@ export function DailyHoursApproval({
                     onClick={() => doApproveDate(date, rows)}
                     loading={busyDate === date}
                     iconLeft={<CheckIcon size={16} />}
+                    className="w-full sm:w-auto"
                   >
                     Approve all {rows.length}
                   </Button>

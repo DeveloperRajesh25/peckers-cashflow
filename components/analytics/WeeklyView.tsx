@@ -269,7 +269,7 @@ export function WeeklyView({
           />
         ) : (
           <div className="overflow-x-auto -mx-1">
-            <table className="w-full text-sm">
+            <table className="table-stack w-full text-sm">
               <thead>
                 <tr className="text-left text-xs uppercase tracking-wider text-text-muted">
                   <th className="px-3 py-2 font-medium">Employee</th>
@@ -286,14 +286,14 @@ export function WeeklyView({
                       key={p.employee_id}
                       className={`${i % 2 === 0 ? "" : "bg-bg/50"} border-t border-border/60`}
                     >
-                      <td className="px-3 py-3">{p.employee_name}</td>
-                      <td className="px-3 py-3 text-right tabular-nums">
+                      <td className="px-3 py-3" data-label="">{p.employee_name}</td>
+                      <td className="px-3 py-3 text-right tabular-nums" data-label="Total hrs">
                         <HoursMinsDisplay hours={Number(p.total_hours_worked)} />
                       </td>
-                      <td className="px-3 py-3 text-right tabular-nums">
+                      <td className="px-3 py-3 text-right tabular-nums" data-label="Cash hrs">
                         <HoursMinsDisplay hours={Number(p.cash_hours)} />
                       </td>
-                      <td className="px-3 py-3 text-right tabular-nums font-medium text-gold">
+                      <td className="px-3 py-3 text-right tabular-nums font-medium text-gold" data-label="Cash due">
                         {formatINR(Number(p.cash_amount_due))}
                       </td>
                     </tr>

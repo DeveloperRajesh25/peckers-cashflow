@@ -29,27 +29,27 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(function Inp
         }
       : onWheel;
   return (
-    <div className={cn("flex flex-col gap-1.5", containerClassName)}>
+    <div className={cn("flex flex-col gap-1.5 min-w-0", containerClassName)}>
       {label && (
-        <label htmlFor={inputId} className="text-sm font-medium text-text-subtle">
+        <label htmlFor={inputId} className="text-sm font-medium text-text-subtle break-words">
           {label}
         </label>
       )}
       <div
         className={cn(
-          "flex items-center gap-2 rounded-xl bg-surface border border-border px-3 h-11 transition-colors",
+          "flex items-center gap-2 rounded-xl bg-surface border border-border px-3 h-11 min-w-0 transition-colors",
           "focus-within:border-gold/60 focus-within:ring-2 focus-within:ring-gold/30",
           error && "border-danger/60 focus-within:ring-danger/30",
         )}
       >
-        {prefix && <span className="text-text-muted text-sm">{prefix}</span>}
+        {prefix && <span className="text-text-muted text-sm shrink-0">{prefix}</span>}
         <input
           id={inputId}
           ref={ref}
           type={type}
           onWheel={handleWheel}
           className={cn(
-            "flex-1 bg-transparent outline-none text-text-primary placeholder:text-text-muted text-sm w-full",
+            "flex-1 min-w-0 bg-transparent outline-none text-text-primary placeholder:text-text-muted text-sm w-full",
             className,
           )}
           {...props}
@@ -74,9 +74,9 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(fun
   const autoId = React.useId();
   const textareaId = id ?? autoId;
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1.5 min-w-0">
       {label && (
-        <label htmlFor={textareaId} className="text-sm font-medium text-text-subtle">
+        <label htmlFor={textareaId} className="text-sm font-medium text-text-subtle break-words">
           {label}
         </label>
       )}
@@ -84,7 +84,7 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(fun
         id={textareaId}
         ref={ref}
         className={cn(
-          "rounded-xl bg-surface border border-border px-3 py-3 text-sm outline-none placeholder:text-text-muted",
+          "w-full min-w-0 rounded-xl bg-surface border border-border px-3 py-3 text-sm outline-none placeholder:text-text-muted",
           "focus:border-gold/60 focus:ring-2 focus:ring-gold/30",
           error && "border-danger/60 focus:ring-danger/30",
           className,
@@ -167,9 +167,9 @@ export function Select({ label, error, disabled, className, children, id, value,
   }
 
   return (
-    <div className={cn("flex flex-col gap-1.5", className)}>
+    <div className={cn("flex flex-col gap-1.5 min-w-0", className)}>
       {label && (
-        <label htmlFor={selectId} className="text-sm font-medium text-text-subtle">
+        <label htmlFor={selectId} className="text-sm font-medium text-text-subtle break-words">
           {label}
         </label>
       )}
@@ -183,7 +183,7 @@ export function Select({ label, error, disabled, className, children, id, value,
           aria-haspopup="listbox"
           aria-expanded={open}
           className={cn(
-            "flex items-center gap-2 w-full rounded-xl bg-surface border border-border px-3 h-11 transition-colors text-left",
+            "flex items-center gap-2 w-full min-w-0 rounded-xl bg-surface border border-border px-3 h-11 transition-colors text-left",
             "hover:bg-surface-hover focus:outline-none focus-visible:border-gold/60 focus-visible:ring-2 focus-visible:ring-gold/30",
             open && "border-gold/60 ring-2 ring-gold/30",
             error && "border-danger/60",
@@ -216,7 +216,7 @@ export function Select({ label, error, disabled, className, children, id, value,
                   aria-selected={isSelected}
                   onClick={() => !opt.disabled && pick(opt.value)}
                   className={cn(
-                    "px-3 py-2 text-sm cursor-pointer transition-colors select-none",
+                    "px-3 py-2.5 text-sm cursor-pointer transition-colors select-none break-words",
                     isSelected
                       ? "bg-gold/15 text-text-primary font-medium"
                       : opt.disabled

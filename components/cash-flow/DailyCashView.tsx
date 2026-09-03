@@ -203,14 +203,14 @@ export function DailyCashView({
   return (
     <div className="flex flex-col gap-5">
       {/* Week navigation + store selector */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="flex items-center gap-2">
           <Link href={`${basePath}/daily?week=${prevWeek}`}>
             <Button variant="secondary" size="icon" aria-label="Previous week">
               <ChevronLeftIcon size={16} />
             </Button>
           </Link>
-          <span className="text-sm font-medium text-text-primary min-w-[180px] text-center">
+          <span className="text-sm font-medium text-text-primary min-w-0 sm:min-w-[180px] text-center">
             {weekLabel(parseISODate(weekStart))}
           </span>
           <Link href={`${basePath}/daily?week=${nextWeek}`}>
@@ -220,7 +220,7 @@ export function DailyCashView({
           </Link>
         </div>
         {isAdmin && stores.length > 1 && (
-          <div className="min-w-[180px]">
+          <div className="w-full sm:w-auto sm:min-w-[180px]">
             <Select value={storeId} onChange={(e) => setStoreId(e.target.value)}>
               {stores.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -317,7 +317,7 @@ export function DailyCashView({
                   setEnvelope(e.target.value);
                 }}
               />
-              <div className="flex items-center justify-between mt-1.5">
+              <div className="flex items-center justify-between gap-2 flex-wrap mt-1.5">
                 <span className="text-[11px] text-text-muted">
                   Auto = sales − supermarket = {formatGBP(expectedEnvelope)}
                 </span>
@@ -354,7 +354,7 @@ export function DailyCashView({
 
         {/* Weekly log */}
         <Card className="p-0 overflow-hidden">
-          <div className="px-5 py-4 border-b border-border flex items-center justify-between gap-3 flex-wrap">
+          <div className="px-4 sm:px-5 py-4 border-b border-border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
               <h3 className="text-base font-semibold text-text-primary">This Week&apos;s Cash Log</h3>
               <p className="text-sm text-text-muted mt-0.5">
@@ -375,7 +375,7 @@ export function DailyCashView({
             </p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="table-stack w-full text-sm">
                 <thead>
                   <tr className="text-left text-xs uppercase tracking-wider text-text-muted bg-bg/50">
                     <th className="px-4 py-3 font-medium">Date</th>
@@ -396,7 +396,7 @@ export function DailyCashView({
                         key={r.entry_date}
                         className={`${i % 2 === 0 ? "" : "bg-bg/40"} border-t border-border/60`}
                       >
-                        <td className="px-4 py-3 whitespace-nowrap">
+                        <td className="px-4 py-3 whitespace-nowrap" data-label="">
                           <button
                             className="hover:text-gold"
                             onClick={() => pickDate(r.entry_date)}
@@ -410,16 +410,17 @@ export function DailyCashView({
                             </Badge>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-right tabular-nums">{formatGBP(r.vita_mojo_sales)}</td>
-                        <td className="px-4 py-3 text-right tabular-nums">{formatGBP(r.envelope_amount)}</td>
+                        <td className="px-4 py-3 text-right tabular-nums" data-label="Vita Mojo">{formatGBP(r.vita_mojo_sales)}</td>
+                        <td className="px-4 py-3 text-right tabular-nums" data-label="Envelope">{formatGBP(r.envelope_amount)}</td>
                         <td
+                          data-label="Diff"
                           className={`px-4 py-3 text-right tabular-nums ${
                             balanced ? "text-text-muted" : r.difference > 0 ? "text-danger" : "text-warning"
                           }`}
                         >
                           {formatGBP(r.difference)}
                         </td>
-                        <td className="px-4 py-3 max-w-[220px]">
+                        <td className="px-4 py-3 sm:max-w-[220px]" data-label="Reason / Status">
                           {r.reason ? (
                             <span className="text-text-subtle truncate block" title={r.reason}>
                               {r.reason}
@@ -428,11 +429,11 @@ export function DailyCashView({
                             <Badge variant="success">Supermarket</Badge>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-right tabular-nums font-medium">
+                        <td className="px-4 py-3 text-right tabular-nums font-medium" data-label="Balance">
                           {formatGBP(r.running_balance)}
                         </td>
                         {isAdmin && (
-                          <td className="px-4 py-3 text-right whitespace-nowrap">
+                          <td className="px-4 py-3 text-right whitespace-nowrap" data-label="">
                             <div className="inline-flex items-center gap-1">
                               <Button
                                 variant="ghost"
@@ -462,16 +463,16 @@ export function DailyCashView({
                 </tbody>
                 <tfoot>
                   <tr className="border-t-2 border-border bg-bg/60 font-semibold">
-                    <td className="px-4 py-3">Weekly total</td>
-                    <td className="px-4 py-3 text-right tabular-nums">{formatGBP(vitaTotal)}</td>
-                    <td className="px-4 py-3 text-right tabular-nums">{formatGBP(envTotal)}</td>
-                    <td className={`px-4 py-3 text-right tabular-nums ${diffTotal > 0 ? "text-danger" : "text-text-muted"}`}>
+                    <td className="px-4 py-3" data-label="">Weekly total</td>
+                    <td className="px-4 py-3 text-right tabular-nums" data-label="Vita Mojo">{formatGBP(vitaTotal)}</td>
+                    <td className="px-4 py-3 text-right tabular-nums" data-label="Envelope">{formatGBP(envTotal)}</td>
+                    <td data-label="Diff" className={`px-4 py-3 text-right tabular-nums ${diffTotal > 0 ? "text-danger" : "text-text-muted"}`}>
                       {formatGBP(diffTotal)}
                     </td>
-                    <td className="px-4 py-3 text-text-muted">
+                    <td className="px-4 py-3 text-text-muted" data-label="Opening">
                       {opening > 0 ? `Opening ${formatGBP(opening)}` : ""}
                     </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-gold">{formatGBP(runningBalance)}</td>
+                    <td className="px-4 py-3 text-right tabular-nums text-gold" data-label="Balance">{formatGBP(runningBalance)}</td>
                     {isAdmin && <td></td>}
                   </tr>
                 </tfoot>

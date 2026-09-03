@@ -130,7 +130,7 @@ export function DatePicker({
   const today = new Date();
 
   return (
-    <div className={cn("flex flex-col gap-1.5", containerClassName)}>
+    <div className={cn("flex flex-col gap-1.5 min-w-0", containerClassName)}>
       {label && (
         <label htmlFor={fieldId} className="text-sm font-medium text-text-subtle">
           {label}
@@ -177,7 +177,7 @@ export function DatePicker({
           <div
             role="dialog"
             className={cn(
-              "absolute left-0 z-40 w-[18rem] rounded-2xl border border-border bg-surface shadow-xl p-3 animate-fade-in",
+              "absolute left-0 z-40 w-[min(18rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-surface shadow-xl p-3 animate-fade-in",
               flipUp ? "bottom-full mb-2" : "top-full mt-2",
             )}
           >

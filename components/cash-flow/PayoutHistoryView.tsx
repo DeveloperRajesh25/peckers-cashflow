@@ -281,7 +281,7 @@ export function PayoutHistoryView({
               <Card key={p.id} className="p-0 overflow-hidden">
                 <button
                   onClick={() => toggleExpand(p.id)}
-                  className="w-full px-5 py-4 flex items-center justify-between gap-3 text-left hover:bg-surface-hover transition-colors"
+                  className="w-full px-4 sm:px-5 py-4 flex items-center justify-between gap-3 text-left hover:bg-surface-hover transition-colors"
                 >
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -313,7 +313,7 @@ export function PayoutHistoryView({
 
                 {open && (
                   <div className="border-t border-border">
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-5">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 sm:p-5">
                       <Mini label="Cash collected" value={formatGBP(p.cash_collected)} />
                       <Mini label="Cash available" value={formatGBP(p.actual_cash_available)} />
                       <Mini label="Cash wages" value={formatGBP(p.total_cash_wages)} />
@@ -429,7 +429,7 @@ function LinesTable({
   const miscDeliveries = totals.short_misc_count + totals.long_misc_count;
 
   return (
-    <table className="w-full text-sm">
+    <table className="table-stack w-full text-sm">
       <thead>
         <tr className="text-left text-xs uppercase tracking-wider text-text-muted bg-bg/50">
           <th className="px-4 py-2.5 font-medium">Employee</th>
@@ -450,7 +450,7 @@ function LinesTable({
       <tbody>
         {lines.map((l, i) => (
           <tr key={l.id} className={`${i % 2 === 0 ? "" : "bg-bg/40"} border-t border-border/60`}>
-            <td className="px-4 py-2.5 font-medium">
+            <td className="px-4 py-2.5 font-medium" data-label="">
               {l.employee_name}
               {l.cover_driver_id && (
                 <span
@@ -469,30 +469,30 @@ function LinesTable({
                 </span>
               )}
             </td>
-            <td className="px-4 py-2.5 text-text-muted">{l.role ?? "—"}</td>
-            <td className="px-4 py-2.5 text-right tabular-nums">
+            <td className="px-4 py-2.5 text-text-muted" data-label="Role">{l.role ?? "—"}</td>
+            <td className="px-4 py-2.5 text-right tabular-nums" data-label="Cash hrs">
               <HoursMinsDisplay hours={l.cash_hours} />
             </td>
-            <td className="px-4 py-2.5 text-right tabular-nums">{formatGBP(l.cash_rate)}</td>
-            <td className="px-4 py-2.5 text-right tabular-nums">{formatGBP(l.cash_wage)}</td>
-            <td className="px-4 py-2.5 text-right tabular-nums">
+            <td className="px-4 py-2.5 text-right tabular-nums" data-label="Rate">{formatGBP(l.cash_rate)}</td>
+            <td className="px-4 py-2.5 text-right tabular-nums" data-label="Cash wage">{formatGBP(l.cash_wage)}</td>
+            <td className="px-4 py-2.5 text-right tabular-nums" data-label="Deliveries">
               <DeliveryCell line={l} />
             </td>
-            <td className="px-4 py-2.5 text-right tabular-nums">{l.delivery_wages > 0 ? formatGBP(l.delivery_wages) : "—"}</td>
-            <td className="px-4 py-2.5 text-right tabular-nums font-semibold">{formatGBP(l.total_payment)}</td>
+            <td className="px-4 py-2.5 text-right tabular-nums" data-label="Delivery £">{l.delivery_wages > 0 ? formatGBP(l.delivery_wages) : "—"}</td>
+            <td className="px-4 py-2.5 text-right tabular-nums font-semibold" data-label="Total">{formatGBP(l.total_payment)}</td>
           </tr>
         ))}
         {/* The totals live in the body's last row, not a <tfoot> — a footer is
             REPEATED on every printed page, which would stamp the week's grand
             total halfway down a table that spilled onto a second page. */}
         <tr className="border-t-2 border-border bg-bg/60 font-semibold">
-          <td className="px-4 py-3" colSpan={2}>Total</td>
-          <td className="px-4 py-3 text-right tabular-nums">
+          <td className="px-4 py-3" colSpan={2} data-label="">Total</td>
+          <td className="px-4 py-3 text-right tabular-nums" data-label="Cash hrs">
             <HoursMinsDisplay hours={totals.cash_hours} />
           </td>
-          <td className="px-4 py-3 text-right tabular-nums text-text-muted">—</td>
-          <td className="px-4 py-3 text-right tabular-nums">{formatGBP(totals.cash_wage)}</td>
-          <td className="px-4 py-3 text-right tabular-nums">
+          <td className="px-4 py-3 text-right tabular-nums text-text-muted" data-label="Rate">—</td>
+          <td className="px-4 py-3 text-right tabular-nums" data-label="Cash wage">{formatGBP(totals.cash_wage)}</td>
+          <td className="px-4 py-3 text-right tabular-nums" data-label="Deliveries">
             <span className="flex flex-col items-end gap-0.5 whitespace-nowrap">
               <span className="text-[10px] font-normal text-text-muted">
                 {totals.short_deliveries_count} SD · {totals.long_deliveries_count} LD ·{" "}
@@ -532,8 +532,8 @@ function LinesTable({
               </span>
             </span>
           </td>
-          <td className="px-4 py-3 text-right tabular-nums">{formatGBP(totals.delivery_wages)}</td>
-          <td className="px-4 py-3 text-right tabular-nums text-gold">
+          <td className="px-4 py-3 text-right tabular-nums" data-label="Delivery £">{formatGBP(totals.delivery_wages)}</td>
+          <td className="px-4 py-3 text-right tabular-nums text-gold" data-label="Total">
             {formatGBP(totals.total_payment)}
           </td>
         </tr>

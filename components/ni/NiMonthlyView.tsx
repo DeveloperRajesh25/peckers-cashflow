@@ -214,7 +214,7 @@ export function NiMonthlyView({
   return (
     <div className="flex flex-col gap-5">
       {/* Store toggle (admin) + export actions */}
-      <div className="flex items-center justify-between gap-3 flex-wrap print:hidden">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 print:hidden">
         <div className="flex gap-2 flex-wrap">
           {isAdmin && stores.length > 1 ? (
             stores.map((s) => (
@@ -235,11 +235,12 @@ export function NiMonthlyView({
             <p className="text-sm text-text-muted self-center">{activeStore.name}</p>
           )}
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Button
             variant="outline"
             onClick={() => setAdding(true)}
             iconLeft={<PlusIcon size={16} />}
+            className="flex-1 sm:flex-none"
           >
             Add manual record
           </Button>
@@ -248,6 +249,7 @@ export function NiMonthlyView({
             onClick={exportCSV}
             iconLeft={<DownloadIcon size={16} />}
             disabled={months.length === 0}
+            className="flex-1 sm:flex-none"
           >
             CSV
           </Button>
@@ -255,6 +257,7 @@ export function NiMonthlyView({
             variant="secondary"
             onClick={() => window.print()}
             disabled={months.length === 0}
+            className="flex-1 sm:flex-none"
           >
             PDF
           </Button>
@@ -288,11 +291,11 @@ export function NiMonthlyView({
           const niTotal = emps.reduce((s, e) => s + e.ni_wages, 0);
           return (
             <Card key={mk} className="p-0 overflow-hidden">
-              <div className="px-5 py-4 border-b border-border flex items-center justify-between gap-3 flex-wrap">
-                <h2 className="text-lg font-semibold text-text-primary">
+              <div className="px-4 sm:px-5 py-4 border-b border-border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <h2 className="text-base sm:text-lg font-semibold text-text-primary break-words">
                   {monthLabel(mk)} — {activeStore.name}
                 </h2>
-                <div className="text-right">
+                <div className="text-left sm:text-right">
                   <p className="text-xs text-text-muted">NI (PAYE) total</p>
                   <p className="text-lg font-semibold text-gold tabular-nums">
                     {formatGBP(niTotal)}
@@ -300,7 +303,7 @@ export function NiMonthlyView({
                 </div>
               </div>
               <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+                <table className="table-stack w-full text-sm">
                   <thead>
                     <tr className="text-left text-xs uppercase tracking-wider text-text-muted bg-bg/50">
                       <th className="px-4 py-2.5 font-medium">Employee</th>
@@ -315,7 +318,7 @@ export function NiMonthlyView({
                         key={e.employee_id}
                         className={`${i % 2 === 0 ? "" : "bg-bg/40"} border-t border-border/60`}
                       >
-                        <td className="px-4 py-2.5 font-medium">
+                        <td className="px-4 py-2.5 font-medium" data-label="">
                           {e.employee_name}
                           {e.manual && (
                             <Badge variant="gold" className="ml-2 text-[10px] py-0 px-1.5 print:hidden">
@@ -323,13 +326,13 @@ export function NiMonthlyView({
                             </Badge>
                           )}
                         </td>
-                        <td className="px-4 py-2.5 text-right tabular-nums">
+                        <td className="px-4 py-2.5 text-right tabular-nums" data-label="NI hours">
                           <HoursMinsDisplay hours={e.ni_hours} />
                         </td>
-                        <td className="px-4 py-2.5 text-right tabular-nums">
+                        <td className="px-4 py-2.5 text-right tabular-nums" data-label="NI wages">
                           {formatGBP(e.ni_wages)}
                         </td>
-                        <td className="px-2 py-2.5 text-right print:hidden">
+                        <td className="px-2 py-2.5 text-right print:hidden" data-label="">
                           {e.manual && e.id && (
                             <button
                               onClick={() => removeManualRow(e.id!)}
@@ -347,11 +350,11 @@ export function NiMonthlyView({
                   </tbody>
                   <tfoot>
                     <tr className="border-t-2 border-border bg-bg/60 font-semibold">
-                      <td className="px-4 py-2.5">Total</td>
-                      <td className="px-4 py-2.5 text-right tabular-nums">
+                      <td className="px-4 py-2.5" data-label="">Total</td>
+                      <td className="px-4 py-2.5 text-right tabular-nums" data-label="NI hours">
                         <HoursMinsDisplay hours={hoursTotal} />
                       </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums text-gold">
+                      <td className="px-4 py-2.5 text-right tabular-nums text-gold" data-label="NI wages">
                         {formatGBP(niTotal)}
                       </td>
                       <td className="print:hidden"></td>

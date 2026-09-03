@@ -27,11 +27,13 @@ const variants: Record<Variant, string> = {
     "bg-danger/15 text-danger border border-danger/30 hover:bg-danger/25 focus:ring-2 focus:ring-danger/30",
 };
 
+// min-h, not h: a long label on a narrow phone wraps to a second line, and a
+// fixed height pushes that line outside the button box.
 const sizes: Record<Size, string> = {
-  sm: "h-9 px-3 text-sm",
-  md: "h-11 px-4 text-sm",
-  lg: "h-12 px-5 text-base",
-  icon: "h-10 w-10",
+  sm: "min-h-9 px-3 py-1.5 text-sm",
+  md: "min-h-11 px-4 py-2 text-sm",
+  lg: "min-h-12 px-5 py-2.5 text-base",
+  icon: "h-10 w-10 shrink-0 p-0",
 };
 
 export const Button = React.forwardRef<HTMLButtonElement, Props>(function Button(
@@ -58,12 +60,14 @@ export const Button = React.forwardRef<HTMLButtonElement, Props>(function Button
       {...props}
     >
       {loading ? (
-        <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+        <span className="inline-block h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent" />
       ) : (
-        iconLeft
+        iconLeft && <span className="shrink-0 inline-flex">{iconLeft}</span>
       )}
-      {children}
-      {!loading && iconRight}
+      {children != null && children !== false && (
+        <span className="min-w-0 break-words">{children}</span>
+      )}
+      {!loading && iconRight && <span className="shrink-0 inline-flex">{iconRight}</span>}
     </button>
   );
 });

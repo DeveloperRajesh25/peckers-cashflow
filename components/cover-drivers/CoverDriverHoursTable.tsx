@@ -208,7 +208,7 @@ export function CoverDriverHoursTable({
         />
       ) : (
         <div className="overflow-x-auto -mx-1">
-          <table className="w-full text-sm">
+          <table className="table-stack w-full text-sm">
             <thead>
               <tr className="text-left text-xs uppercase tracking-wider text-text-muted border-b border-border">
                 <th className="px-3 py-2 font-medium">Driver</th>
@@ -235,29 +235,29 @@ export function CoverDriverHoursTable({
                     key={r.key}
                     className={`${i % 2 === 0 ? "" : "bg-bg/50"} border-t border-border/60`}
                   >
-                    <td className="px-3 py-3 whitespace-nowrap font-medium">
+                    <td className="px-3 py-3 whitespace-nowrap font-medium" data-label="">
                       {r.driver_name}
                     </td>
-                    <td className="px-3 py-3 whitespace-nowrap">
+                    <td className="px-3 py-3 whitespace-nowrap" data-label="Date">
                       {formatDDMMYYYY(r.work_date)}
                     </td>
-                    <td className="px-3 py-3 text-right tabular-nums">
+                    <td className="px-3 py-3 text-right tabular-nums" data-label="Clocked hrs">
                       <HoursMinsDisplay hours={r.clocked_hours} />
                     </td>
-                    <td className="px-3 py-3 text-right tabular-nums">
+                    <td className="px-3 py-3 text-right tabular-nums" data-label="Cash hrs">
                       <HoursMinsDisplay hours={payHours} />
                     </td>
-                    <td className="px-3 py-3 text-right tabular-nums">
+                    <td className="px-3 py-3 text-right tabular-nums" data-label="Cash £">
                       {r.approved ? (
                         <Badge variant="gold">{formatGBP(r.approved.cash_amount)}</Badge>
                       ) : (
                         <span className="text-text-muted">—</span>
                       )}
                     </td>
-                    <td className="px-3 py-3 text-right text-text-muted whitespace-nowrap text-xs">
+                    <td className="px-3 py-3 text-right text-text-muted whitespace-nowrap text-xs" data-label="Logged">
                       {r.approved ? formatDDMMYYYY(r.approved.logged_at) : "—"}
                     </td>
-                    <td className="px-3 py-3 text-center whitespace-nowrap">
+                    <td className="px-3 py-3 text-center whitespace-nowrap" data-label="Status">
                       {r.approved ? (
                         <Badge variant="success">
                           <CheckIcon size={12} />
@@ -274,7 +274,7 @@ export function CoverDriverHoursTable({
                         </Button>
                       )}
                     </td>
-                    <td className="px-3 py-3 text-right">
+                    <td className="px-3 py-3 text-right" data-label="">
                       {r.approved ? (
                         <Button
                           variant="ghost"

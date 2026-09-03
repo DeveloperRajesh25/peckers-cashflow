@@ -170,8 +170,8 @@ export function AlertsView({
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-3 flex-wrap">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="flex items-center gap-3 flex-wrap min-w-0">
           <Badge variant={openCount > 0 ? "warning" : "success"}>
             {openCount}
             {openCapped ? "+" : ""} open
@@ -188,7 +188,7 @@ export function AlertsView({
               const next = e.target.value;
               changeFilters(() => setStoreFilter(next));
             }}
-            className="h-9 px-3 rounded-lg bg-surface border border-border text-sm"
+            className="h-9 max-w-full px-3 rounded-lg bg-surface border border-border text-sm"
           >
             <option value="all">All stores</option>
             {stores.map((s) => (
@@ -198,7 +198,7 @@ export function AlertsView({
             ))}
           </select>
         </div>
-        <Button onClick={runScan} loading={scanning}>
+        <Button onClick={runScan} loading={scanning} className="w-full sm:w-auto sm:shrink-0">
           Scan now
         </Button>
       </div>
@@ -232,7 +232,7 @@ export function AlertsView({
                 key={a.id}
                 className={a.resolved ? "opacity-70" : ""}
               >
-                <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 flex-wrap">
                       <Badge variant={meta.variant}>{meta.title}</Badge>
@@ -269,6 +269,7 @@ export function AlertsView({
                       variant="outline"
                       onClick={() => setResolving(a)}
                       iconLeft={<CheckIcon size={14} />}
+                      className="w-full sm:w-auto sm:shrink-0"
                     >
                       Resolve
                     </Button>

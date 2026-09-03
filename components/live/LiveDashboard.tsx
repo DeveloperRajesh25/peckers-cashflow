@@ -525,10 +525,10 @@ export function LiveDashboard({
 
           return (
             <Card key={store.id} className="p-0 overflow-hidden">
-              <div className="px-5 pt-5 pb-3 border-b border-border">
-                <div className="flex items-start justify-between gap-3 flex-wrap">
-                  <div>
-                    <h2 className="text-lg font-semibold tracking-wide">
+              <div className="px-4 sm:px-5 pt-4 sm:pt-5 pb-3 border-b border-border">
+                <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                  <div className="min-w-0">
+                    <h2 className="text-base sm:text-lg font-semibold tracking-wide break-words">
                       {store.name}
                     </h2>
                     <p className="text-xs text-text-muted mt-1">
@@ -536,11 +536,12 @@ export function LiveDashboard({
                     </p>
                   </div>
                   {(canAddClockIn || canAddManagerClockIn) && (
-                    <div className="flex flex-col items-stretch gap-2">
+                    <div className="flex flex-col items-stretch gap-2 sm:shrink-0">
                       {canAddClockIn && (
                         <Button
                           size="sm"
                           variant="outline"
+                          className="w-full sm:w-auto justify-center"
                           iconLeft={<PlusIcon size={14} />}
                           onClick={() => setAdding({ mode: "employee", storeId: store.id })}
                           title="Record a clock-in for someone who forgot"
@@ -552,6 +553,7 @@ export function LiveDashboard({
                         <Button
                           size="sm"
                           variant="outline"
+                          className="w-full sm:w-auto justify-center"
                           iconLeft={<PlusIcon size={14} />}
                           onClick={() => setAdding({ mode: "manager", storeId: store.id })}
                           title="Record a clock-in for a manager who forgot"
@@ -737,7 +739,7 @@ export function LiveDashboard({
               </div>
 
               <div className="overflow-x-auto">
-                <table className="w-full text-sm min-w-[720px]">
+                <table className="table-stack w-full text-sm md:min-w-[720px]">
                   <thead className="bg-surface-hover text-xs uppercase tracking-wider text-text-muted">
                     <tr>
                       <th className="text-left px-3 py-2">Employee</th>
@@ -780,13 +782,13 @@ export function LiveDashboard({
                             "border-t border-border " + (ROW_BG[status] ?? "")
                           }
                         >
-                          <td className="px-3 py-2 font-medium text-text-primary">
+                          <td className="px-3 py-2 font-medium text-text-primary" data-label="">
                             {emp.name}
                           </td>
-                          <td className="px-2 py-2 text-text-subtle">
+                          <td className="px-2 py-2 text-text-subtle" data-label="Role">
                             {emp.position ?? "—"}
                           </td>
-                          <td className="px-2 py-2 text-text-subtle">
+                          <td className="px-2 py-2 text-text-subtle" data-label="Shift">
                             {formatShiftRange(
                               shift?.is_day_off ?? false,
                               shift?.start_time ?? null,
@@ -801,7 +803,7 @@ export function LiveDashboard({
                               </span>
                             )}
                           </td>
-                          <td className="px-2 py-2 text-center text-xs">
+                          <td className="px-2 py-2 text-center text-xs" data-label="In">
                             <span title={shiftCount > 1 ? shiftsLabel : undefined}>
                               {formatTimeOnly(clock?.clock_in_at)}
                             </span>
@@ -826,12 +828,12 @@ export function LiveDashboard({
                               </span>
                             )}
                           </td>
-                          <td className="px-2 py-2 text-center text-xs">
+                          <td className="px-2 py-2 text-center text-xs" data-label="Out">
                             <span title={shiftCount > 1 ? shiftsLabel : undefined}>
                               {formatTimeOnly(clock?.clock_out_at)}
                             </span>
                           </td>
-                          <td className="px-2 py-2 text-center">
+                          <td className="px-2 py-2 text-center" data-label="Status">
                             <span
                               className={
                                 "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border " +
@@ -841,13 +843,13 @@ export function LiveDashboard({
                               {style.label}
                             </span>
                           </td>
-                          <td className="px-2 py-2 text-right text-xs tabular-nums text-text-subtle">
+                          <td className="px-2 py-2 text-right text-xs tabular-nums text-text-subtle" data-label="Expected £">
                             {expectedWage > 0 ? formatGBP(expectedWage) : "—"}
                           </td>
-                          <td className="px-2 py-2 text-right text-xs tabular-nums text-text-primary">
+                          <td className="px-2 py-2 text-right text-xs tabular-nums text-text-primary" data-label="Actual £">
                             {actualWage > 0 ? formatGBP(actualWage) : "—"}
                           </td>
-                          <td className="px-2 py-2 text-center text-xs text-text-subtle">
+                          <td className="px-2 py-2 text-center text-xs text-text-subtle" data-label="Deliveries">
                             {hasRole(emp.position, "Driver")
                               ? clock?.short_deliveries_count == null &&
                                 clock?.long_deliveries_count == null
@@ -881,7 +883,7 @@ export function LiveDashboard({
                     )}
                   </div>
                   <div className="overflow-x-auto">
-                    <table className="w-full text-sm min-w-[720px]">
+                    <table className="table-stack w-full text-sm md:min-w-[720px]">
                       <thead className="bg-surface-hover text-xs uppercase tracking-wider text-text-muted">
                         <tr>
                           <th className="text-left px-3 py-2">Employee</th>
@@ -906,11 +908,11 @@ export function LiveDashboard({
                                   "border-t border-border " + (ROW_BG[status] ?? "")
                                 }
                               >
-                                <td className="px-3 py-2 font-medium text-text-primary">
+                                <td className="px-3 py-2 font-medium text-text-primary" data-label="">
                                   {driver.name}
                                 </td>
-                                <td className="px-2 py-2 text-text-subtle">Cover Driver</td>
-                                <td className="px-2 py-2 text-text-subtle">
+                                <td className="px-2 py-2 text-text-subtle" data-label="Role">Cover Driver</td>
+                                <td className="px-2 py-2 text-text-subtle" data-label="Shift">
                                   {formatShiftRange(
                                     shift?.is_day_off ?? false,
                                     shift?.start_time ?? null,
@@ -925,7 +927,7 @@ export function LiveDashboard({
                                     </span>
                                   )}
                                 </td>
-                                <td className="px-2 py-2 text-center text-xs">
+                                <td className="px-2 py-2 text-center text-xs" data-label="In">
                                   {formatTimeOnly(clock?.clock_in_at)}
                                   {clock?.manual_entry && (
                                     <span
@@ -940,10 +942,10 @@ export function LiveDashboard({
                                     </span>
                                   )}
                                 </td>
-                                <td className="px-2 py-2 text-center text-xs">
+                                <td className="px-2 py-2 text-center text-xs" data-label="Out">
                                   {formatTimeOnly(clock?.clock_out_at)}
                                 </td>
-                                <td className="px-2 py-2 text-center">
+                                <td className="px-2 py-2 text-center" data-label="Status">
                                   <span
                                     className={
                                       "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border " +
@@ -953,13 +955,13 @@ export function LiveDashboard({
                                     {style.label}
                                   </span>
                                 </td>
-                                <td className="px-2 py-2 text-right text-xs tabular-nums text-text-subtle">
+                                <td className="px-2 py-2 text-right text-xs tabular-nums text-text-subtle" data-label="Expected £">
                                   {expectedWage > 0 ? formatGBP(expectedWage) : "—"}
                                 </td>
-                                <td className="px-2 py-2 text-right text-xs tabular-nums text-text-primary">
+                                <td className="px-2 py-2 text-right text-xs tabular-nums text-text-primary" data-label="Actual £">
                                   {actualWage > 0 ? formatGBP(actualWage) : "—"}
                                 </td>
-                                <td className="px-2 py-2 text-center text-xs text-text-subtle">
+                                <td className="px-2 py-2 text-center text-xs text-text-subtle" data-label="Deliveries">
                                   {clock?.short_deliveries_count == null &&
                                   clock?.long_deliveries_count == null
                                     ? "—"

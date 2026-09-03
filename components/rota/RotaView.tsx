@@ -624,11 +624,12 @@ export function RotaView({
               onClick={applyDefaults}
               loading={applying}
               title="Fill this week's empty days from each employee's recurring weekly schedule"
+              className="w-full sm:w-auto"
             >
               Apply default schedules
             </Button>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Button
               variant="outline"
               size="sm"
@@ -663,7 +664,7 @@ export function RotaView({
           is scheduling + attendance only (no wage/hours-avg columns). */}
       {managers.length > 0 && (
         <Card className="overflow-hidden p-0">
-          <CardHeader className="px-5 pt-5 flex-row items-start justify-between gap-3">
+          <CardHeader className="px-4 sm:px-5 pt-5 flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
             <div>
               <CardTitle>{activeStore?.name ?? "—"} Manager Rota</CardTitle>
               <CardDescription>
@@ -674,7 +675,7 @@ export function RotaView({
             </div>
             {eligibleManagerVisitors.length > 0 && (
               <select
-                className="h-10 rounded-xl border border-border bg-surface px-3 text-sm text-text-primary hover:bg-surface-hover cursor-pointer max-w-[260px]"
+                className="h-10 w-full sm:w-auto rounded-xl border border-border bg-surface px-3 text-sm text-text-primary hover:bg-surface-hover cursor-pointer sm:max-w-[260px]"
                 value=""
                 onChange={(e) => {
                   if (e.target.value)
@@ -697,7 +698,7 @@ export function RotaView({
             <table className="w-full text-sm min-w-[900px]">
               <thead className="bg-surface-hover text-xs uppercase tracking-wider text-text-muted">
                 <tr>
-                  <th className="text-left px-3 py-2 sticky left-0 bg-surface-hover z-10">
+                  <th className="text-left px-3 py-2 sticky left-0 bg-surface-hover z-10 sticky-col">
                     Manager
                   </th>
                   {weekDays.map((d) => (
@@ -738,7 +739,7 @@ export function RotaView({
                       key={mgr.id}
                       className="border-t border-border hover:bg-surface-hover/60 transition-colors"
                     >
-                      <td className="px-3 py-2 sticky left-0 bg-surface z-10 font-medium text-text-primary">
+                      <td className="px-3 py-2 sticky left-0 bg-surface z-10 sticky-col font-medium text-text-primary">
                         {mgr.name || mgr.username || "Manager"}
                         {mgr.store_id !== activeStoreId && (
                           <span
@@ -965,7 +966,7 @@ export function RotaView({
           <table className="w-full text-sm min-w-[1200px]">
             <thead className="bg-surface-hover text-xs uppercase tracking-wider text-text-muted">
               <tr>
-                <th className="text-left px-3 py-2 sticky left-0 bg-surface-hover z-10">
+                <th className="text-left px-3 py-2 sticky left-0 bg-surface-hover z-10 sticky-col">
                   Employee
                 </th>
                 <th className="text-left px-2 py-2">Position</th>
@@ -1026,7 +1027,7 @@ export function RotaView({
                     key={emp.id}
                     className="border-t border-border hover:bg-surface-hover/60 transition-colors"
                   >
-                    <td className="px-3 py-2 sticky left-0 bg-surface z-10 font-medium text-text-primary">
+                    <td className="px-3 py-2 sticky left-0 bg-surface z-10 sticky-col font-medium text-text-primary">
                       {emp.name}
                       {emp.store_id !== activeStoreId && (
                         <span
@@ -1353,7 +1354,7 @@ export function RotaView({
             <table className="w-full text-sm min-w-[900px]">
               <thead className="bg-surface-hover text-xs uppercase tracking-wider text-text-muted">
                 <tr>
-                  <th className="text-left px-3 py-2 sticky left-0 bg-surface-hover z-10">
+                  <th className="text-left px-3 py-2 sticky left-0 bg-surface-hover z-10 sticky-col">
                     Cover Driver
                   </th>
                   {weekDays.map((d) => (
@@ -1386,7 +1387,7 @@ export function RotaView({
                       key={driver.id}
                       className="border-t border-border hover:bg-surface-hover/60 transition-colors"
                     >
-                      <td className="px-3 py-2 sticky left-0 bg-surface z-10 font-medium text-text-primary">
+                      <td className="px-3 py-2 sticky left-0 bg-surface z-10 sticky-col font-medium text-text-primary">
                         {driver.name}
                         <span className="block text-[10px] text-text-muted font-normal">
                           {formatGBP(driver.hourly_cash_rate)}/h cash

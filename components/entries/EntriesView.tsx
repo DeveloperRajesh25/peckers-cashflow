@@ -169,7 +169,7 @@ export function EntriesView({
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="table-stack w-full text-sm">
                 <thead>
                   <tr className="text-left text-xs uppercase tracking-wider text-text-muted bg-bg/50">
                     <th className="px-4 py-3 font-medium">Date</th>
@@ -189,10 +189,10 @@ export function EntriesView({
                         key={r.id}
                         className={`${i % 2 === 0 ? "" : "bg-bg/40"} border-t border-border/60`}
                       >
-                        <td className="px-4 py-3 whitespace-nowrap">
+                        <td className="px-4 py-3 whitespace-nowrap" data-label="">
                           {formatDDMMYYYY(r.entry_date)}
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="px-4 py-3" data-label="Manager">
                           <div className="flex items-center gap-2">
                             <span className="truncate max-w-[180px]">{r.manager_name}</span>
                             {r.user_id === currentUserId && (
@@ -202,23 +202,24 @@ export function EntriesView({
                             )}
                           </div>
                         </td>
-                        <td className="px-4 py-3 text-right tabular-nums">
+                        <td className="px-4 py-3 text-right tabular-nums" data-label="Sales">
                           {formatINR(r.cash_sales)}
                         </td>
-                        <td className="px-4 py-3 text-right tabular-nums">
+                        <td className="px-4 py-3 text-right tabular-nums" data-label="Expenses">
                           {formatINR(r.supermarket_expenses)}
                         </td>
                         <td
+                          data-label="Net"
                           className={`px-4 py-3 text-right tabular-nums font-medium ${
                             net >= 0 ? "text-success" : "text-danger"
                           }`}
                         >
                           {formatINR(net)}
                         </td>
-                        <td className="px-4 py-3 text-text-muted max-w-[280px] truncate">
+                        <td className="px-4 py-3 text-text-muted sm:max-w-[280px] sm:truncate" data-label="Notes">
                           {r.notes ?? "—"}
                         </td>
-                        <td className="px-4 py-3 text-right whitespace-nowrap">
+                        <td className="px-4 py-3 text-right whitespace-nowrap" data-label="">
                           {canModify(r) ? (
                             <div className="inline-flex items-center gap-1">
                               <Button
@@ -252,7 +253,7 @@ export function EntriesView({
               </table>
             </div>
 
-            <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-border/60 text-sm">
+            <div className="flex items-center justify-between gap-2 flex-wrap px-4 py-3 border-t border-border/60 text-sm">
               <span className="text-text-muted">
                 {filtered.length} entr{filtered.length === 1 ? "y" : "ies"} ·
                 page {safePage} of {totalPages}

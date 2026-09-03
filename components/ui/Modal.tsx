@@ -45,25 +45,33 @@ export function Modal({ open, onClose, title, description, children, footer, siz
       <div
         className={cn(
           "relative w-full bg-surface border border-border rounded-t-2xl sm:rounded-2xl shadow-2xl",
-          "animate-slide-up max-h-[92vh] overflow-y-auto",
+          "animate-slide-up max-h-[92dvh] overflow-y-auto overscroll-contain",
           widths,
         )}
       >
         {(title || description) && (
-          <div className="px-5 pt-5 pb-3 border-b border-border">
+          <div className="px-4 sm:px-5 pt-5 pb-3 border-b border-border">
             {title && (
-              <h2 className="text-lg font-semibold tracking-wide text-text-primary">
+              <h2 className="text-base sm:text-lg font-semibold tracking-wide text-text-primary break-words">
                 {title}
               </h2>
             )}
             {description && (
-              <p className="text-sm text-text-muted mt-1">{description}</p>
+              <p className="text-sm text-text-muted mt-1 break-words">{description}</p>
             )}
           </div>
         )}
-        <div className="p-5">{children}</div>
+        <div className="p-4 sm:p-5">{children}</div>
         {footer && (
-          <div className="px-5 pb-5 pt-3 border-t border-border flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
+          <div
+            className={cn(
+              "px-4 sm:px-5 pb-5 pt-3 border-t border-border bg-surface",
+              "sticky bottom-0 flex flex-col-reverse sm:flex-row gap-2 sm:justify-end",
+              // On a phone the actions are thumb targets, not a toolbar.
+              "[&>button]:w-full sm:[&>button]:w-auto",
+            )}
+            style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
+          >
             {footer}
           </div>
         )}

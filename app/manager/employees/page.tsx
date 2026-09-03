@@ -52,14 +52,15 @@ export default async function ManagerEmployeesPage() {
       .eq("store_id", storeId)
       .order("employment_status")
       .order("name"),
-    // The whole estate's active staff, for the missed-entry picker ONLY — staff
-    // cross-cover, so someone who forgot to clock in here may be based at the
-    // other store. Everything else on this screen stays scoped to storeId, and
-    // this store's own people are deduped out downstream.
+    // The whole estate's staff. Two things need it. The missed-entry picker
+    // must reach someone based at the other store who covered a shift here, and
+    // the approval/weekly rows must be able to NAME and RATE them — a clock row
+    // is filed under the store the shift happened at, so a visitor's day lands
+    // on this screen while they are absent from the roster above. Display stays
+    // scoped to storeId; only the identity lookup is estate-wide.
     supabase
       .from("employees")
-      .select("id, name, position, store_id")
-      .eq("employment_status", "active")
+      .select(APPROVAL_EMPLOYEE_COLUMNS)
       .order("name"),
     // The days those people already have recorded at their OWN store, over the
     // same window this screen navigates. Without them a visiting employee reads
@@ -119,8 +120,12 @@ export default async function ManagerEmployeesPage() {
   ]);
 
   const employees = (empRes.data ?? []) as unknown as EmployeeSummary[];
+  const estateEmployees = (entryEmpRes.data ?? []) as unknown as EmployeeSummary[];
+  // Keyed over the ESTATE, not this store's roster. A miss here doesn't just
+  // blank the name — it also loses `is_driver`, so the row renders with no
+  // delivery inputs, and the rates, so the Weekly Log splits at zero.
   const empMap = new Map(
-    employees.map((e) => ({
+    estateEmployees.map((e) => ({
       id: e.id,
       name: e.name,
       hourly_ni_rate: e.hourly_ni_rate,
@@ -157,6 +162,17 @@ export default async function ManagerEmployeesPage() {
     coverDrivers,
   );
 
+  // Active staff only, projected back to the four columns the picker needs —
+  // the rates the map above uses are server-side and stay there.
+  const entryPickerEmployees: EntryEmployee[] = estateEmployees
+    .filter((e) => e.employment_status === "active")
+    .map((e) => ({
+      id: e.id,
+      name: e.name,
+      position: e.position,
+      store_id: e.store_id,
+    }));
+
   const managerAccounts = (managersRes.data ?? []).map((m) => ({
     id: m.id as string,
     name: (m.name as string) ?? "Manager",
@@ -186,7 +202,7 @@ export default async function ManagerEmployeesPage() {
         todayISO={todayISO()}
         stores={storesRes.data ?? []}
         entryStores={allStoresRes.data ?? []}
-        entryEmployees={(entryEmpRes.data ?? []) as EntryEmployee[]}
+        entryEmployees={entryPickerEmployees}
         entryEmployeeDays={(entryDaysRes.data ?? []) as EntryEmployeeDay[]}
         defaultStoreId={storeId || null}
         minWageBands={settings.min_wage_bands}

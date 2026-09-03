@@ -140,7 +140,7 @@ export function CashFlowDashboard({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between gap-3 flex-wrap -mt-2">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 -mt-2">
         <p className="text-sm text-text-muted">
           Week of {weekLabel(parseISODate(weekStart))}
         </p>
@@ -185,7 +185,7 @@ export function CashFlowDashboard({
         const draw = v.summary.post_office_draw;
         return (
           <Card key={v.store.id} className="p-0 overflow-hidden">
-            <div className="px-5 py-4 border-b border-border flex items-center justify-between gap-3 flex-wrap">
+            <div className="px-4 sm:px-5 py-4 border-b border-border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div className="flex items-center gap-3">
                 <h2 className="text-lg font-semibold text-text-primary">{v.store.name}</h2>
                 {v.payoutStatus === "confirmed" && <Badge variant="success">Wages paid</Badge>}
@@ -242,7 +242,7 @@ export function CashFlowDashboard({
               {/* This week's daily summary */}
               {v.rows.length > 0 ? (
                 <div className="overflow-x-auto rounded-xl border border-border">
-                  <table className="w-full text-sm">
+                  <table className="table-stack w-full text-sm">
                     <thead>
                       <tr className="text-left text-xs uppercase tracking-wider text-text-muted bg-bg/50">
                         <th className="px-4 py-2.5 font-medium">Date</th>
@@ -258,19 +258,19 @@ export function CashFlowDashboard({
                         const balanced = Math.abs(r.difference) < 0.001;
                         return (
                           <tr key={r.entry_date} className={`${i % 2 === 0 ? "" : "bg-bg/40"} border-t border-border/60`}>
-                            <td className="px-4 py-2.5 whitespace-nowrap">
+                            <td className="px-4 py-2.5 whitespace-nowrap" data-label="">
                               {formatDDMMYYYY(r.entry_date)}
                               {r.is_late && (
                                 <Badge variant="warning" className="ml-2 text-[10px] py-0 px-1.5">Late</Badge>
                               )}
                             </td>
-                            <td className="px-4 py-2.5 whitespace-nowrap text-text-subtle">{r.manager_name ?? "—"}</td>
-                            <td className="px-4 py-2.5 text-right tabular-nums">{formatGBP(r.vita_mojo_sales)}</td>
-                            <td className="px-4 py-2.5 text-right tabular-nums">{formatGBP(r.envelope_amount)}</td>
-                            <td className={`px-4 py-2.5 text-right tabular-nums ${balanced ? "text-text-muted" : r.difference > 0 ? "text-danger" : "text-warning"}`}>
+                            <td className="px-4 py-2.5 whitespace-nowrap text-text-subtle" data-label="Manager">{r.manager_name ?? "—"}</td>
+                            <td className="px-4 py-2.5 text-right tabular-nums" data-label="Vita Mojo">{formatGBP(r.vita_mojo_sales)}</td>
+                            <td className="px-4 py-2.5 text-right tabular-nums" data-label="Envelope">{formatGBP(r.envelope_amount)}</td>
+                            <td data-label="Diff" className={`px-4 py-2.5 text-right tabular-nums ${balanced ? "text-text-muted" : r.difference > 0 ? "text-danger" : "text-warning"}`}>
                               {formatGBP(r.difference)}
                             </td>
-                            <td className="px-4 py-2.5 text-right tabular-nums font-medium">{formatGBP(r.running_balance)}</td>
+                            <td className="px-4 py-2.5 text-right tabular-nums font-medium" data-label="Balance">{formatGBP(r.running_balance)}</td>
                           </tr>
                         );
                       })}

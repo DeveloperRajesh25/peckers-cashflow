@@ -511,14 +511,15 @@ export function EmployeesView({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center sm:justify-between gap-3">
         <Tabs
           tabs={tabs}
           value={tab}
           onChange={(id) => setTab(id as TabId)}
+          className="w-full sm:w-auto"
         />
         {!lockToStore && (
-          <div className="w-44">
+          <div className="w-full sm:w-44">
             <Select
               value={storeFilter}
               onChange={(e) => setStoreFilter(e.target.value)}
@@ -595,7 +596,7 @@ export function EmployeesView({
       {/* ---------------- EMPLOYEES (cards) ---------------- */}
       {tab === "people" && (
         <div className="flex flex-col gap-6">
-          <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-3 flex-wrap">
               <p className="text-sm text-text-muted">
                 {activeCount} active employee{activeCount === 1 ? "" : "s"}
@@ -610,6 +611,7 @@ export function EmployeesView({
             <Button
               onClick={() => setShowAdd(true)}
               iconLeft={<PlusIcon size={16} />}
+              className="w-full sm:w-auto"
             >
               Add Employee
             </Button>

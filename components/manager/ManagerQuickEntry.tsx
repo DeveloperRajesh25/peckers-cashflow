@@ -103,7 +103,7 @@ export function ManagerQuickEntry({
       </CardHeader>
 
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Input
             type="number"
             inputMode="decimal"
@@ -142,7 +142,7 @@ export function ManagerQuickEntry({
               setEnvelope(e.target.value);
             }}
           />
-          <div className="flex items-center justify-between mt-1.5">
+          <div className="flex items-center justify-between gap-2 flex-wrap mt-1.5">
             <span className="text-[11px] text-text-muted">
               Auto = sales − supermarket = {formatGBP(expectedEnvelope)}
             </span>
@@ -177,7 +177,7 @@ export function ManagerQuickEntry({
           </Button>
           <Link
             href="/manager/cash-flow/daily"
-            className="btn-base outline-none bg-surface text-text-primary border border-border hover:bg-surface-hover h-11 px-4 text-sm"
+            className="btn-base outline-none bg-surface text-text-primary border border-border hover:bg-surface-hover min-h-11 px-4 py-2 text-sm shrink-0 whitespace-nowrap"
           >
             Full form
           </Link>

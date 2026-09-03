@@ -146,7 +146,7 @@ export function DateRangePicker({ start, end, onApply }: Props) {
       {open && (
         <div
           role="dialog"
-          className="absolute right-0 z-30 mt-2 w-[20rem] rounded-2xl border border-border bg-surface shadow-xl p-3"
+          className="absolute right-0 z-30 mt-2 w-[min(20rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-surface shadow-xl p-3"
         >
           {/* Presets */}
           <div className="flex flex-wrap gap-1.5 mb-3">

@@ -367,14 +367,14 @@ export function PrePaymentView({
   return (
     <div className="flex flex-col gap-5">
       {/* Week nav + store selector */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="flex items-center justify-between sm:justify-start gap-2 min-w-0">
           <Link href={go(store.id, prevWeek)}>
             <Button variant="secondary" size="icon" aria-label="Previous week">
               <ChevronLeftIcon size={16} />
             </Button>
           </Link>
-          <span className="flex flex-col items-center min-w-[180px]">
+          <span className="flex flex-col items-center min-w-0 sm:min-w-[180px]">
             <span className="text-sm font-medium text-text-primary text-center">
               {weekLabel(parseISODate(weekStart))}
             </span>
@@ -392,7 +392,7 @@ export function PrePaymentView({
           </Link>
         </div>
         {isAdmin && stores.length > 1 && (
-          <div className="min-w-[180px]">
+          <div className="w-full sm:w-auto sm:min-w-[180px]">
             <Select
               value={store.id}
               onChange={(e) => router.push(go(e.target.value, weekStart))}
@@ -555,13 +555,13 @@ export function PrePaymentView({
                 </p>
               </>
             ) : (
-              <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <p className="text-xs text-text-muted">
                   {fin.adjustments.length > 0
                     ? "Add another movement, or edit one in the rows above."
                     : "Need to add or take out cash this sheet doesn't know about?"}
                 </p>
-                <Button variant="outline" size="sm" onClick={() => openAdjustment(null)}>
+                <Button variant="outline" size="sm" className="w-full sm:w-auto sm:shrink-0" onClick={() => openAdjustment(null)}>
                   {fin.adjustments.length > 0 ? "Add another adjustment" : "Add adjustment"}
                 </Button>
               </div>
@@ -572,8 +572,8 @@ export function PrePaymentView({
 
       {/* Wage breakdown */}
       <Card className="p-0 overflow-hidden">
-        <div className="px-5 py-4 border-b border-border flex items-center justify-between gap-3 flex-wrap">
-          <div>
+        <div className="px-4 sm:px-5 py-4 border-b border-border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="min-w-0">
             <h3 className="text-base font-semibold text-text-primary">Tuesday Wage Breakdown</h3>
             <p className="text-sm text-text-muted mt-0.5">
               Hours &amp; deliveries from {payWeekLabel} ·{" "}
@@ -587,7 +587,7 @@ export function PrePaymentView({
             </p>
           </div>
           {!locked && (
-            <Button onClick={doGenerate} loading={busy === "generate"} variant={payout ? "secondary" : "primary"}>
+            <Button onClick={doGenerate} loading={busy === "generate"} variant={payout ? "secondary" : "primary"} className="w-full sm:w-auto sm:shrink-0">
               {payout ? "Regenerate sheet" : "Generate payout sheet"}
             </Button>
           )}
@@ -654,7 +654,7 @@ export function PrePaymentView({
           </p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="table-stack w-full text-sm">
               <thead>
                 <tr className="text-left text-xs uppercase tracking-wider text-text-muted bg-bg/50">
                   <th className="px-4 py-3 font-medium">Employee</th>
@@ -679,7 +679,7 @@ export function PrePaymentView({
                   const saving = !!lineId && savingLines.includes(lineId);
                   return (
                     <tr key={lineId ?? l.employee_name + i} className={`${i % 2 === 0 ? "" : "bg-bg/40"} border-t border-border/60`}>
-                      <td className="px-4 py-3 font-medium text-text-primary">
+                      <td className="px-4 py-3 font-medium text-text-primary" data-label="">
                         {l.employee_name}
                         {l.cover_driver_id && (
                           <span
@@ -698,20 +698,20 @@ export function PrePaymentView({
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-text-muted">{l.role ?? "—"}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">
+                      <td className="px-4 py-3 text-text-muted" data-label="Role">{l.role ?? "—"}</td>
+                      <td className="px-4 py-3 text-right tabular-nums" data-label="Cash hrs">
                         <HoursMinsDisplay hours={l.cash_hours} />
                       </td>
-                      <td className="px-4 py-3 text-right tabular-nums">{formatGBP(l.cash_rate)}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">
+                      <td className="px-4 py-3 text-right tabular-nums" data-label="Rate">{formatGBP(l.cash_rate)}</td>
+                      <td className="px-4 py-3 text-right tabular-nums" data-label="Deliveries">
                         <DeliveryCell line={l} />
                       </td>
-                      <td className="px-4 py-3 text-right tabular-nums">
+                      <td className="px-4 py-3 text-right tabular-nums" data-label="Delivery £">
                         {l.delivery_wages > 0 ? formatGBP(l.delivery_wages) : "—"}
                       </td>
-                      <td className="px-4 py-3 text-right tabular-nums font-semibold">{formatGBP(l.total_payment)}</td>
+                      <td className="px-4 py-3 text-right tabular-nums font-semibold" data-label="Total">{formatGBP(l.total_payment)}</td>
                       {payout && (
-                        <td className="px-4 py-3">
+                        <td className="px-4 py-3" data-label="Paid">
                           {lineId && (
                             // The tick flips straight away (optimistic), and a
                             // spinner sits beside it until the save lands.
@@ -742,8 +742,8 @@ export function PrePaymentView({
               </tbody>
               <tfoot>
                 <tr className="border-t-2 border-border bg-bg/60 font-semibold">
-                  <td className="px-4 py-3" colSpan={4}>Total</td>
-                  <td className="px-4 py-3 text-right tabular-nums">
+                  <td className="px-4 py-3" colSpan={4} data-label="">Total</td>
+                  <td className="px-4 py-3 text-right tabular-nums" data-label="Deliveries">
                     <span className="flex flex-col items-end gap-0.5 whitespace-nowrap">
                       <span className="text-[10px] font-normal text-text-muted">
                         {totals.short_deliveries_count} SD ·{" "}
@@ -784,10 +784,10 @@ export function PrePaymentView({
                       </span>
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-right tabular-nums">
+                  <td className="px-4 py-3 text-right tabular-nums" data-label="Delivery £">
                     {formatGBP(lines.reduce((s, l) => s + l.delivery_wages, 0))}
                   </td>
-                  <td className="px-4 py-3 text-right tabular-nums text-gold">
+                  <td className="px-4 py-3 text-right tabular-nums text-gold" data-label="Total">
                     {formatGBP(lines.reduce((s, l) => s + l.total_payment, 0))}
                   </td>
                   {payout && <td></td>}
@@ -799,7 +799,7 @@ export function PrePaymentView({
 
         {/* Confirmation footer */}
         {payout && (
-          <div className="px-5 py-4 border-t border-border flex items-center justify-between gap-3 flex-wrap">
+          <div className="px-4 sm:px-5 py-4 border-t border-border flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             {confirmed ? (
               <>
                 <p className="text-sm text-success">
@@ -807,7 +807,7 @@ export function PrePaymentView({
                   {payout.confirmed_at ? `${formatDDMMYYYY(payout.confirmed_at)} ${formatTimeOnly(payout.confirmed_at)}` : "—"}
                 </p>
                 {isAdmin && (
-                  <Button variant="danger" onClick={doUnlock} loading={busy === "unlock"}>
+                  <Button variant="danger" onClick={doUnlock} loading={busy === "unlock"} className="w-full sm:w-auto sm:shrink-0">
                     Unlock for amendment
                   </Button>
                 )}
@@ -822,6 +822,7 @@ export function PrePaymentView({
                   loading={busy === "confirm"}
                   iconLeft={<CheckIcon size={16} />}
                   disabled={paidCount < payout.lines.length}
+                  className="w-full sm:w-auto sm:shrink-0"
                 >
                   Confirm all payments
                 </Button>
@@ -899,7 +900,7 @@ function AdjustmentForm({
           value={amount}
           onChange={(e) => onAmount(e.target.value)}
           error={invalid ? "Not a valid amount" : null}
-          containerClassName="w-40"
+          containerClassName="w-full sm:w-40"
         />
         <Input
           label="Reason *"
@@ -908,10 +909,11 @@ function AdjustmentForm({
           onChange={(e) => onReason(e.target.value)}
           maxLength={200}
           disabled={removes}
-          containerClassName="flex-1 min-w-[14rem]"
+          containerClassName="flex-1 w-full sm:min-w-[14rem]"
         />
-        <div className="flex items-center gap-2 pb-0.5">
+        <div className="flex items-center gap-2 pb-0.5 w-full sm:w-auto">
           <Button
+            className="flex-1 sm:flex-none"
             onClick={onSave}
             loading={saving}
             disabled={invalid || needsReason}
@@ -919,7 +921,7 @@ function AdjustmentForm({
           >
             {removes ? "Remove" : "Save"}
           </Button>
-          <Button variant="secondary" onClick={onCancel} disabled={saving}>
+          <Button variant="secondary" className="flex-1 sm:flex-none" onClick={onCancel} disabled={saving}>
             Cancel
           </Button>
         </div>

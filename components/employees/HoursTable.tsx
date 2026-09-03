@@ -243,7 +243,7 @@ export function HoursTable({
         />
       ) : (
         <div className="overflow-x-auto -mx-1">
-          <table className="w-full text-sm">
+          <table className="table-stack w-full text-sm">
             <thead>
               <tr className="text-left text-xs uppercase tracking-wider text-text-muted border-b border-border">
                 <th className="px-3 py-2 font-medium">Employee</th>
@@ -305,15 +305,15 @@ export function HoursTable({
                     key={r.key}
                     className={`${i % 2 === 0 ? "" : "bg-bg/50"} border-t border-border/60`}
                   >
-                    <td className="px-3 py-3 whitespace-nowrap font-medium">
+                    <td className="px-3 py-3 whitespace-nowrap font-medium" data-label="">
                       {r.employee_name}
                     </td>
-                    <td className="px-3 py-3 whitespace-nowrap">
+                    <td className="px-3 py-3 whitespace-nowrap" data-label="Week of">
                       {formatDDMMYYYY(r.week_start_date)}
                     </td>
 
                     {/* Manager-entered hours */}
-                    <td className="px-3 py-3 text-right tabular-nums">
+                    <td className="px-3 py-3 text-right tabular-nums" data-label="Entered hrs">
                       {r.manual ? (
                         <span className="font-medium">
                           <HoursMinsDisplay hours={r.manual.total_hours} />
@@ -324,7 +324,7 @@ export function HoursTable({
                     </td>
 
                     {/* Clock-event weekly total */}
-                    <td className="px-3 py-3 text-right tabular-nums">
+                    <td className="px-3 py-3 text-right tabular-nums" data-label="Clocked hrs">
                       {r.clocked && isPendingApproval && !hideApprove ? (
                         <div className="flex flex-col items-end gap-0.5">
                           <div className="flex items-center gap-1">
@@ -379,27 +379,27 @@ export function HoursTable({
                       )}
                     </td>
 
-                    <td className="px-3 py-3 text-right tabular-nums">
+                    <td className="px-3 py-3 text-right tabular-nums" data-label="Bank">
                       <HoursMinsDisplay hours={bankH} />
                     </td>
-                    <td className="px-3 py-3 text-right tabular-nums">
+                    <td className="px-3 py-3 text-right tabular-nums" data-label="Cash hrs">
                       <HoursMinsDisplay hours={cashH} />
                     </td>
-                    <td className="px-3 py-3 text-right tabular-nums">
+                    <td className="px-3 py-3 text-right tabular-nums" data-label="Cash £">
                       {cashAmt > 0 ? (
                         <Badge variant="gold">{formatINR(cashAmt)}</Badge>
                       ) : (
                         <span className="text-text-muted">—</span>
                       )}
                     </td>
-                    <td className="px-3 py-3 text-right text-text-muted whitespace-nowrap text-xs">
+                    <td className="px-3 py-3 text-right text-text-muted whitespace-nowrap text-xs" data-label="Logged">
                       {r.manual?.logged_at
                         ? formatDDMMYYYY(r.manual.logged_at)
                         : <span className="text-text-muted">—</span>}
                     </td>
 
                     {/* Approval status */}
-                    <td className="px-3 py-3 text-center whitespace-nowrap">
+                    <td className="px-3 py-3 text-center whitespace-nowrap" data-label="Status">
                       {r.manual?.approved ? (
                         <Badge variant="success">
                           <CheckIcon size={12} />
@@ -429,7 +429,7 @@ export function HoursTable({
                       )}
                     </td>
 
-                    <td className="px-3 py-3 text-right">
+                    <td className="px-3 py-3 text-right" data-label="">
                       {r.manual ? (
                         <Button
                           variant="ghost"
